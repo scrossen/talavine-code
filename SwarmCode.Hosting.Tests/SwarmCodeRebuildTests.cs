@@ -32,6 +32,8 @@ public class SwarmCodeRebuildTests : TempDirTest
         // depend on the developer's global Git identity being configured.
         await Git(repo, "config", "user.name", "Test");
         await Git(repo, "config", "user.email", "test@example.com");
+        await Git(repo, "config", "core.autocrlf", "false");
+        await Git(repo, "config", "commit.gpgsign", "false");
         await Git(repo, "add", "-A");
         await Git(repo, "commit", "-q", "-m", "initial");
         return repo;

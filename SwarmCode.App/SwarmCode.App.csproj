@@ -52,10 +52,11 @@
 
   <!-- The native bridge references the CLI executable. Its configuration file
        has the same publish name as the desktop host's; keep the host's copy. -->
-  <Target Name="KeepDesktopHostPublishSettings" AfterTargets="ComputeResolvedFilesToPublishList"
+  <Target Name="KeepDesktopHostPublishSettings" BeforeTargets="_HandleFileConflictsForPublish"
           Condition="$([MSBuild]::GetTargetPlatformIdentifier('$(TargetFramework)')) == 'windows'">
     <ItemGroup>
-      <ResolvedFileToPublish Remove="$(MSBuildProjectDirectory)\..\SwarmCode\appsettings.json" />
+      <ResolvedFileToPublish Remove="@(ResolvedFileToPublish)"
+          Condition="'%(ResolvedFileToPublish.RelativePath)' == 'appsettings.json' and '%(ResolvedFileToPublish.FullPath)' != '$(MSBuildProjectDirectory)\appsettings.json'" />
     </ItemGroup>
   </Target>
 

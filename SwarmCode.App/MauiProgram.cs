@@ -18,6 +18,14 @@ public static class MauiProgram
 
     public static MauiApp CreateMauiApp()
     {
+#if WINDOWS
+        // Standalone installers can carry Microsoft's fixed WebView2 runtime.
+        // Select it for this process only; explicit operator overrides win.
+        var bundledBrowser = Path.Combine(AppContext.BaseDirectory, "WebView2Runtime");
+        if (string.IsNullOrWhiteSpace(Environment.GetEnvironmentVariable("WEBVIEW2_BROWSER_EXECUTABLE_FOLDER"))
+            && File.Exists(Path.Combine(bundledBrowser, "msedgewebview2.exe")))
+            Environment.SetEnvironmentVariable("WEBVIEW2_BROWSER_EXECUTABLE_FOLDER", bundledBrowser);
+#endif
         var builder = MauiApp.CreateBuilder();
         builder.UseMauiApp<App>();
 

@@ -69,6 +69,12 @@ See [the source layout](docs/architecture.md) for the included shared libraries.
 
 ## Contributing and license
 
+Maintainers publish committed-source updates through an explicit file allowlist,
+secret scanning, builds, and tests. Shared SwarmCore source is included here so
+building Talavine Code does not require access to another repository. Public
+contributions are integrated upstream before export; synchronization stops when
+the public branch has changes that need reconciliation.
+
 Start with [CONTRIBUTING.md](CONTRIBUTING.md). Talavine-owned code in this
 repository is licensed under [MIT](LICENSE). Third-party files retain their
 licenses; see [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).

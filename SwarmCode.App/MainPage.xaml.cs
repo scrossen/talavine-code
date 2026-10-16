@@ -18,6 +18,14 @@ public partial class MainPage : ContentPage
     private void BlazorWebView_BlazorWebViewInitializing(object? sender, BlazorWebViewInitializingEventArgs e)
     {
 #if WINDOWS
+        // WinUI's WinRT WebView2 creation needs the folder passed explicitly.
+        // Its runtime detection does not reliably use the process override alone.
+        var browserFolder = Environment.GetEnvironmentVariable("WEBVIEW2_BROWSER_EXECUTABLE_FOLDER");
+        if (!string.IsNullOrWhiteSpace(browserFolder) && File.Exists(Path.Combine(browserFolder, "msedgewebview2.exe")))
+        {
+            e.BrowserExecutableFolder = browserFolder;
+            MauiProgram.LogToFile($"Using WebView2 runtime: {browserFolder}");
+        }
         var additionalArgs = "--enable-features=msSpellCheck";
         var cdpPort = Environment.GetEnvironmentVariable("SWARMCODE_CDP_PORT");
         if (!string.IsNullOrWhiteSpace(cdpPort))

@@ -1,11 +1,61 @@
 # Talavine Code
 
-A coding agent for working in your own repositories, with a terminal interface
-and a Windows / Apple Silicon macOS desktop application.
+**A coding harness designed to be unleashed.**
 
-Created by **Scott Crossen**. Part of [Talavine](https://talavine.com).
-For consulting and custom integration inquiries, use the contact options on
-the Talavine website.
+Give it the job and let it work. Talavine Code brings your coding agents, model
+APIs, repositories, and personal apps into one desktop and terminal workspace.
+It's built for people who want to get from an idea to working software without
+approving the same job one tool call at a time.
+
+**[Download the Windows installer](https://talavine.com/talavine-code#download)** ·
+[See what it does](https://talavine.com/talavine-code) ·
+[Build from source](#start-with-the-terminal) · [Report an issue](https://github.com/scrossen/talavine-code/issues)
+
+## Why try another coding harness?
+
+- **Your prompt is the go-ahead.** In the default `auto` mode, a user-requested
+  coding turn can edit files and run commands without a stream of Allow dialogs.
+  Choose `ask-risky` or `ask` when you want more approval steps. Explicit deny
+  rules still apply; see [security](SECURITY.md) for native CLI boundaries.
+- **One model's refusal doesn't have to end the job.** Configure a mix of
+  providers, including models with more permissive policies. If one declines or
+  can't finish, the harness can hand the remaining work to another model in the
+  same conversation. You choose the services and fallback order.
+- **Get several answers, then put them to the test.** `/compare` sends the same
+  prompt to multiple configured API models. With `--judge`, the models review
+  one another's proposals and can concede to a stronger answer; a separate judge
+  settles a remaining disagreement. See the alternatives and reasoning before
+  committing to an approach. A model's ranking isn't a substitute for running tests.
+- **Keep the apps you build somewhere useful.** The desktop's **My apps** library
+  lets you create an app, add an existing project, return to its coding chat,
+  and run or preview it using its configured launch command. Your projects stay
+  in folders you choose.
+- **Bring the models you already use.** Work through supported native coding
+  CLIs or API providers, retain conversations, and run acceptance commands in your
+  own repositories. The shared SwarmCore harness is included for developers who
+  want to adapt it or embed it in their own tools.
+
+For example, after configuring the named API lanes:
+
+```text
+/compare --models openai,anthropic,gemini --judge openai Propose three ways to add offline sync to this app. Compare failure recovery and implementation effort.
+```
+
+Comparison produces proposals and a review; it doesn't apply several competing
+implementations to your repository. Provider calls are billed by your services.
+
+## Try it before you fork it
+
+The [Windows x64 desktop preview](https://talavine.com/talavine-code#download)
+includes its .NET runtime, so you don't need the SDK to try the app. Bring a
+supported coding CLI sign-in or your own model API key, choose a project, and
+give it a concrete job. Project build tools still depend on what you're building.
+Apple Silicon macOS source is included; see [building](docs/building.md).
+
+Created by **[Scott Crossen](https://github.com/scrossen)**. Part of
+[Talavine](https://talavine.com). I build agent harnesses and integrations, and
+help turn prototypes into software people can use. For consulting or custom
+development, [get in touch](https://talavine.com/support).
 
 Talavine Code can work through supported native coding CLIs or model APIs,
 use repository tools, retain conversations, and run configured acceptance
@@ -26,7 +76,7 @@ dotnet restore TalavineCode.Cli.slnx
 dotnet build TalavineCode.Cli.slnx --no-restore
 dotnet run --project SwarmCode -- --help
 dotnet run --project SwarmCode -- --list-lanes
-dotnet run --project SwarmCode -- --repo /path/to/your/repository --permission-mode ask
+dotnet run --project SwarmCode -- --repo /path/to/your/repository
 ```
 
 Install and sign in to a supported native CLI such as Claude Code or Codex,
@@ -34,7 +84,7 @@ or configure your own supported model API key. Inside the CLI, `/help` lists
 commands; `/key openai` prompts for a key without putting it in shell history.
 Never commit a key, password export, session directory, or local settings file.
 
-Default permission mode is `auto`; the example above explicitly selects `ask`.
+Default permission mode is `auto`. Add `--permission-mode ask` to approve side effects.
 Review permissions before granting access to repositories, commands, browsers,
 credentials, or external services. Model-generated commands can change files
 and perform external actions. Native CLI restrictions and host tool permissions

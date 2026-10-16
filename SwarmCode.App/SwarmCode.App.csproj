@@ -50,6 +50,15 @@
     <Copy SourceFiles="$(TargetDir)resources.pri" DestinationFolder="$(PublishDir)" SkipUnchangedFiles="true" />
   </Target>
 
+  <!-- The native bridge references the CLI executable. Its configuration file
+       has the same publish name as the desktop host's; keep the host's copy. -->
+  <Target Name="KeepDesktopHostPublishSettings" AfterTargets="ComputeResolvedFilesToPublishList"
+          Condition="$([MSBuild]::GetTargetPlatformIdentifier('$(TargetFramework)')) == 'windows'">
+    <ItemGroup>
+      <ResolvedFileToPublish Remove="$(MSBuildProjectDirectory)\..\SwarmCode\appsettings.json" />
+    </ItemGroup>
+  </Target>
+
   <!-- Resizetizer tracks the MauiIcon source but not its foreground; refresh when the artwork changes (mirrors Talavine.App). -->
   <Target Name="RefreshMauiIconForForegroundArtwork" AfterTargets="ResizetizeCollectItems" BeforeTargets="ResizetizeImages" Inputs="Resources\AppIcon\appiconfg.svg" Outputs="$(IntermediateOutputPath)mauiiconfg.stamp">
     <RemoveDir Directories="$(_MauiIntermediateImages)" Condition="Exists('$(_MauiIntermediateImages)')" />

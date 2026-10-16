@@ -1,0 +1,31 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <TargetFramework>net11.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <RootNamespace>SwarmCore.Services</RootNamespace>
+    <Description>A unified, self-describing capability catalog for the Swarm family. Every capability — an HTTP API, an LLM, a compiled C# function, an MCP tool — is a credentialed "service" with a description of what it's for and when to use it. Users and agents add services at runtime; the catalog selects and invokes them. Credentials live apart from descriptions and never reach a model's context.</Description>
+    <Authors>Scott Crossen</Authors>
+    <NoWarn>$(NoWarn);CS8618</NoWarn>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Microsoft.Data.Sqlite" Version="11.0.0-rc.2.26504.105" />
+    <PackageReference Include="SQLitePCLRaw.bundle_e_sqlite3" Version="3.0.5" />
+    <PackageReference Include="Microsoft.Data.SqlClient" Version="6.1.1" />
+    <!-- SqlClient otherwise selects vulnerable Pkcs 9.0.4; align with the patched RC2 runtime. -->
+    <PackageReference Include="System.Security.Cryptography.Pkcs" Version="11.0.0-rc.2.26504.105" />
+    <PackageReference Include="Microsoft.Extensions.DependencyInjection.Abstractions" Version="11.0.0-rc.2.26504.105" />
+    <PackageReference Include="Microsoft.Extensions.Http" Version="11.0.0-rc.2.26504.105" />
+    <PackageReference Include="Microsoft.Extensions.Logging.Abstractions" Version="11.0.0-rc.2.26504.105" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\SwarmCore.Abstractions\SwarmCore.Abstractions.csproj" />
+    <ProjectReference Include="..\SwarmCore.Agent\SwarmCore.Agent.csproj" />
+    <ProjectReference Include="..\SwarmCore.Scripting\SwarmCore.Scripting.csproj" />
+  </ItemGroup>
+  <ItemGroup>
+    <InternalsVisibleTo Include="SwarmCore.Services.Tests" />
+  </ItemGroup>
+</Project>

@@ -1,0 +1,104 @@
+<div class="sess-header">
+    <div class="sess-header__main">
+        <div class="sess-header__heading">
+        @if (_editing)
+        {
+            <input class="sess-header__edit" @bind="_draft" @bind:event="oninput" @onkeydown="OnEditKey" @onblur="CommitAsync" @ref="_input" maxlength="120" aria-label="Session title" />
+        }
+        else
+        {
+            <button type="button" class="sess-header__title" title="@Title" aria-label="Rename session" @onclick="BeginEdit">@(string.IsNullOrWhiteSpace(Title) ? "Session" : Title)</button>
+        }
+        </div>
+        <div class="sess-header__context">
+        @if (!string.IsNullOrEmpty(RepositoryName))
+        {
+            <span class="sess-chip sess-chip--repo" title="@RepositoryPath">@RepositoryName</span>
+        }
+        <ChatLaneChip Lane="@Lane" Title="Lane" Class="sess-chip sess-chip--lane" />
+        @if (IsRunning)
+        {
+            <span class="sess-running" role="status"><span class="sess-running__dot"></span>Running</span>
+        }
+        @if (!string.IsNullOrWhiteSpace(Model)) { <span class="sess-header__model" title="Active model">@Model</span> }
+        @if (CreatedUtc is { } created)
+        {
+            <span class="sess-chip" title="@($"Started {AppNavigation.FullTime(created)}" + (LastActivityUtc is { } last && last > created.AddMinutes(1) ? $" · last activity {AppNavigation.FullTime(last)}" : ""))">Started @AppNavigation.DateAndTime(created)</span>
+        }
+        @if (!string.IsNullOrEmpty(ParentId))
+        {
+            <a class="sess-chip" href="@AppNavigation.SessionUrl(ParentId)" title="This is an agent another session started">Agent of @(ParentTitle ?? "a session")</a>
+        }
+        @if (ActiveAgents > 0)
+        {
+            <a class="sess-chip sess-chip--lane" href="/agents" title="Agents this session started">@ActiveAgents @(ActiveAgents == 1 ? "agent" : "agents") working</a>
+        }
+        </div>
+    </div>
+    <div class="sess-header__actions">
+        <button type="button" class="sess-btn @(ArtifactsOpen ? "sess-btn--active" : "")" aria-pressed="@ArtifactsOpen" @onclick="() => OnToggleArtifacts.InvokeAsync()">Artifacts</button>
+        <button type="button" class="sess-btn @(ChangesOpen ? "sess-btn--active" : "")" aria-pressed="@(ChangesOpen ? "true" : "false")" @onclick="() => OnToggleChanges.InvokeAsync()">
+            Changes@(ChangeCount > 0 ? $" ({ChangeCount})" : "")
+        </button>
+        <button type="button" class="sess-btn" @onclick="() => OnNewSession.InvokeAsync()">New session</button>
+    </div>
+</div>
+
+@code {
+    [Parameter] public string? Title { get; set; }
+    [Parameter] public string? RepositoryName { get; set; }
+    [Parameter] public string? RepositoryPath { get; set; }
+    [Parameter] public string? Lane { get; set; }
+    [Parameter] public string? Model { get; set; }
+    [Parameter] public bool ArtifactsOpen { get; set; }
+    [Parameter] public EventCallback OnToggleArtifacts { get; set; }
+    [Parameter] public bool IsRunning { get; set; }
+    [Parameter] public bool ChangesOpen { get; set; }
+    [Parameter] public int ChangeCount { get; set; }
+    [Parameter] public EventCallback<string> OnRename { get; set; }
+    [Parameter] public EventCallback OnToggleChanges { get; set; }
+    [Parameter] public EventCallback OnNewSession { get; set; }
+    /// <summary>Set when this session is an agent: the session that started it.</summary>
+    [Parameter] public string? ParentId { get; set; }
+    [Parameter] public string? ParentTitle { get; set; }
+    /// <summary>Agents this session started that are still working.</summary>
+    [Parameter] public int ActiveAgents { get; set; }
+    /// <summary>When the session was created and last active (shown as a chip; both in the tooltip).</summary>
+    [Parameter] public DateTime? CreatedUtc { get; set; }
+    [Parameter] public DateTime? LastActivityUtc { get; set; }
+
+    private bool _editing;
+    private bool _focusPending;
+    private string _draft = "";
+    private ElementReference _input;
+
+    private void BeginEdit()
+    {
+        _draft = Title ?? "";
+        _editing = true;
+        _focusPending = true;
+    }
+
+    protected override async Task OnAfterRenderAsync(bool firstRender)
+    {
+        if (_focusPending)
+        {
+            _focusPending = false;
+            try { await _input.FocusAsync(); } catch { }
+        }
+    }
+
+    private async Task OnEditKey(KeyboardEventArgs e)
+    {
+        if (e.Key == "Enter") await CommitAsync();
+        else if (e.Key == "Escape") _editing = false;
+    }
+
+    private async Task CommitAsync()
+    {
+        if (!_editing) return;
+        _editing = false;
+        var next = _draft.Trim();
+        if (next.Length > 0 && next != Title) await OnRename.InvokeAsync(next);
+    }
+}

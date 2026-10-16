@@ -1,0 +1,13 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <TargetFramework>net11.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <RootNamespace>SwarmCore.Knowledge</RootNamespace>
+    <Description>Source-neutral evidence, contribution, graph, and retrieval contracts shared across SwarmCore hosts.</Description>
+    <Authors>Scott Crossen</Authors>
+  </PropertyGroup>
+  <ItemGroup>
+    <ProjectReference Include="../SwarmCore.Abstractions/SwarmCore.Abstractions.csproj" />
+  </ItemGroup>
+</Project>

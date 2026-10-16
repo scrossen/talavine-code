@@ -1,0 +1,192 @@
+@page "/agents"
+@implements IDisposable
+@inject AppState State
+@inject NavigationManager Nav
+@using SwarmCore.Coding.Agents
+
+<PageTitle>Agents - Talavine Code</PageTitle>
+
+<div class="sc-page">
+    <header class="sc-topbar">
+        <div>
+            <h1 class="sc-topbar__title">Agents</h1>
+            <p class="sc-topbar__copy">Agents your sessions started. Open one to watch it work or send it a message.</p>
+        </div>
+        <div class="sc-topbar__actions">
+            <button type="button" class="sc-btn @(_all ? "" : "sc-btn--primary")" @onclick="() => SetFilter(false)">Active</button>
+            <button type="button" class="sc-btn @(_all ? "sc-btn--primary" : "")" @onclick="() => SetFilter(true)">All</button>
+        </div>
+    </header>
+
+    @if (_error is not null)
+    {
+        <div class="sc-notice sc-notice--error" role="status">@_error</div>
+    }
+
+    @if (_rows.Count == 0)
+    {
+        <section class="sc-card sc-empty">
+            <div class="sc-empty__title">@(_all ? "No agents yet" : "No agents working")</div>
+            <p class="sc-muted">Ask a session to split work up, for example "use agents to check each service and fix what fails". Its agents show here.</p>
+        </section>
+    }
+    else
+    {
+        <section class="sc-card">
+            <div class="sc-list">
+                @foreach (var row in _rows)
+                {
+                    var agent = row.Agent;
+                    <div class="sc-list__row sc-agent" style="padding-left:@((agent.Depth - 1) * 1.25)rem">
+                        <span class="sc-agent__dot sc-agent__dot--@agent.State.ToString().ToLowerInvariant()" title="@StateLabel(agent.State)"></span>
+                        <div class="sc-grow sc-agent__text">
+                            <a class="sc-agent__title" href="@AppNavigation.SessionUrl(agent.Id)" title="@agent.Task">@agent.Title</a>
+                            <div class="sc-agent__meta">
+                                <span class="sc-chip @StateChip(agent.State)">@StateLabel(agent.State)</span>
+                                @if (!string.IsNullOrEmpty(agent.Activity) && agent.State == AgentState.Running) { <span>@agent.Activity</span> }
+                                else if (!string.IsNullOrEmpty(agent.Error) && agent.State != AgentState.Idle) { <span title="@agent.Error">@Short(agent.Error)</span> }
+                                @if (Elapsed(agent) is { } elapsed) { <span>@elapsed</span> }
+                                @if (agent.ToolCalls > 0) { <span>@agent.ToolCalls @(agent.ToolCalls == 1 ? "step" : "steps")</span> }
+                                @if (!string.IsNullOrEmpty(agent.Lane)) { <span>@agent.Lane</span> }
+                                @if (agent.Worktree is { } worktree)
+                                {
+                                    <span class="sc-chip @(worktree.HasUncommittedChanges == true ? "sc-chip--warn" : "")"
+                                          title="@(worktree.Path + (worktree.HasUncommittedChanges == true ? " (uncommitted changes)" : ""))">worktree @worktree.Branch</span>
+                                }
+                                @if (agent.Depth == 1 && row.ParentTitle is not null)
+                                {
+                                    <span>from <a href="@AppNavigation.SessionUrl(agent.ParentId)">@row.ParentTitle</a></span>
+                                }
+                            </div>
+                        </div>
+                        @if (!agent.IsTerminal)
+                        {
+                            <button type="button" class="sc-btn sc-btn--sm" @onclick="() => StopAsync(agent.Id)">Stop</button>
+                        }
+                        <a class="sc-btn sc-btn--sm" href="@AppNavigation.SessionUrl(agent.Id)">Open</a>
+                    </div>
+                }
+            </div>
+        </section>
+    }
+</div>
+
+@code {
+    private sealed record Row(AgentRecord Agent, string? ParentTitle);
+
+    private List<Row> _rows = [];
+    private bool _all;
+    private string? _error;
+    private Timer? _tick;
+    private int _refreshState; // 0 idle, 1 running, 2 running + rerun requested
+
+    protected override async Task OnInitializedAsync()
+    {
+        State.Agents.Changed += OnChanged;
+        // Elapsed times move while agents run.
+        _tick = new Timer(_ => { if (_rows.Any(r => r.Agent.State == AgentState.Running)) OnChanged(); }, null, 1000, 1000);
+        await State.Agents.InitializeAsync();
+        await RefreshAsync();
+    }
+
+    private void OnChanged() => _ = InvokeAsync(RefreshAsync);
+
+    private void SetFilter(bool all)
+    {
+        _all = all;
+        _ = RefreshAsync();
+    }
+
+    // Agent changes arrive on background threads and can be frequent (activity), so refreshes are coalesced.
+    private async Task RefreshAsync()
+    {
+        if (Interlocked.CompareExchange(ref _refreshState, 1, 0) != 0)
+        {
+            Interlocked.Exchange(ref _refreshState, 2);
+            return;
+        }
+        try
+        {
+            do
+            {
+                Interlocked.Exchange(ref _refreshState, 1);
+                var all = _all;
+                _rows = await Task.Run(async () =>
+                {
+                    var titles = (await State.Sessions.ListAsync()).ToDictionary(s => s.Id, s => s.Title, StringComparer.Ordinal);
+                    return Order(State.Agents.Snapshot(), all ? null : id => State.Agents.IsActive(id))
+                        .Select(a => new Row(a, titles.GetValueOrDefault(a.ParentId))).ToList();
+                });
+                StateHasChanged();
+                await Task.Delay(250);
+            }
+            while (Interlocked.CompareExchange(ref _refreshState, 0, 1) == 2);
+        }
+        catch (Exception ex)
+        {
+            MauiProgram.LogToFile($"Agents refresh failed: {ex.Message}");
+            Interlocked.Exchange(ref _refreshState, 0);
+        }
+    }
+
+    /// <summary>Trees by most recent activity; each agent's own agents under it, oldest first.</summary>
+    private static IEnumerable<AgentRecord> Order(IReadOnlyList<AgentRecord> agents, Func<string, bool>? keep)
+    {
+        var byParent = agents.ToLookup(a => a.ParentId, StringComparer.Ordinal);
+        var ids = agents.Select(a => a.Id).ToHashSet(StringComparer.Ordinal);
+        var tops = agents.Where(a => !ids.Contains(a.ParentId)).OrderByDescending(a => a.UpdatedUtc);
+        var result = new List<AgentRecord>();
+        void Walk(AgentRecord agent, int guard)
+        {
+            if (guard > 16) return;
+            if (keep is null || keep(agent.Id)) result.Add(agent);
+            foreach (var child in byParent[agent.Id].OrderBy(c => c.CreatedUtc)) Walk(child, guard + 1);
+        }
+        foreach (var top in tops) Walk(top, 0);
+        return result;
+    }
+
+    private async Task StopAsync(string id)
+    {
+        _error = null;
+        try { await State.Agents.CancelAsync(null, id); }
+        catch (InvalidOperationException ex) { _error = ex.Message; }
+    }
+
+    private static string StateLabel(AgentState state) => state switch
+    {
+        AgentState.Queued => "Waiting",
+        AgentState.Running => "Working",
+        AgentState.Idle => "Done",
+        AgentState.Failed => "Failed",
+        AgentState.Cancelled => "Stopped",
+        AgentState.Interrupted => "Interrupted",
+        _ => state.ToString(),
+    };
+
+    private static string StateChip(AgentState state) => state switch
+    {
+        AgentState.Running => "sc-chip--accent",
+        AgentState.Idle => "sc-chip--ok",
+        AgentState.Failed or AgentState.Interrupted => "sc-chip--warn",
+        _ => "",
+    };
+
+    private static string? Elapsed(AgentRecord agent)
+    {
+        if (agent.StartedUtc is not { } started) return null;
+        var span = (agent.FinishedUtc ?? DateTime.UtcNow) - started;
+        if (span < TimeSpan.Zero) return null;
+        return span.TotalHours >= 1 ? $"{(int)span.TotalHours}h {span.Minutes}m"
+            : span.TotalMinutes >= 1 ? $"{(int)span.TotalMinutes}m {span.Seconds}s"
+            : $"{(int)span.TotalSeconds}s";
+    }
+
+    private static string Short(string text) => text.Length <= 80 ? text : text[..77] + "...";
+
+    public void Dispose()
+    {
+        State.Agents.Changed -= OnChanged;
+        _tick?.Dispose();
+    }
+}

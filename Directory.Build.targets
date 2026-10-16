@@ -1,0 +1,163 @@
+<Project>
+  <Target Name="RequireExplicitTestProjectDeclaration"
+          BeforeTargets="PrepareForBuild">
+    <ItemGroup>
+      <_TalavineTestSdkPackage Include="@(PackageReference)"
+                               Condition="'%(Identity)' == 'Microsoft.NET.Test.Sdk'" />
+    </ItemGroup>
+    <Error Condition="'@(_TalavineTestSdkPackage)' != '' and '$(IsTestProject)' == ''"
+           Text="Projects that reference Microsoft.NET.Test.Sdk must set IsTestProject explicitly so dotnet test cannot report a false-success build with no discovered tests." />
+  </Target>
+
+  <!-- Tests that read the repository (sources, scripts, docs) find it through
+       SourceTree, which anchors on its own compiled-in path: a test built
+       with an artifacts path outside the tree still reads the tree it was
+       built from. -->
+  <ItemGroup Condition="'$(IsTestProject)' == 'true' and '$(MSBuildProjectExtension)' == '.csproj'">
+    <Compile Include="$(MSBuildThisFileDirectory)TestSupport\SourceTree.cs" Link="TestSupport\SourceTree.cs" />
+    <!-- Source-tree enumeration is itself a git fixture. Every test head uses
+         the same runnable-git resolver, including heads without a direct Agent reference. -->
+    <_SharedGitFixture Include="$(MSBuildThisFileDirectory)SwarmCore\Testing\TestGit.cs" />
+    <Compile Remove="@(_SharedGitFixture)" MatchOnMetadata="FullPath" MatchOnMetadataOptions="PathLike" />
+    <Compile Include="$(MSBuildThisFileDirectory)SwarmCore\Testing\TestGit.cs" Link="TestSupport\TestGit.cs" />
+    <ProjectReference Include="$(MSBuildThisFileDirectory)SwarmCore\SwarmCore.Agent\SwarmCore.Agent.csproj" />
+  </ItemGroup>
+
+  <!-- Keep Windows firewall identity stable across projects, worktrees and
+       dated release clones. VSTest still loads each project's own testhost.dll,
+       deps/runtimeconfig and test assemblies through the installed dotnet host.
+       Explicit runsettings (including alternate-architecture hosts) win. -->
+  <Target Name="ConfigureStableWindowsVSTestHost"
+          BeforeTargets="VSTest;_VSTestConsole;_VSTestMSBuild"
+          Condition="'$(OS)' == 'Windows_NT' and '$(IsTestProject)' == 'true'
+                     and '$(TargetFrameworkIdentifier)' == '.NETCoreApp'
+                     and '$(TalavineUseStableTestHost)' != 'false'
+                     and '$(VSTestSetting)' == '' and '$(RunSettingsFilePath)' == ''">
+    <PropertyGroup>
+      <_TalavineTestHostPath>$(DOTNET_HOST_PATH)</_TalavineTestHostPath>
+      <_TalavineTestHostPath Condition="'$(_TalavineTestHostPath)' == ''">$(NetCoreRoot)dotnet.exe</_TalavineTestHostPath>
+      <_TalavineSdkArchitecture>$([System.Text.RegularExpressions.Regex]::Match('$(NETCoreSdkRuntimeIdentifier)', '[^-]+$').Value)</_TalavineSdkArchitecture>
+      <_TalavineTestArchitecture Condition="'$(PlatformTarget)' != '' and '$(PlatformTarget)' != 'AnyCPU'">$(PlatformTarget)</_TalavineTestArchitecture>
+      <_TalavineTestArchitecture Condition="'$(RuntimeIdentifier)' != ''">$([System.Text.RegularExpressions.Regex]::Match('$(RuntimeIdentifier)', '[^-]+$').Value)</_TalavineTestArchitecture>
+      <_TalavineInlineArchitecture>$([System.Text.RegularExpressions.Regex]::Match('$(VSTestCLIRunSettings)', '(?i)RunConfiguration.TargetPlatform=([a-z0-9]+)').Groups[1].Value)</_TalavineInlineArchitecture>
+      <_TalavineTestArchitecture Condition="'$(_TalavineInlineArchitecture)' != ''">$(_TalavineInlineArchitecture)</_TalavineTestArchitecture>
+      <_TalavineTestHostXml>$([System.String]::Copy('$(_TalavineTestHostPath)').Replace('&amp;', '&amp;amp;').Replace('&lt;', '&amp;lt;').Replace('&gt;', '&amp;gt;'))</_TalavineTestHostXml>
+      <_TalavineStableRunSettings>$([System.IO.Path]::GetFullPath('$(IntermediateOutputPath)talavine-stable-host.runsettings'))</_TalavineStableRunSettings>
+    </PropertyGroup>
+    <Error Condition="!Exists('$(_TalavineTestHostPath)')"
+           Text="The installed dotnet test host was not found at '$(_TalavineTestHostPath)'. Supply explicit runsettings with DotNetHostPath for the required SDK/architecture." />
+    <Error Condition="'$(_TalavineTestArchitecture)' != '' and '$(_TalavineSdkArchitecture)' != '' and '$(_TalavineTestArchitecture)' != '$(_TalavineSdkArchitecture)'"
+           Text="The requested test architecture '$(_TalavineTestArchitecture)' differs from the installed SDK host '$(_TalavineSdkArchitecture)'. Use the matching dotnet SDK or explicit runsettings with DotNetHostPath pointing to a matching installed host." />
+    <MakeDir Directories="$([System.IO.Path]::GetDirectoryName('$(_TalavineStableRunSettings)'))" />
+    <WriteLinesToFile File="$(_TalavineStableRunSettings)"
+                      Lines="&lt;RunSettings&gt;&lt;RunConfiguration&gt;&lt;DotNetHostPath&gt;$(_TalavineTestHostXml)&lt;/DotNetHostPath&gt;&lt;/RunConfiguration&gt;&lt;/RunSettings&gt;"
+                      Overwrite="true" WriteOnlyWhenDifferent="true" Encoding="UTF-8" />
+    <PropertyGroup>
+      <RunSettingsFilePath>$(_TalavineStableRunSettings)</RunSettingsFilePath>
+    </PropertyGroup>
+    <Message Importance="Normal" Text="Windows VSTest host: $(_TalavineTestHostPath)" />
+  </Target>
+
+  <!--
+    .NET 10's Mono interpreter SSA optimizer can corrupt interpreter state on
+    Mac Catalyst and abort inside mono_interp_exec_method. All Catalyst hosts
+    inherit this runtime switch so new hosts cannot accidentally omit the
+    workaround. It disables only Mono's SSA optimization pass.
+  -->
+  <PropertyGroup Condition="$([MSBuild]::GetTargetPlatformIdentifier('$(TargetFramework)')) == 'maccatalyst'
+                            and '$(TargetFrameworkVersion)' == 'v10.0'">
+    <MtouchExtraArgs>$(MtouchExtraArgs) --setenv=MONO_INTERPRETER_OPTIONS=-ssa</MtouchExtraArgs>
+  </PropertyGroup>
+  <PropertyGroup Condition="$([MSBuild]::GetTargetPlatformIdentifier('$(TargetFramework)')) == 'maccatalyst'">
+    <!-- Microsoft.Playwright otherwise falls back to copying every bundled
+         Node runtime, including a 114 MB Intel executable, into the Mac app. -->
+    <PlaywrightPlatform>osx-arm64</PlaywrightPlatform>
+  </PropertyGroup>
+
+  <!--
+    Microsoft.Playwright 1.57 ships one Windows driver host (win32_x64).
+    Pin it explicitly for both Windows desktop RIDs. Without this property,
+    RuntimePack metadata from the MAUI/Windows App SDK build can fail to match
+    Playwright's supported platform names and its fallback copies every bundled
+    Linux, macOS, and Windows Node runtime into the app and helper publishes.
+
+    A native win-arm64 Talavine build still launches this isolated x64
+    Playwright driver through Windows' x64 compatibility layer. Keep this
+    mapping explicit until Playwright ships a Windows ARM64 driver, and gate
+    the ARM64 release with a managed-browser smoke on real ARM64 hardware.
+  -->
+  <PropertyGroup Condition="$([MSBuild]::GetTargetPlatformIdentifier('$(TargetFramework)')) == 'windows'
+                            or '$(RuntimeIdentifier)' == 'win-x64'
+                            or '$(RuntimeIdentifier)' == 'win-arm64'">
+    <PlaywrightPlatform Condition="'$(PlaywrightPlatform)' == ''">win-x64</PlaywrightPlatform>
+  </PropertyGroup>
+
+  <Target Name="RejectIntelAppleRuntimeIdentifier"
+          BeforeTargets="PrepareForBuild"
+          Condition="($([MSBuild]::GetTargetPlatformIdentifier('$(TargetFramework)')) == 'maccatalyst'
+                      or $([MSBuild]::GetTargetPlatformIdentifier('$(TargetFramework)')) == 'macos')
+                     and ('$(RuntimeIdentifier)' == 'maccatalyst-x64'
+                          or '$(RuntimeIdentifier)' == 'maccatalyst-x86'
+                          or '$(RuntimeIdentifier)' == 'osx-x64'
+                          or '$(RuntimeIdentifier)' == 'osx-x86')">
+    <Error Text="Talavine products on macOS are Apple Silicon only. Use maccatalyst-arm64 or osx-arm64." />
+  </Target>
+
+  <!-- Playwright's copy target does not remove runtimes left by an earlier
+       multi-platform build. Prune both the staging output and an incremental
+       app bundle so an old x86 Node cannot survive a no-clean rebuild. -->
+  <Target Name="PruneUnsupportedMacPlaywrightRuntimes"
+          AfterTargets="CopyPlaywrightFilesToOutput"
+          Condition="$([MSBuild]::GetTargetPlatformIdentifier('$(TargetFramework)')) == 'maccatalyst'">
+    <ItemGroup>
+      <_UnsupportedMacPlaywrightRuntime Include="$(OutputPath).playwright/node/darwin-x64" />
+      <_UnsupportedMacPlaywrightRuntime Include="$(OutputPath).playwright/node/linux-arm64" />
+      <_UnsupportedMacPlaywrightRuntime Include="$(OutputPath).playwright/node/linux-x64" />
+      <_UnsupportedMacPlaywrightRuntime Include="$(OutputPath).playwright/node/win32_x64" />
+    </ItemGroup>
+    <RemoveDir Directories="@(_UnsupportedMacPlaywrightRuntime)" />
+  </Target>
+
+  <Target Name="PruneUnsupportedMacPlaywrightRuntimesFromBundle"
+          BeforeTargets="_CodesignAppBundle"
+          Condition="$([MSBuild]::GetTargetPlatformIdentifier('$(TargetFramework)')) == 'maccatalyst'
+                     and '$(AppBundleDir)' != ''">
+    <ItemGroup>
+      <_UnsupportedBundledPlaywrightRuntime Include="$(AppBundleDir)/Contents/Resources/.playwright/node/darwin-x64" />
+      <_UnsupportedBundledPlaywrightRuntime Include="$(AppBundleDir)/Contents/Resources/.playwright/node/linux-arm64" />
+      <_UnsupportedBundledPlaywrightRuntime Include="$(AppBundleDir)/Contents/Resources/.playwright/node/linux-x64" />
+      <_UnsupportedBundledPlaywrightRuntime Include="$(AppBundleDir)/Contents/Resources/.playwright/node/win32_x64" />
+    </ItemGroup>
+    <RemoveDir Directories="@(_UnsupportedBundledPlaywrightRuntime)" />
+  </Target>
+
+  <!-- Playwright's copy target is additive on incremental builds. Remove only
+       foreign-OS driver folders; win32_x64 is intentionally retained for both
+       win-x64 and win-arm64 application processes. -->
+  <Target Name="PruneUnsupportedWindowsPlaywrightRuntimes"
+          AfterTargets="CopyPlaywrightFilesToOutput"
+          Condition="$([MSBuild]::GetTargetPlatformIdentifier('$(TargetFramework)')) == 'windows'
+                     or '$(RuntimeIdentifier)' == 'win-x64'
+                     or '$(RuntimeIdentifier)' == 'win-arm64'">
+    <ItemGroup>
+      <_UnsupportedWindowsPlaywrightRuntime Include="$(OutputPath).playwright/node/darwin-arm64" />
+      <_UnsupportedWindowsPlaywrightRuntime Include="$(OutputPath).playwright/node/darwin-x64" />
+      <_UnsupportedWindowsPlaywrightRuntime Include="$(OutputPath).playwright/node/linux-arm64" />
+      <_UnsupportedWindowsPlaywrightRuntime Include="$(OutputPath).playwright/node/linux-x64" />
+    </ItemGroup>
+    <RemoveDir Directories="@(_UnsupportedWindowsPlaywrightRuntime)" />
+  </Target>
+
+  <Target Name="PruneUnsupportedWindowsPlaywrightRuntimesFromPublish"
+          AfterTargets="CopyFilesToPublishDirectory"
+          Condition="('$(RuntimeIdentifier)' == 'win-x64' or '$(RuntimeIdentifier)' == 'win-arm64')
+                     and '$(PublishDir)' != ''">
+    <ItemGroup>
+      <_UnsupportedPublishedWindowsPlaywrightRuntime Include="$(PublishDir).playwright/node/darwin-arm64" />
+      <_UnsupportedPublishedWindowsPlaywrightRuntime Include="$(PublishDir).playwright/node/darwin-x64" />
+      <_UnsupportedPublishedWindowsPlaywrightRuntime Include="$(PublishDir).playwright/node/linux-arm64" />
+      <_UnsupportedPublishedWindowsPlaywrightRuntime Include="$(PublishDir).playwright/node/linux-x64" />
+    </ItemGroup>
+    <RemoveDir Directories="@(_UnsupportedPublishedWindowsPlaywrightRuntime)" />
+  </Target>
+</Project>

@@ -1,0 +1,24 @@
+name: CLI and harness
+on: [push, pull_request, workflow_dispatch]
+permissions:
+  contents: read
+jobs:
+  windows:
+    runs-on: windows-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/setup-dotnet@67a3573c9a986a3f9c594539f4ab511d57bb3ce9 # v4
+        with:
+          global-json-file: global.json
+          include-prerelease: true
+      - run: dotnet restore TalavineCode.Cli.slnx
+      - run: dotnet build TalavineCode.Cli.slnx --no-restore
+      - run: dotnet test SwarmCode.Tests/SwarmCode.Tests.csproj --no-build --logger trx
+      - run: dotnet test SwarmCode.Hosting.Tests/SwarmCode.Hosting.Tests.csproj --no-build --logger trx
+      - run: dotnet test SwarmCore/SwarmCore.Coding.Tests/SwarmCore.Coding.Tests.csproj --no-build --logger trx
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        if: always()
+        with:
+          name: test-results
+          path: '**/TestResults/*.trx'

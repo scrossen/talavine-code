@@ -1,0 +1,43 @@
+{
+  "schemaVersion": 1,
+  "packId": "talavine.gemini-cli",
+  "version": "2026.08.18.2",
+  "providerName": "GeminiCli",
+  "modelPrefix": "gemini-cli",
+  "executionDialect": "gemini-cli-prompt-v1",
+  "modelDefaults": { "frontier": "gemini-cli:pro", "balanced": "gemini-cli:default", "economy": "gemini-cli:flash" },
+  "subscriptionCli": {
+    "automaticRoutingEnabled": false,
+    "discoveryPriority": 30,
+    "catalogRefreshDays": 7,
+    "command": "gemini",
+    "npmPackage": "@google/gemini-cli",
+    "environmentVariables": [
+      "SWARMCORE_GEMINI_CLI",
+      "TALAVINE_GEMINI_CLI",
+      "GEMINI_CLI"
+    ],
+    "loginArguments": [],
+    "loginStatusArguments": [],
+    "authenticatedStatusMarkers": [],
+    "recognizedStatusMarkers": [],
+    "defaultModel": "gemini-cli:default",
+    "builtInModels": [
+      "gemini-cli:pro",
+      "gemini-cli:flash",
+      "gemini-cli:default"
+    ],
+    "reasoningEfforts": [],
+    "discoveryReasoningEfforts": [],
+    "helpArguments": ["--help"],
+    "modelConfigPaths": [],
+    "inferenceArguments": ["--skip-trust", "--prompt", "{prompt}"],
+    "modelArgument": "--model",
+    "reasoningConfigFormat": "",
+    "foundationProviders": ["Gemini", "Google"],
+    "capabilityAliases": {
+      "default": ["pro"],
+      "auto": ["pro"]
+    }
+  }
+}

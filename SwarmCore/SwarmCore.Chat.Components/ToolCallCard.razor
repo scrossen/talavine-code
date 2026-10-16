@@ -1,0 +1,279 @@
+@using System.Text.Json
+@using System.Text.Json.Nodes
+
+<div class="tool-call tool-call--@StateClass">
+    @* The whole row toggles on click; the keyboard and assistive tech use the real toggle
+       button. Host actions are its siblings, never nested inside it. *@
+    <div class="tool-call__header" @onclick="ToggleAsync">
+        <button type="button" class="tool-call__toggle" aria-expanded="@(IsExpanded ? "true" : "false")"
+                @onclick="ToggleAsync" @onclick:stopPropagation="true">
+            @ChatGlyphs.Resolve(StatusIcon, "tool-call__status", ResolvedIcons)
+            <span class="tool-call__name">@ToolName</span>
+            @if (ShowSummary && !string.IsNullOrEmpty(_summary))
+            {
+                <span class="tool-call__summary" title="@_summary">@_summary</span>
+            }
+        </button>
+        @HeaderActions
+        @if (ShowStateLabel)
+        {
+            <span class="tool-call__state">@StateLabel</span>
+        }
+        @if (Elapsed is { } elapsed)
+        {
+            <span class="tool-call__elapsed">@(ElapsedFormatter?.Invoke(elapsed) ?? ToolCallSummary.FormatElapsed(elapsed))</span>
+        }
+        @ChatGlyphs.Resolve(IsExpanded ? ChatIcon.Collapse : ChatIcon.Expand, "tool-call__chevron", ResolvedIcons)
+    </div>
+    @if (State == ToolCallCardState.Running && !string.IsNullOrEmpty(ProgressStatus))
+    {
+        @* Work that reports what it is doing is never cut off for taking long:
+           it runs until it finishes or the user stops it. *@
+        <div class="tool-call__progress">
+            <div class="tool-call__progress-row">
+                <span class="tool-call__progress-status">@ProgressStatus</span>
+                @if (StartedAt is { } started)
+                {
+                    <span class="tool-call__progress-elapsed">@ToolCallSummary.FormatRunningElapsed(DateTime.UtcNow - started)</span>
+                }
+                @if (OnCancel.HasDelegate)
+                {
+                    <button type="button" class="tool-call__cancel"
+                            title="Stop this step"
+                            disabled="@CancelRequested"
+                            @onclick="OnCancel"
+                            @onclick:stopPropagation="true">
+                        @ChatGlyphs.Resolve(ChatIcon.StopStep, "tool-call__cancel-icon", ResolvedIcons)
+                        <span>@(CancelRequested ? "Stopping…" : "Cancel")</span>
+                    </button>
+                }
+            </div>
+            @if (ProgressFraction is double fraction)
+            {
+                <div class="tool-call__progress-track">
+                    <div class="tool-call__progress-fill"
+                         style="width:@(((int)Math.Round(Math.Clamp(fraction, 0, 1) * 100)).ToString())%"></div>
+                </div>
+            }
+        </div>
+    }
+    @if (IsExpanded)
+    {
+        <div class="tool-call__body">
+            @if (!string.IsNullOrWhiteSpace(_inputPretty))
+            {
+                <div class="tool-call__section">Input</div>
+                <pre class="tool-call__json">@_inputPretty</pre>
+            }
+            @if (ResultDisplay == ToolResultDisplay.Raw)
+            {
+                @if (State != ToolCallCardState.Running)
+                {
+                    <div class="tool-call__section">Result</div>
+                    <pre class="tool-call__json">@ToolCallSummary.Clip(Result ?? "", MaxResultChars)</pre>
+                }
+            }
+            else
+            {
+                @if (_resultError is not null)
+                {
+                    <div class="tool-call__section">Error</div>
+                    <div class="tool-call__error" role="alert">@_resultError</div>
+                }
+                @if (_resultDiff is not null)
+                {
+                    <div class="tool-call__section">Changes</div>
+                    <DiffView Diff="@_resultDiff" />
+                }
+                @if (!string.IsNullOrWhiteSpace(_resultRest))
+                {
+                    <div class="tool-call__section">Result</div>
+                    <pre class="tool-call__json">@_resultRest</pre>
+                }
+                else if (State == ToolCallCardState.Running)
+                {
+                    <div class="tool-call__section">Result</div>
+                    <div class="tool-call__pending">Running…</div>
+                }
+            }
+        </div>
+    }
+</div>
+
+@code {
+    [Parameter, EditorRequired] public string ToolName { get; set; } = "";
+    [Parameter] public string? InputJson { get; set; }
+    [Parameter] public string? Result { get; set; }
+    [Parameter] public ToolCallCardState State { get; set; } = ToolCallCardState.Running;
+    [Parameter] public TimeSpan? Elapsed { get; set; }
+    /// <summary>Formats <see cref="Elapsed"/>; defaults to <see cref="ToolCallSummary.FormatElapsed"/>.</summary>
+    [Parameter] public Func<TimeSpan, string>? ElapsedFormatter { get; set; }
+
+    /// <summary>One-line summary. When null it is derived from <see cref="InputJson"/>.</summary>
+    [Parameter] public string? Summary { get; set; }
+    /// <summary>Show the one-line input summary in the header.</summary>
+    [Parameter] public bool ShowSummary { get; set; } = true;
+    /// <summary>Show the "Running / Done / Failed / Outcome unknown" label in the header.</summary>
+    [Parameter] public bool ShowStateLabel { get; set; } = true;
+    /// <summary>How the result is shown when the card is open.</summary>
+    [Parameter] public ToolResultDisplay ResultDisplay { get; set; } = ToolResultDisplay.Parsed;
+    /// <summary>Longest result text shown before it is clipped.</summary>
+    [Parameter] public int MaxResultChars { get; set; } = 20_000;
+
+    /// <summary>Host actions rendered in the header after the name (clicks there should stop propagation).</summary>
+    [Parameter] public RenderFragment? HeaderActions { get; set; }
+
+    /// <summary>Latest self-reported step of a running call. When set, a progress row shows.</summary>
+    [Parameter] public string? ProgressStatus { get; set; }
+    /// <summary>0..1 when the running work can measure itself.</summary>
+    [Parameter] public double? ProgressFraction { get; set; }
+    /// <summary>When the running step started (UTC); shows a running clock in the progress row.</summary>
+    [Parameter] public DateTime? StartedAt { get; set; }
+    /// <summary>Stops this step. When set, the progress row carries a Cancel button.</summary>
+    [Parameter] public EventCallback OnCancel { get; set; }
+    /// <summary>True after the user asked to stop this step; the button shows "Stopping…" and is disabled.</summary>
+    [Parameter] public bool CancelRequested { get; set; }
+
+    /// <summary>Owner-controlled open state. When null the card keeps its own state.</summary>
+    [Parameter] public bool? Expanded { get; set; }
+    /// <summary>Raised with the requested state when the user toggles an owner-controlled card.</summary>
+    [Parameter] public EventCallback<bool> ExpandedChanged { get; set; }
+    /// <summary>Whether a self-controlled card starts open.</summary>
+    [Parameter] public bool InitiallyExpanded { get; set; }
+    /// <summary>Open a self-controlled card when it fails or its outcome is unknown, unless the user already toggled it.</summary>
+    [Parameter] public bool AutoExpandErrors { get; set; } = true;
+
+    [Parameter] public ChatIconSet? Icons { get; set; }
+    [CascadingParameter] public ChatIconSet? CascadingIcons { get; set; }
+
+    private bool _expanded;
+    private bool _userToggled;
+    private bool _initialized;
+    private ToolCallCardState _previousState;
+    private string? _summary;
+    private string? _inputPretty;
+    private string? _resultError;
+    private string? _resultDiff;
+    private string? _resultRest;
+    private string? _inputSeen;
+    private string? _resultSeen;
+    private bool _derived;
+
+    private ChatIconSet? ResolvedIcons => Icons ?? CascadingIcons;
+    private bool IsExpanded => Expanded ?? _expanded;
+
+    private ChatIcon StatusIcon => State switch
+    {
+        ToolCallCardState.Failed => ChatIcon.ToolFailed,
+        ToolCallCardState.Completed => ChatIcon.ToolCompleted,
+        ToolCallCardState.Unknown => ChatIcon.ToolUnknown,
+        _ => ChatIcon.ToolRunning,
+    };
+
+    private string StateClass => State switch
+    {
+        ToolCallCardState.Failed => "error",
+        ToolCallCardState.Completed => "done",
+        ToolCallCardState.Unknown => "unknown",
+        _ => "running",
+    };
+
+    private string StateLabel => State switch
+    {
+        ToolCallCardState.Failed => "Failed",
+        ToolCallCardState.Completed => "Done",
+        ToolCallCardState.Unknown => "Outcome unknown",
+        _ => "Running",
+    };
+
+    protected override void OnParametersSet()
+    {
+        if (!_initialized)
+        {
+            _initialized = true;
+            _expanded = InitiallyExpanded || (AutoExpandErrors && (State is ToolCallCardState.Failed or ToolCallCardState.Unknown));
+            _previousState = State;
+        }
+        else if (State != _previousState)
+        {
+            if (AutoExpandErrors && (State is ToolCallCardState.Failed or ToolCallCardState.Unknown) && !_userToggled)
+            {
+                _expanded = true;
+            }
+
+            _previousState = State;
+        }
+
+        _summary = !ShowSummary ? null : !string.IsNullOrWhiteSpace(Summary) ? Summary : ToolCallSummary.FromInput(InputJson);
+
+        if (!_derived || !string.Equals(InputJson, _inputSeen, StringComparison.Ordinal))
+        {
+            _inputSeen = InputJson;
+            _inputPretty = ToolCallSummary.PrettyPrint(InputJson);
+        }
+
+        if (!_derived || !string.Equals(Result, _resultSeen, StringComparison.Ordinal))
+        {
+            _resultSeen = Result;
+            ParseResult(ResultDisplay == ToolResultDisplay.Parsed ? Result : null);
+        }
+
+        _derived = true;
+    }
+
+    private void ParseResult(string? result)
+    {
+        _resultError = null;
+        _resultDiff = null;
+        _resultRest = null;
+        if (string.IsNullOrWhiteSpace(result))
+        {
+            return;
+        }
+
+        try
+        {
+            if (JsonNode.Parse(result) is JsonObject obj)
+            {
+                if (obj["error"] is JsonValue errorValue && errorValue.TryGetValue<string>(out var error)
+                    && !string.IsNullOrWhiteSpace(error))
+                {
+                    _resultError = error;
+                    obj.Remove("error");
+                }
+
+                foreach (var key in new[] { "preview", "diff" })
+                {
+                    if (_resultDiff is null
+                        && obj[key] is JsonValue v && v.TryGetValue<string>(out var text)
+                        && UnifiedDiff.LooksLikeDiff(text))
+                    {
+                        _resultDiff = text;
+                        obj.Remove(key);
+                    }
+                }
+
+                _resultRest = obj.Count == 0 ? null : ToolCallSummary.Clip(ToolCallSummary.PrettyPrint(obj.ToJsonString()), MaxResultChars);
+                return;
+            }
+        }
+        catch (JsonException)
+        {
+            // Not JSON: show verbatim below.
+        }
+
+        _resultRest = ToolCallSummary.Clip(ToolCallSummary.PrettyPrint(result), MaxResultChars);
+    }
+
+    private async Task ToggleAsync()
+    {
+        if (Expanded is { } current)
+        {
+            await ExpandedChanged.InvokeAsync(!current);
+            return;
+        }
+
+        _userToggled = true;
+        _expanded = !_expanded;
+    }
+}

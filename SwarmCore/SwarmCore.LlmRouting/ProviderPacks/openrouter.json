@@ -1,0 +1,64 @@
+{
+  "schemaVersion": 1,
+  "packId": "talavine.openrouter",
+  "version": "2026.09.11.1",
+  "providerName": "OpenRouter",
+  "modelPrefix": "openrouter",
+  "executionDialect": "openrouter-chat-completions-v2",
+  "modelDefaults": { "frontier": "~openai/gpt-latest", "balanced": "openrouter/auto", "economy": "openrouter/auto" },
+  "openRouter": {
+    "minimumReasoningEffort": { "openai/gpt-5": "low", "openai/gpt-5-mini": "low" },
+    "catalogRefreshDays": 7,
+    "baseUrl": "https://openrouter.ai/api/v1",
+    "executionEndpoints": ["https://openrouter.ai/api/v1/chat/completions"],
+    "credentialValidationPath": "/key",
+    "modelsPath": "/models",
+    "defaultModel": "openrouter/auto",
+    "defaultModels": [
+      "openrouter/auto",
+      "~openai/gpt-latest",
+      "openai/gpt-5-mini",
+      "openai/gpt-5",
+      "anthropic/claude-sonnet-4.6",
+      "deepseek/deepseek-v4-flash"
+    ],
+    "visionModelPatterns": [
+      "~openai/gpt-latest",
+      "openai/gpt-5",
+      "openai/gpt-4o",
+      "anthropic/claude-3",
+      "anthropic/claude-sonnet-4",
+      "google/gemini",
+      "vision"
+    ],
+    "catalogOutputModalities": "text",
+    "catalogSorts": [
+      "pricing-low-to-high",
+      "pricing-high-to-low",
+      "context-high-to-low",
+      "throughput-high-to-low",
+      "latency-low-to-high",
+      "most-popular",
+      "top-weekly",
+      "newest",
+      "intelligence-high-to-low",
+      "design-arena-elo-high-to-low"
+    ],
+    "scoutApiSort": "top-weekly",
+    "scoutMaxPromptPricePerMillion": 1.0,
+    "scoutMaxCompletionPricePerMillion": 5.0,
+    "scoutMinimumContextTokens": 32768,
+    "scoutCostQualityTradeoff": 7,
+    "scoutShortlistSize": 100,
+    "scoutRequireStructuredOutputs": true,
+    "nonChatModelMarkers": [
+      "embedding",
+      "embed",
+      "whisper",
+      "tts",
+      "moderation",
+      "dall-e",
+      "image-generation"
+    ]
+  }
+}

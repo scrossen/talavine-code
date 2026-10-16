@@ -1,0 +1,304 @@
+@page "/schedules"
+@implements IDisposable
+@inject AppState State
+@inject IFolderPickerService FolderPicker
+@using SwarmCore.Coding.Scheduling
+
+<PageTitle>Schedules - Talavine Code</PageTitle>
+
+<div class="sc-page">
+    <header class="sc-topbar">
+        <div>
+            <h1 class="sc-topbar__title">Schedules</h1>
+            <p class="sc-topbar__copy">Prompts Talavine Code runs on a schedule while the app is open. Each run is a new session in its repository.</p>
+        </div>
+        <div class="sc-topbar__actions">
+            <button type="button" class="sc-btn @(_showForm ? "" : "sc-btn--primary")" @onclick="ToggleFormAsync">@(_showForm ? "Cancel" : "New schedule")</button>
+        </div>
+    </header>
+
+    @if (_error is not null)
+    {
+        <div class="sc-notice sc-notice--error" role="status">@_error</div>
+    }
+
+    @if (_showForm)
+    {
+        <section class="sc-card sc-schedule-form">
+            <div class="sc-card__title">New schedule</div>
+            <label class="sc-field">
+                <span class="sc-field__label">Title</span>
+                <input class="sc-input" @bind="_title" placeholder="Morning test run" maxlength="120" />
+            </label>
+            <label class="sc-field">
+                <span class="sc-field__label">Prompt (each run starts fresh, so say everything it needs)</span>
+                <textarea class="sc-textarea" rows="4" @bind="_prompt" placeholder="Run the test suite and report any failures with the likely cause."></textarea>
+            </label>
+            <div class="sc-field">
+                <span class="sc-field__label">Repository</span>
+                <div class="sc-row">
+                    <select class="sc-select sc-grow" @bind="_repository" title="@_repository">
+                        @if (_repositories.Count == 0) { <option value="">Open or browse for a repository</option> }
+                        @foreach (var repo in _repositories) { <option value="@repo">@AppNavigation.FolderName(repo) — @repo</option> }
+                    </select>
+                    @if (FolderPicker.IsSupported)
+                    {
+                        <button type="button" class="sc-btn" @onclick="BrowseAsync">Browse…</button>
+                    }
+                </div>
+            </div>
+            <div class="sc-row">
+                <label class="sc-field">
+                    <span class="sc-field__label">Runs</span>
+                    <select class="sc-select" @bind="_preset">
+                        <option value="weekdays">Weekdays at</option>
+                        <option value="daily">Every day at</option>
+                        <option value="hourly">Every hour at minute</option>
+                        <option value="every_minutes">Every N minutes</option>
+                        <option value="cron">Cron expression</option>
+                    </select>
+                </label>
+                @switch (_preset)
+                {
+                    case "weekdays" or "daily":
+                        <label class="sc-field"><span class="sc-field__label">Time (local)</span><input class="sc-input" type="time" @bind="_time" /></label>
+                        break;
+                    case "hourly":
+                        <label class="sc-field"><span class="sc-field__label">Minute</span><input class="sc-input" type="number" min="0" max="59" @bind="_minute" /></label>
+                        break;
+                    case "every_minutes":
+                        <label class="sc-field"><span class="sc-field__label">Minutes</span><input class="sc-input" type="number" min="5" @bind="_interval" /></label>
+                        break;
+                    default:
+                        <label class="sc-field sc-grow"><span class="sc-field__label">Cron (minute hour day month weekday, local time)</span><input class="sc-input sc-input--mono" @bind="_cron" placeholder="0 8 * * 1-5" /></label>
+                        break;
+                }
+            </div>
+            <label class="sc-toggle">
+                <input type="checkbox" @bind="_allowNative" />
+                <span class="sc-toggle__track"></span>
+                <span>Let native CLI lanes (Claude Code, Codex) run it unattended</span>
+            </label>
+            <p class="sc-muted sc-note">Runs use your default lane and preferences. Native CLI lanes act without approval prompts while nobody is watching; turn this off to have a scheduled run skip them and use the next lane.</p>
+            <div class="sc-row">
+                <button type="button" class="sc-btn sc-btn--primary" disabled="@_busy" @onclick="CreateAsync">Create schedule</button>
+                <button type="button" class="sc-btn" @onclick="ToggleFormAsync">Cancel</button>
+            </div>
+        </section>
+    }
+
+    @if (_schedules.Count == 0 && !_showForm)
+    {
+        <section class="sc-card sc-empty">
+            <div class="sc-empty__title">No schedules yet</div>
+            <p class="sc-muted">Create one here, or ask a session, for example "every weekday at 8:00 run the tests and report".</p>
+        </section>
+    }
+    else if (_schedules.Count > 0)
+    {
+        <section class="sc-card">
+            <div class="sc-list">
+                @foreach (var schedule in _schedules)
+                {
+                    var s = schedule;
+                    var running = State.Schedules.IsRunning(s.Id);
+                    <div class="sc-list__row sc-agent">
+                        <span class="sc-agent__dot @DotClass(s, running)" title="@OutcomeLabel(s, running)"></span>
+                        <div class="sc-grow sc-agent__text">
+                            <span class="sc-agent__title" title="@s.Prompt">@s.Title</span>
+                            <div class="sc-agent__meta">
+                                <span>@s.Recurrence.Describe()</span>
+                                <span>@AppNavigation.FolderName(s.RepositoryRoot)</span>
+                                <span>@(s.Enabled ? s.Run.NextRunUtc is { } next ? "Next " + Local(s, next) : "No next run" : "Paused")</span>
+                                @if (running || s.Run.LastOutcome != ScheduleRunOutcome.None)
+                                {
+                                    <span class="sc-chip @OutcomeChip(s, running)">@OutcomeLabel(s, running)</span>
+                                    @if (s.Run.LastRunUtc is { } last) { <span>@Local(s, last)</span> }
+                                    @if (s.Run.LastSessionId is { } session) { <a href="@AppNavigation.SessionUrl(session)">Open run</a> }
+                                }
+                                @if (!string.IsNullOrEmpty(s.Run.LastNote)) { <span title="@s.Run.LastNote">@Short(s.Run.LastNote)</span> }
+                            </div>
+                        </div>
+                        <label class="sc-toggle" title="@(s.Enabled ? "Pause this schedule" : "Resume this schedule")">
+                            <input type="checkbox" checked="@s.Enabled" @onchange="e => SetEnabledAsync(s, e.Value is true)" aria-label="Enabled" />
+                            <span class="sc-toggle__track"></span>
+                        </label>
+                        <button type="button" class="sc-btn sc-btn--sm" disabled="@running" @onclick="() => RunNowAsync(s)">Run now</button>
+                        @if (_confirmDeleteId == s.Id)
+                        {
+                            <button type="button" class="sc-btn sc-btn--danger sc-btn--sm" @onclick="() => DeleteAsync(s)">Delete</button>
+                            <button type="button" class="sc-btn sc-btn--sm" @onclick="() => _confirmDeleteId = null">Keep</button>
+                        }
+                        else
+                        {
+                            <button type="button" class="sc-btn sc-btn--sm" @onclick="() => _confirmDeleteId = s.Id">Delete</button>
+                        }
+                    </div>
+                }
+            </div>
+        </section>
+    }
+</div>
+
+@code {
+    private List<CodingSchedule> _schedules = [];
+    private List<string> _repositories = [];
+    private string? _error;
+    private string? _confirmDeleteId;
+    private bool _showForm;
+    private bool _busy;
+    private string _title = "";
+    private string _prompt = "";
+    private string _repository = "";
+    private string _preset = "weekdays";
+    private TimeOnly _time = new(8, 0);
+    private int _minute;
+    private int _interval = 60;
+    private string _cron = "";
+    private bool _allowNative = true;
+    private int _refreshState; // 0 idle, 1 running, 2 running + rerun requested
+
+    protected override async Task OnInitializedAsync()
+    {
+        State.Schedules.Changed += OnChanged;
+        await RefreshAsync();
+    }
+
+    private void OnChanged() => _ = InvokeAsync(RefreshAsync);
+
+    // Schedule changes arrive on background threads; reads are file I/O, so they run on the thread pool and coalesce.
+    private async Task RefreshAsync()
+    {
+        if (Interlocked.CompareExchange(ref _refreshState, 1, 0) != 0)
+        {
+            Interlocked.Exchange(ref _refreshState, 2);
+            return;
+        }
+        try
+        {
+            do
+            {
+                Interlocked.Exchange(ref _refreshState, 1);
+                _schedules = await Task.Run(async () => (await State.Schedules.ListAsync()).OrderBy(s => s.Title, StringComparer.CurrentCultureIgnoreCase).ToList());
+                StateHasChanged();
+            }
+            while (Interlocked.CompareExchange(ref _refreshState, 0, 1) == 2);
+        }
+        catch (Exception ex)
+        {
+            MauiProgram.LogToFile($"Schedules refresh failed: {ex.Message}");
+            Interlocked.Exchange(ref _refreshState, 0);
+        }
+    }
+
+    private async Task ToggleFormAsync()
+    {
+        _showForm = !_showForm;
+        _error = null;
+        if (!_showForm) return;
+        var current = State.RepositoryRoot;
+        _repositories = await Task.Run(async () => (await State.Sessions.RecentRepositoriesAsync()).Where(Directory.Exists).ToList());
+        if (current is not null && !_repositories.Contains(current, StringComparer.OrdinalIgnoreCase)) _repositories.Insert(0, current);
+        _repository = current ?? _repositories.FirstOrDefault() ?? "";
+    }
+
+    private async Task BrowseAsync()
+    {
+        var chosen = await FolderPicker.PickFolderAsync(new FolderPickerRequest("Repository for this schedule", string.IsNullOrEmpty(_repository) ? null : _repository));
+        if (string.IsNullOrWhiteSpace(chosen)) return;
+        if (!_repositories.Contains(chosen, StringComparer.OrdinalIgnoreCase)) _repositories.Insert(0, chosen);
+        _repository = chosen;
+    }
+
+    private async Task CreateAsync()
+    {
+        _error = null;
+        var (recurrence, problem) = ScheduleRecurrence.Parse(_preset, _time.ToString("HH:mm"), _minute, _interval, _cron);
+        if (recurrence is null) { _error = problem; return; }
+        var draft = new CodingScheduleEdit
+        {
+            Title = _title, Prompt = _prompt, RepositoryRoot = _repository, Recurrence = recurrence, Enabled = true, AllowNativeLanes = _allowNative,
+        };
+        _busy = true;
+        try
+        {
+            await Task.Run(() => State.Schedules.CreateAsync(draft));
+            _showForm = false;
+            _title = _prompt = _cron = "";
+            _allowNative = true;
+        }
+        catch (Exception ex) when (ex is ArgumentException or InvalidOperationException) { _error = ex.Message; }
+        finally { _busy = false; }
+    }
+
+    private async Task SetEnabledAsync(CodingSchedule schedule, bool enabled)
+    {
+        _error = null;
+        try { await Task.Run(() => State.Schedules.UpdateAsync(schedule.Id, schedule.Revision, new CodingScheduleEdit { Enabled = enabled })); }
+        catch (Exception ex) when (ex is ArgumentException or InvalidOperationException)
+        {
+            _error = ex.Message;
+            await RefreshAsync();
+        }
+    }
+
+    private async Task RunNowAsync(CodingSchedule schedule)
+    {
+        _error = null;
+        try
+        {
+            var start = await Task.Run(() => State.Schedules.RunNowAsync(schedule.Id));
+            if (!start.Started) _error = start.Message;
+        }
+        catch (InvalidOperationException ex) { _error = ex.Message; }
+    }
+
+    private async Task DeleteAsync(CodingSchedule schedule)
+    {
+        _confirmDeleteId = null;
+        _error = null;
+        try { await Task.Run(() => State.Schedules.DeleteAsync(schedule.Id, schedule.Revision)); }
+        catch (InvalidOperationException ex)
+        {
+            _error = ex.Message;
+            await RefreshAsync();
+        }
+    }
+
+    private string Local(CodingSchedule s, DateTime utc)
+    {
+        var local = TimeZoneInfo.ConvertTimeFromUtc(DateTime.SpecifyKind(utc, DateTimeKind.Utc), State.Schedules.ZoneOf(s));
+        var today = TimeZoneInfo.ConvertTimeFromUtc(DateTime.UtcNow, State.Schedules.ZoneOf(s)).Date;
+        return local.Date == today ? $"today {local:HH:mm}" : local.Date == today.AddDays(1) ? $"tomorrow {local:HH:mm}" : local.ToString("ddd MMM d, HH:mm");
+    }
+
+    private static string OutcomeLabel(CodingSchedule s, bool running) => running ? "Running" : s.Run.LastOutcome switch
+    {
+        ScheduleRunOutcome.Succeeded => "Done",
+        ScheduleRunOutcome.Failed => "Failed",
+        ScheduleRunOutcome.Cancelled => "Stopped",
+        ScheduleRunOutcome.Interrupted => "Interrupted",
+        ScheduleRunOutcome.Running => "Running elsewhere",
+        _ => "Not run yet",
+    };
+
+    private static string OutcomeChip(CodingSchedule s, bool running) => running ? "sc-chip--accent" : s.Run.LastOutcome switch
+    {
+        ScheduleRunOutcome.Succeeded => "sc-chip--ok",
+        ScheduleRunOutcome.Failed or ScheduleRunOutcome.Interrupted => "sc-chip--warn",
+        _ => "",
+    };
+
+    private static string DotClass(CodingSchedule s, bool running) => running ? "sc-agent__dot--running"
+        : !s.Enabled ? ""
+        : s.Run.LastOutcome switch
+        {
+            ScheduleRunOutcome.Succeeded => "sc-agent__dot--idle",
+            ScheduleRunOutcome.Failed or ScheduleRunOutcome.Interrupted => "sc-agent__dot--failed",
+            _ => "sc-agent__dot--queued",
+        };
+
+    private static string Short(string text) => text.Length <= 80 ? text : text[..77] + "...";
+
+    public void Dispose() => State.Schedules.Changed -= OnChanged;
+}

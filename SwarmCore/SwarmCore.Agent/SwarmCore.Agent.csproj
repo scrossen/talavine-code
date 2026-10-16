@@ -1,0 +1,29 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net11.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <LangVersion>latest</LangVersion>
+    <Description>SwarmCore Agent - Tool-use engine, capability catalog, turn runner, and transcript management for building agents on top of any LLM provider.</Description>
+    <Authors>Scott Crossen</Authors>
+    <NoWarn>$(NoWarn);CS8618</NoWarn>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Microsoft.Extensions.DependencyInjection.Abstractions" Version="11.0.0-rc.2.26504.105" />
+    <PackageReference Include="Microsoft.Extensions.Hosting.Abstractions" Version="11.0.0-rc.2.26504.105" />
+    <PackageReference Include="Microsoft.Extensions.Logging.Abstractions" Version="11.0.0-rc.2.26504.105" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\SwarmCore.Abstractions\SwarmCore.Abstractions.csproj" />
+    <ProjectReference Include="..\SwarmCore.LlmRouting\SwarmCore.LlmRouting.csproj" />
+    <ProjectReference Include="..\SwarmCore.Skills\SwarmCore.Skills.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <InternalsVisibleTo Include="SwarmCore.Agent.Tests" />
+  </ItemGroup>
+
+</Project>

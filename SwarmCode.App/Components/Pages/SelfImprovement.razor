@@ -1,0 +1,354 @@
+@page "/self-improvement"
+@implements IDisposable
+@inject AppState State
+@using SwarmCore.Coding.SelfImprovement
+
+<PageTitle>Self-improvement - Talavine Code</PageTitle>
+
+<div class="sc-page">
+    <header class="sc-topbar">
+        <div>
+            <h1 class="sc-topbar__title">Self-improvement</h1>
+            <p class="sc-topbar__copy">Defects Talavine Code hit and features people asked it for. While nobody is using Talavine Code, each one gets an isolated worktree, a coding session, and the build and test checks; a verified fix lands on its own branch.</p>
+        </div>
+        @if (State.SelfImprovement is { } loopActions)
+        {
+            <div class="sc-topbar__actions">
+                <label class="sc-toggle" title="@(Paused ? "Resume the loop" : "Pause the loop (items stay queued)")">
+                    <input type="checkbox" checked="@(!Paused)" @onchange="e => SetPaused(e.Value is not true)" aria-label="Loop enabled" />
+                    <span class="sc-toggle__track"></span>
+                    <span>@(Paused ? "Paused" : "Running")</span>
+                </label>
+                <button type="button" class="sc-btn" @onclick="CheckNow">Check now</button>
+                <button type="button" class="sc-btn @(_showClosed ? "sc-btn--primary" : "")" @onclick="() => { _showClosed = !_showClosed; _ = RefreshAsync(); }">@(_showClosed ? "Showing all" : "Open only")</button>
+            </div>
+        }
+    </header>
+
+    @if (_error is not null)
+    {
+        <div class="sc-notice sc-notice--error" role="status">@_error</div>
+    }
+
+    @if (State.SelfImprovement is not { } loop || State.SelfImprovementBacklog is null)
+    {
+        <section class="sc-card sc-empty">
+            <div class="sc-empty__title">Not available in this build</div>
+            <p class="sc-muted">Self-improvement is a developer feature of Debug builds of Talavine Code run from its source checkout. This build does not include it.</p>
+        </section>
+    }
+    else
+    {
+        <section class="sc-card">
+            <div class="sc-card__title">Status</div>
+            <p class="sc-muted">@loop.Status</p>
+            @foreach (var reason in loop.WaitingReasons) { <p class="sc-muted sc-note">@reason</p> }
+            @if (loop.ActiveSessionId is { } activeSession)
+            {
+                <p><a href="@AppNavigation.SessionUrl(activeSession)">Open the running cycle's session</a></p>
+            }
+        </section>
+
+        @if (State.SelfImprovementRebuild is { } rebuild && (_shippable.Count > 0 || _relaunchStatus is not null || _mergeOutcomes.Count > 0))
+        {
+            <section class="sc-card">
+                <div class="sc-card__title">Build and relaunch</div>
+                @if (_relaunchStatus is { } last)
+                {
+                    <p class="sc-muted sc-note">
+                        Last rebuild @AppNavigation.RelativeTime(last.StartedUtc):
+                        @(last.InProgress ? "in progress" : last.BuildExitCode == 0 ? "build succeeded" : $"build failed (exit {last.BuildExitCode})")
+                        @if (last.Merged.Count > 0) { <span> · merged @last.Merged.Count fix@(last.Merged.Count == 1 ? "" : "es")</span> }
+                        <span> · log: <span class="sc-input--mono">@last.LogPath</span></span>
+                    </p>
+                }
+                @if (_shippable.Count > 0)
+                {
+                    <p class="sc-muted">@_shippable.Count verified fix@(_shippable.Count == 1 ? "" : "es") ready on branches. Merging puts them into the source checkout; Talavine Code then closes, rebuilds itself and starts again on the new build.</p>
+                    <ul class="sc-muted sc-note">
+                        @foreach (var s in _shippable) { <li>@s.Title <span class="sc-input--mono">(@s.Branch)</span></li> }
+                    </ul>
+                    <p class="sc-muted sc-note">@_rebuildPlan?.Message</p>
+                    @if (_rebuildPlan is { Possible: true }) { <p class="sc-muted sc-note sc-input--mono">@_rebuildPlan.Describe()</p> }
+                    @if (_shipError is not null) { <div class="sc-notice sc-notice--error" role="status">@_shipError</div> }
+                    @if (_confirmShip)
+                    {
+                        <p class="sc-muted">Any session, agent or cycle still running will be stopped when Talavine Code closes. Continue?</p>
+                        <div class="sc-row">
+                            <button type="button" class="sc-btn sc-btn--primary" disabled="@_shipping" @onclick="ShipAsync">Merge, rebuild and relaunch</button>
+                            <button type="button" class="sc-btn" disabled="@_shipping" @onclick="() => _confirmShip = false">Cancel</button>
+                        </div>
+                    }
+                    else
+                    {
+                        <button type="button" class="sc-btn sc-btn--primary" disabled="@(_shipping || _rebuildPlan is not { Possible: true })" @onclick="() => _confirmShip = true">Build and relaunch Talavine Code</button>
+                    }
+                }
+                @foreach (var outcome in _mergeOutcomes)
+                {
+                    <div class="sc-muted sc-note">@(outcome.Merged ? "✓" : "✗") @outcome.Item.Title: @outcome.Message</div>
+                }
+            </section>
+        }
+
+        @if (_items.Count == 0)
+        {
+            <section class="sc-card sc-empty">
+                <div class="sc-empty__title">@(_showClosed ? "Nothing here yet" : "Nothing open")</div>
+                <p class="sc-muted">Defects show up when a turn, a tool or the app fails in Talavine Code's own code. Feature requests show up when you ask Talavine Code for something it cannot do, or type a command that does not exist.</p>
+            </section>
+        }
+        else
+        {
+            <section class="sc-card">
+                <div class="sc-list">
+                    @foreach (var item in _items)
+                    {
+                        var i = item;
+                        <div class="sc-list__row sc-agent">
+                            <span class="sc-agent__dot @DotClass(i)" title="@i.Stage"></span>
+                            <div class="sc-grow sc-agent__text">
+                                <span class="sc-agent__title" title="@i.Details">@i.Title</span>
+                                <div class="sc-agent__meta">
+                                    <span class="sc-chip @KindChip(i)">@(i.Kind == SelfImprovementKind.Defect ? "defect" : "feature")</span>
+                                    <span class="sc-chip @StageChip(i)">@StageLabel(i)</span>
+                                    @if (i.Occurrences > 1) { <span>seen @i.Occurrences times</span> }
+                                    <span>@AppNavigation.RelativeTime(i.LastSeenUtc)</span>
+                                    @if (!string.IsNullOrEmpty(i.Source)) { <span>@i.Source</span> }
+                                    @if (i.Attempts > 0) { <span>@i.Attempts attempt@(i.Attempts == 1 ? "" : "s")</span> }
+                                    @if (i.SessionId is { } session) { <a href="@AppNavigation.SessionUrl(session)">Open session</a> }
+                                    @if (i.Branch is { } branch) { <span class="sc-input--mono" title="@i.Commit">@branch</span> }
+                                </div>
+                                @if (!string.IsNullOrEmpty(i.Note)) { <div class="sc-muted sc-note">@i.Note</div> }
+                                @if (_expandedId == i.Id)
+                                {
+                                    <pre class="sc-muted sc-note" style="white-space:pre-wrap">@i.Details</pre>
+                                    @if (!string.IsNullOrEmpty(i.Evidence)) { <pre class="sc-muted sc-note" style="white-space:pre-wrap">@i.Evidence</pre> }
+                                }
+                            </div>
+                            <button type="button" class="sc-btn sc-btn--sm" @onclick="() => _expandedId = _expandedId == i.Id ? null : i.Id">@(_expandedId == i.Id ? "Less" : "Details")</button>
+                            @if (i.Stage is SelfImprovementStage.Queued or SelfImprovementStage.NeedsHuman or SelfImprovementStage.Dismissed)
+                            {
+                                <button type="button" class="sc-btn sc-btn--sm" disabled="@loop.IsRunning" @onclick="() => RunNowAsync(i)">Run now</button>
+                            }
+                            @if (i.Stage is SelfImprovementStage.NeedsHuman or SelfImprovementStage.Dismissed)
+                            {
+                                <button type="button" class="sc-btn sc-btn--sm" @onclick='() => SetStageAsync(i, SelfImprovementStage.Queued, "Requeued by you.")'>Requeue</button>
+                            }
+                            @if (i.Stage is SelfImprovementStage.Queued or SelfImprovementStage.NeedsHuman)
+                            {
+                                <button type="button" class="sc-btn sc-btn--sm" @onclick='() => SetStageAsync(i, SelfImprovementStage.Dismissed, "Dismissed by you.")'>Dismiss</button>
+                            }
+                            @if (i.Stage is SelfImprovementStage.Verified or SelfImprovementStage.Merged or SelfImprovementStage.Dismissed)
+                            {
+                                @if (_confirmDeleteId == i.Id)
+                                {
+                                    <button type="button" class="sc-btn sc-btn--danger sc-btn--sm" @onclick="() => DeleteAsync(i)">Delete</button>
+                                    <button type="button" class="sc-btn sc-btn--sm" @onclick="() => _confirmDeleteId = null">Keep</button>
+                                }
+                                else
+                                {
+                                    <button type="button" class="sc-btn sc-btn--sm" @onclick="() => _confirmDeleteId = i.Id">Delete</button>
+                                }
+                            }
+                        </div>
+                    }
+                </div>
+            </section>
+        }
+    }
+</div>
+
+@code {
+    private List<SelfImprovementItem> _items = [];
+    private string? _error;
+    private string? _expandedId;
+    private string? _confirmDeleteId;
+    private bool _showClosed;
+    private int _refreshState; // 0 idle, 1 running, 2 running + rerun requested
+    private List<SelfImprovementItem> _shippable = [];
+    private List<SwarmCode.Hosting.Improvement.MergeOutcome> _mergeOutcomes = [];
+    private SwarmCode.Hosting.Improvement.RebuildPlan? _rebuildPlan;
+    private SwarmCode.Hosting.Improvement.RelaunchStatus? _relaunchStatus;
+    private string? _shipError;
+    private bool _confirmShip;
+    private bool _shipping;
+
+    private bool Paused => State.Preferences.Current.SelfImprovementPaused;
+
+    /// <summary>Merges every verified branch, hands the rebuild to the detached helper and closes SwarmCode.</summary>
+    private async Task ShipAsync()
+    {
+        if (State.SelfImprovementRebuild is not { } rebuild || State.SelfImprovement is not { } loop) return;
+        _shipError = null;
+        if (loop.IsRunning) { _shipError = "A cycle is still running. Wait for it to finish first."; return; }
+        if (State.AnyTurnRunning) { _shipError = "A session is still working. Stop it or wait for it to finish first."; return; }
+        var plan = rebuild.Plan(OperatingSystem.IsWindows());
+        if (!plan.Possible) { _shipError = plan.Message; return; }
+        _shipping = true;
+        try
+        {
+            _mergeOutcomes = (await Task.Run(() => rebuild.MergeVerifiedAsync(plan.RepositoryRoot!))).ToList();
+            var merged = _mergeOutcomes.Where(o => o.Merged).Select(o => o.Item.Title).ToList();
+            if (merged.Count == 0)
+            {
+                _shipError = "Nothing was merged, so Talavine Code was not rebuilt. See the notes on each fix.";
+                _confirmShip = false;
+                await RefreshAsync();
+                return;
+            }
+            var script = rebuild.WriteRelaunchScript(plan, Environment.ProcessId, merged);
+            rebuild.StartRelaunch(script);
+            MauiProgram.LogToFile($"Self-improvement: merged {merged.Count} fix(es); relaunch helper started ({script}). Closing for the rebuild.");
+            await Task.Delay(300);
+            Application.Current?.Quit();
+        }
+        catch (Exception ex)
+        {
+            _shipError = ex.Message;
+            _confirmShip = false;
+            await RefreshAsync();
+        }
+        finally { _shipping = false; }
+    }
+
+    protected override async Task OnInitializedAsync()
+    {
+        if (State.SelfImprovement is not { } loop || State.SelfImprovementReporter is not { } reporter) return;
+        loop.Changed += OnChanged;
+        reporter.Reported += OnReported;
+        await RefreshAsync();
+    }
+
+    private void OnChanged() => _ = InvokeAsync(RefreshAsync);
+    private void OnReported(SelfImprovementItem item, bool created) => _ = InvokeAsync(RefreshAsync);
+
+    private async Task RefreshAsync()
+    {
+        if (State.SelfImprovementBacklog is not { } backlog) return;
+        if (Interlocked.CompareExchange(ref _refreshState, 1, 0) != 0)
+        {
+            Interlocked.Exchange(ref _refreshState, 2);
+            return;
+        }
+        try
+        {
+            do
+            {
+                Interlocked.Exchange(ref _refreshState, 1);
+                var showClosed = _showClosed;
+                _items = await Task.Run(async () => (await backlog.ListAsync())
+                    .Where(i => showClosed || i.Stage is SelfImprovementStage.Queued or SelfImprovementStage.InProgress or SelfImprovementStage.NeedsHuman or SelfImprovementStage.Verified)
+                    .OrderBy(i => Order(i.Stage)).ThenByDescending(i => i.LastSeenUtc).ToList());
+                if (State.SelfImprovementRebuild is { } rebuild)
+                {
+                    _shippable = _items.Where(i => i.Stage == SelfImprovementStage.Verified && !string.IsNullOrWhiteSpace(i.Branch)).ToList();
+                    _rebuildPlan = _shippable.Count > 0 ? await Task.Run(() => rebuild.Plan(OperatingSystem.IsWindows())) : null;
+                    _relaunchStatus = await Task.Run(rebuild.ReadStatus);
+                }
+                StateHasChanged();
+            }
+            while (Interlocked.CompareExchange(ref _refreshState, 0, 1) == 2);
+        }
+        catch (Exception ex)
+        {
+            MauiProgram.LogToFile($"Self-improvement refresh failed: {ex.Message}");
+            Interlocked.Exchange(ref _refreshState, 0);
+        }
+    }
+
+    private static int Order(SelfImprovementStage stage) => stage switch
+    {
+        SelfImprovementStage.InProgress => 0,
+        SelfImprovementStage.Queued => 1,
+        SelfImprovementStage.NeedsHuman => 2,
+        SelfImprovementStage.Verified => 3,
+        SelfImprovementStage.Merged => 4,
+        _ => 5,
+    };
+
+    private void SetPaused(bool paused)
+    {
+        State.Preferences.Update(p => p.SelfImprovementPaused = paused);
+        State.SelfImprovement?.Wake();
+    }
+
+    private void CheckNow()
+    {
+        State.SelfImprovement?.Wake();
+        _ = RefreshAsync();
+    }
+
+    private async Task RunNowAsync(SelfImprovementItem item)
+    {
+        if (State.SelfImprovement is not { } loop) return;
+        _error = null;
+        try
+        {
+            var start = await Task.Run(() => loop.RunNowAsync(item.Id));
+            if (!start.Started) _error = start.Message;
+        }
+        catch (Exception ex) { _error = ex.Message; }
+        await RefreshAsync();
+    }
+
+    private async Task SetStageAsync(SelfImprovementItem item, SelfImprovementStage stage, string note)
+    {
+        if (State.SelfImprovementBacklog is not { } backlog) return;
+        _error = null;
+        try
+        {
+            await Task.Run(() => backlog.UpdateAsync(item.Id, fresh => fresh.Stage == SelfImprovementStage.InProgress ? null
+                : fresh with { Stage = stage, Note = note, Owner = null }, item.Revision));
+            State.SelfImprovement?.Wake();
+        }
+        catch (SelfImprovementConflictException ex) { _error = ex.Message; }
+        catch (Exception ex) { _error = ex.Message; }
+        await RefreshAsync();
+    }
+
+    private async Task DeleteAsync(SelfImprovementItem item)
+    {
+        if (State.SelfImprovementBacklog is not { } backlog) return;
+        _error = null;
+        _confirmDeleteId = null;
+        try { await Task.Run(() => backlog.DeleteAsync(item.Id)); }
+        catch (Exception ex) { _error = ex.Message; }
+        await RefreshAsync();
+    }
+
+    private static string DotClass(SelfImprovementItem i) => i.Stage switch
+    {
+        SelfImprovementStage.InProgress => "sc-agent__dot--running",
+        SelfImprovementStage.Queued => "sc-agent__dot--queued",
+        SelfImprovementStage.NeedsHuman => "sc-agent__dot--failed",
+        SelfImprovementStage.Dismissed => "sc-agent__dot--interrupted",
+        _ => "sc-agent__dot--idle",
+    };
+
+    private static string KindChip(SelfImprovementItem i) => i.Kind == SelfImprovementKind.Defect ? "sc-chip--warn" : "sc-chip--accent";
+
+    private static string StageChip(SelfImprovementItem i) => i.Stage switch
+    {
+        SelfImprovementStage.Verified or SelfImprovementStage.Merged => "sc-chip--ok",
+        SelfImprovementStage.NeedsHuman => "sc-chip--warn",
+        SelfImprovementStage.Dismissed => "sc-chip--off",
+        _ => "",
+    };
+
+    private static string StageLabel(SelfImprovementItem i) => i.Stage switch
+    {
+        SelfImprovementStage.Queued => "queued",
+        SelfImprovementStage.InProgress => "working",
+        SelfImprovementStage.Verified => "fix ready on branch",
+        SelfImprovementStage.Merged => "merged",
+        SelfImprovementStage.NeedsHuman => "needs you",
+        _ => "dismissed",
+    };
+
+    public void Dispose()
+    {
+        if (State.SelfImprovement is { } loop) loop.Changed -= OnChanged;
+        if (State.SelfImprovementReporter is { } reporter) reporter.Reported -= OnReported;
+    }
+}

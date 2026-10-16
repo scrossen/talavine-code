@@ -1,0 +1,41 @@
+@inject IJSRuntime JS
+
+@if (Matches)
+{
+    <button type="button" class="sc-settings-tile" @onclick="OpenAsync" aria-controls="@DialogId">
+        <span class="sc-settings-tile__heading">@Title <span aria-hidden="true">↗</span></span>
+        <span class="sc-settings-tile__copy">@Description</span>
+        @if (!string.IsNullOrWhiteSpace(Summary)) { <span class="sc-settings-tile__summary">@Summary</span> }
+    </button>
+}
+<dialog id="@DialogId" class="sc-dialog sc-settings-dialog" aria-labelledby="@(DialogId + "-title")" @ref="_dialog">
+    <header class="sc-settings-dialog__header">
+        <div><h2 id="@(DialogId + "-title")">@Title</h2><p class="sc-muted">@Description</p></div>
+        <button type="button" class="sc-btn" @onclick="CloseAsync">Close</button>
+    </header>
+    <div class="sc-settings-dialog__body">
+        @if (Message is not null) { <div class="sc-notice @(IsError ? "sc-notice--error" : "sc-notice--info")" role="status">@Message</div> }
+        @if (_loaded) { @ChildContent }
+    </div>
+</dialog>
+
+@code {
+    [Parameter, EditorRequired] public string Id { get; set; } = "";
+    [Parameter, EditorRequired] public string Title { get; set; } = "";
+    [Parameter] public string Description { get; set; } = "";
+    [Parameter] public string? Summary { get; set; }
+    [Parameter] public string? Filter { get; set; }
+    [Parameter] public string? Message { get; set; }
+    [Parameter] public bool IsError { get; set; }
+    [Parameter] public RenderFragment? ChildContent { get; set; }
+    private ElementReference _dialog;
+    private bool _loaded, _openAfterRender;
+    private string DialogId => "sc-settings-" + Id;
+    private bool Matches => string.IsNullOrWhiteSpace(Filter) || (Title + " " + Description + " " + Summary).Contains(Filter.Trim(), StringComparison.OrdinalIgnoreCase);
+    private Task OpenAsync() { _loaded = true; _openAfterRender = true; return Task.CompletedTask; }
+    protected override async Task OnAfterRenderAsync(bool firstRender)
+    {
+        if (_openAfterRender) { _openAfterRender = false; await JS.InvokeVoidAsync("swarmcode.openDialog", _dialog); }
+    }
+    private Task CloseAsync() => JS.InvokeVoidAsync("swarmcode.closeDialog", _dialog).AsTask();
+}

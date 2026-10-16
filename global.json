@@ -1,0 +1,8 @@
+{
+  "sdk": {
+    "version": "11.0.100-rc.2.26504.105",
+    "paths": [ ".dotnet", "$host$" ],
+    "rollForward": "latestFeature",
+    "allowPrerelease": true
+  }
+}

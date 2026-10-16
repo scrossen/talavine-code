@@ -1,0 +1,36 @@
+@using SwarmCore.LlmRouting.Providers
+@using SwarmCore.Coding.Routing
+@using Microsoft.Extensions.DependencyInjection
+
+@if (Efforts.Count > 0)
+{
+    <label class="sc-field">
+        <span class="sc-field__label">Reasoning</span>
+        <select class="sc-select" aria-label="Reasoning effort" value="@Effort" disabled="@Disabled" @onchange="ChangedAsync">
+            <option value="">Provider default</option>
+            @foreach (var effort in Efforts) { <option value="@effort">@effort</option> }
+        </select>
+    </label>
+}
+
+@code {
+    [Parameter] public string Model { get; set; } = "";
+    [Parameter] public EventCallback<string> ModelChanged { get; set; }
+    [Parameter] public CodingLane? Lane { get; set; }
+    [Parameter] public WorkspaceHost? Workspace { get; set; }
+    [Parameter] public bool Disabled { get; set; }
+    private string Provider = "";
+    protected override void OnParametersSet()
+    {
+        Provider = Lane?.Provider ?? "";
+        if (Lane is { IsNative: true } && Workspace is not null)
+        {
+            using var scope = Workspace.Services.CreateScope();
+            Provider = scope.ServiceProvider.GetServices<INativeLaneRunner>().FirstOrDefault(r => r.Supports(Lane))?.ModelCatalogProvider ?? "";
+        }
+    }
+    private string BaseModel => Model.LastIndexOf('@') is var at && at > 0 ? Model[..at] : Model;
+    private string Effort => Model.LastIndexOf('@') is var at && at > 0 ? Model[(at + 1)..] : "";
+    private IReadOnlyList<string> Efforts => ModelRouteCapabilities.ReasoningEfforts(Provider, BaseModel);
+    private Task ChangedAsync(ChangeEventArgs e) => ModelChanged.InvokeAsync(string.IsNullOrWhiteSpace(e.Value?.ToString()) ? BaseModel : BaseModel + "@" + e.Value);
+}

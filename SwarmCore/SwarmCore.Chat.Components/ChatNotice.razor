@@ -1,0 +1,126 @@
+@if (KindClass == "recovery")
+{
+    @* A failure the user can act on: what happened, what is retained, and the ways forward. *@
+    <div class="@(Paused ? "chat-msg__error-inline chat-msg__recovery chat-msg__error-inline--soft" : "chat-msg__error-inline chat-msg__recovery")" role="status">
+        @ChatGlyphs.Resolve(Paused ? ChatIcon.RecoveryPaused : ChatIcon.RecoveryFailed, "chat-msg__recovery-icon", ResolvedIcons)
+        <span class="chat-msg__error-text">
+            @if (!string.IsNullOrWhiteSpace(Title))
+            {
+                <strong class="chat-msg__recovery-title">@Title</strong>
+            }
+            @if (ChildContent is not null)
+            {
+                @ChildContent
+            }
+            else
+            {
+                @Text
+            }
+        </span>
+        @if (!string.IsNullOrWhiteSpace(Progress))
+        {
+            <span class="chat-msg__recovery-progress">@Progress</span>
+        }
+        @if (Actions.Count > 0)
+        {
+            <div class="chat-msg__error-actions">
+                @foreach (var action in Actions)
+                {
+                    <button type="button"
+                            class="@ActionClass(action.Style)"
+                            @onclick="action.OnClick"
+                            disabled="@action.Disabled"
+                            title="@action.Title">
+                        @action.Icon @action.Label
+                    </button>
+                }
+            </div>
+        }
+    </div>
+}
+else
+{
+    <div class="chat-notice chat-notice--@KindClass" role="@(KindClass == "error" ? "alert" : "status")">
+        <span class="chat-notice__icon" aria-hidden="true">@Glyph</span>
+        <div class="chat-notice__main">
+            <span class="chat-notice__text">@_presentation.Summary</span>
+            @if (!string.IsNullOrWhiteSpace(_presentation.Details))
+            {
+                <details class="chat-notice__details">
+                    <summary>Details</summary>
+                    <pre>@_presentation.Details</pre>
+                </details>
+            }
+        </div>
+    </div>
+}
+
+@code {
+    /// <summary>lane | handoff | exhausted | error | warn | info | cancelled | compaction | secret | recovery. Unknown kinds render as info.</summary>
+    [Parameter] public string Kind { get; set; } = "info";
+    /// <summary>The notice text. For a recovery notice it is the message unless <see cref="ChildContent"/> is supplied.</summary>
+    [Parameter] public string Text { get; set; } = "";
+    [Parameter] public string? Details { get; set; }
+
+    /// <summary>Recovery: a short heading such as "Let's get this moving again".</summary>
+    [Parameter] public string? Title { get; set; }
+    /// <summary>Recovery: rich message content in place of <see cref="Text"/>.</summary>
+    [Parameter] public RenderFragment? ChildContent { get; set; }
+    /// <summary>Recovery: what work is retained, shown under the message.</summary>
+    [Parameter] public string? Progress { get; set; }
+    /// <summary>Recovery: the ways forward, in order.</summary>
+    [Parameter] public IReadOnlyList<ChatNoticeAction> Actions { get; set; } = Array.Empty<ChatNoticeAction>();
+    /// <summary>Recovery: a pause the user can continue from rather than a failure (calmer styling).</summary>
+    [Parameter] public bool Paused { get; set; }
+
+    [Parameter] public ChatIconSet? Icons { get; set; }
+    [CascadingParameter] public ChatIconSet? CascadingIcons { get; set; }
+
+    private ChatNoticePresentation _presentation = new("", null);
+    private string? _textSeen;
+    private string? _detailsSeen;
+
+    private ChatIconSet? ResolvedIcons => Icons ?? CascadingIcons;
+
+    protected override void OnParametersSet()
+    {
+        if (Text == _textSeen && Details == _detailsSeen) return;
+        _textSeen = Text;
+        _detailsSeen = Details;
+        _presentation = ChatNoticePresentation.Create(Text ?? "", Details);
+    }
+
+    private static string ActionClass(ChatNoticeActionStyle style) => style switch
+    {
+        ChatNoticeActionStyle.Primary => "chat-msg__error-btn chat-msg__error-btn--primary",
+        ChatNoticeActionStyle.Ghost => "chat-msg__error-btn chat-msg__error-btn--ghost",
+        _ => "chat-msg__error-btn",
+    };
+
+    private string KindClass => (Kind ?? "info").Trim().ToLowerInvariant() switch
+    {
+        "lane" => "lane",
+        "handoff" => "handoff",
+        "exhausted" => "exhausted",
+        "error" => "error",
+        "warn" or "warning" => "warn",
+        "cancelled" or "canceled" => "cancelled",
+        "compaction" => "compaction",
+        "secret" => "secret",
+        "recovery" => "recovery",
+        _ => "info",
+    };
+
+    private string Glyph => KindClass switch
+    {
+        "lane" => "⇄",
+        "handoff" => "➜",
+        "exhausted" => "⌛",
+        "error" => "✗",
+        "warn" => "⚠",
+        "cancelled" => "⊘",
+        "compaction" => "⟲",
+        "secret" => "🔑",
+        _ => "ℹ",
+    };
+}

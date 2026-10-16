@@ -1,0 +1,13 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup><TargetFramework>net11.0</TargetFramework><ImplicitUsings>enable</ImplicitUsings><Nullable>enable</Nullable><IsPackable>false</IsPackable><IsTestProject>true</IsTestProject></PropertyGroup>
+  <ItemGroup>
+    <ProjectReference Include="../SwarmCore.Coding/SwarmCore.Coding.csproj" />
+    <PackageReference Include="Microsoft.NET.Test.Sdk" Version="17.13.0" />
+    <PackageReference Include="xunit" Version="2.9.3" />
+    <PackageReference Include="xunit.runner.visualstudio" Version="3.0.2" />
+  </ItemGroup>
+  <ItemGroup><Using Include="Xunit" /></ItemGroup>
+  <ItemGroup><Compile Include="../Testing/TestGit.cs" Link="TestSupport/TestGit.cs" /><Compile Include="../Testing/TestShell.cs" Link="TestSupport/TestShell.cs" /></ItemGroup>
+  <ItemGroup><Compile Include="../Testing/AppleSiliconProbeFixture.cs" Link="TestSupport/AppleSiliconProbeFixture.cs" /><Compile Include="../Testing/PlatformFactAttributes.cs" Link="TestSupport/PlatformFactAttributes.cs" /></ItemGroup>
+  <ItemGroup><Compile Include="../Testing/PortableGitPoisonedPathTests.cs" Link="TestSupport/PortableGitPoisonedPathTests.cs" /></ItemGroup>
+</Project>

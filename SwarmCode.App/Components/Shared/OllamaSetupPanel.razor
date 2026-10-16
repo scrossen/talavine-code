@@ -1,0 +1,233 @@
+@using SwarmCore.LlmRouting.LocalRuntime
+@using SwarmCore.LlmRouting.Configuration
+@inject AppState App
+@inject OllamaSetupClient Ollama
+@inject OpenModelDiscovery Discovery
+@implements IDisposable
+
+<section class="sc-card ollama-setup" aria-labelledby="ollama-title">
+    <h2 id="ollama-title" class="sc-card__title">Ollama · local models and refusal fallbacks</h2>
+    <p class="sc-card__copy">Run open models on your computer. When another model declines a request, Talavine Code can continue with an installed abliterated or uncensored model.</p>
+    <p class="sc-muted">Abliteration is a model modification intended to reduce refusals. “Uncensored” is a publisher's description and may use a different method. Neither label proves that answers are unbiased, accurate, or good at coding.</p>
+    @if (_status is not null) { <p class="sc-muted" role="status" aria-live="polite">@_status</p> }
+    @if (_busy) { <button class="sc-btn" @onclick="Cancel">Cancel current operation</button> }
+
+    <h3>1. Connect Ollama</h3>
+    <div class="sc-row">
+        <div class="sc-field"><label class="sc-field__label" for="ollama-address">Ollama address</label><input id="ollama-address" class="sc-input sc-input--mono" @bind="_endpoint" disabled="@_busy" /></div>
+        <button class="sc-btn" @onclick="GetOllamaAsync">Get Ollama</button>
+        <button class="sc-btn" @onclick="() => CheckAsync(true)">Start Ollama</button>
+        <button class="sc-btn" @onclick="() => CheckAsync(false)">Check connection</button>
+    </div>
+    <p class="sc-muted">Install from the official download page, complete its setup, then Start Ollama. On Mac, move Ollama to Applications. Models need disk space and additional memory while running; smaller downloads usually fit more computers.</p>
+    @if (_inventory is not null)
+    {
+        <p class="sc-muted">Connected to Ollama @_inventory.Version · @_inventory.Models.Count installed models · @_checkedAt?.ToLocalTime().ToString("g")</p>
+        @if (_document.Sources.FirstOrDefault(s => s.Kind == "Ollama") is { Enabled: false })
+        { <p class="sc-muted">This source is disabled. Choose Connect to Talavine Code to enable it.</p> }
+        <button class="sc-btn" @onclick="ConnectAsync">Connect to Talavine Code</button>
+    }
+
+    <h3>2. Find and download models</h3>
+    <div class="sc-row">
+        <div class="sc-field"><label class="sc-field__label" for="ollama-search">Search Hugging Face</label><input id="ollama-search" class="sc-input" placeholder="abliterated, uncensored, or a model family" @bind="_query" disabled="@_busy" /></div>
+        <select class="sc-select" aria-label="Discovery sort" @bind="_newest" disabled="@_busy"><option value="false">Most downloaded</option><option value="true">Recently updated</option></select>
+        <button class="sc-btn" @onclick="SearchAsync">Discover new models</button>
+    </div>
+    <p class="sc-muted">Live publisher listings, sorted by downloads or update date. These are candidates to try, not quality rankings. Review the model card and license, choose a size that fits, then test it here. Your model response history helps with later hand-offs.</p>
+    <details>
+        <summary>Two starting points</summary>
+        @foreach (var example in OpenModelDiscovery.Examples)
+        {
+            <div class="ollama-model">
+                <code>@example.Model</code>
+                <button class="sc-btn sc-btn--sm" aria-label="@($"Check files and size for {example.Model}")" @onclick="() => InspectAsync(Repository(example.Model), example.Model)">Check files and size</button>
+            </div>
+        }
+    </details>
+    @if (_candidates.Count > 0)
+    {
+        <div class="ollama-list" aria-label="Discovered open models">
+            @foreach (var candidate in _candidates)
+            {
+                <div class="ollama-model" @key="candidate.Repository">
+                    <strong>@candidate.Repository</strong>
+                    <span class="sc-muted">@candidate.Classification.Behavior · @candidate.Downloads.ToString("N0") downloads · updated @candidate.UpdatedAt?.ToString("yyyy-MM-dd") · @(candidate.License ?? "license not listed") @(candidate.Gated ? "· access approval required" : "")</span>
+                    <div class="sc-row"><button class="sc-btn sc-btn--sm" aria-label="@($"Choose download for {candidate.Repository}")" @onclick="() => InspectAsync(candidate.Repository)">Choose download</button><button class="sc-btn sc-btn--sm" aria-label="@($"Model card for {candidate.Repository}")" @onclick="() => OpenUrlAsync(candidate.Url)">Model card</button></div>
+                </div>
+            }
+        </div>
+    }
+    @if (_details is not null)
+    {
+        <div class="ollama-model">
+            <strong>@_details.Candidate.Repository</strong>
+            <select class="sc-select" aria-label="Model download size" @bind="_model" disabled="@_busy">
+                @foreach (var download in _details.Downloads)
+                { <option value="@download.Model">@download.Quantization · @Size(download.SizeBytes)</option> }
+            </select>
+            <p class="sc-muted">Download size is disk storage, not total working memory. Leave room for context and other apps.</p>
+        </div>
+    }
+    <div class="sc-row">
+        <div class="sc-field"><label class="sc-field__label" for="ollama-model">Exact model ID or ollama pull/run command</label><input id="ollama-model" class="sc-input sc-input--mono" @bind="_model" disabled="@_busy" /></div>
+        <button class="sc-btn sc-btn--primary" @onclick="PullAsync">Download model</button>
+    </div>
+    @if (_progress?.Percent is { } percent)
+    { <progress max="100" value="@percent" aria-label="Model download progress"></progress><span class="sc-muted">@percent.ToString("F0")% · @Size(_progress.Completed) / @Size(_progress.Total)</span> }
+
+    <h3>3. Choose fallback models</h3>
+    <label class="sc-toggle"><input type="checkbox" checked="@_document.PreferLocalModelsOnDecline" @onchange="TogglePreferenceAsync" disabled="@_busy" /><span class="sc-toggle__track" aria-hidden="true"></span><span>Prefer installed abliterated and uncensored models after a refusal</span></label>
+    <p class="sc-muted">Uses your hand-off setting and attempt limit below. An explicitly selected model stays fixed. Only installed models advertising tool support join automatic local routes. A test checks an actual tool call; it does not run tools or measure coding quality.</p>
+    @if (_inventory is not null)
+    {
+        <div class="sc-field"><label class="sc-field__label" for="ollama-installed-filter">Filter installed models</label><input id="ollama-installed-filter" class="sc-input" @bind="_filter" @bind:event="oninput" /></div>
+        <div class="ollama-list" aria-label="Installed Ollama models">
+            @foreach (var model in _inventory.Models.Where(m => m.Name.Contains(_filter, StringComparison.OrdinalIgnoreCase)).OrderByDescending(m => Classification(m).ReducedRefusal).ThenBy(m => m.Name))
+            {
+                var classification = Classification(model);
+                <div class="ollama-model" @key="model.Name">
+                    <strong>@model.Name</strong><span class="sc-muted">@Size(model.SizeBytes) · @(!model.IsOnDevice ? "On-device execution unconfirmed; not a local fallback" : model.SupportsTools ? "Tool support advertised" : "Tool support unconfirmed; not an automatic fallback")</span>
+                    <span class="sc-muted">@classification.Evidence</span>
+                    <div class="sc-row">
+                        <select class="sc-select" aria-label="@($"Classification for {model.Name}")" value="@classification.Behavior" @onchange="e => ChangeClassificationAsync(model, e)" disabled="@_busy">
+                            @foreach (var kind in Enum.GetValues<LocalModelBehavior>()) { <option value="@kind">@kind</option> }
+                        </select>
+                        <label class="sc-toggle"><input type="checkbox" aria-label="@($"Prefer {model.Name} after refusals")" checked="@UseOnDecline(model)" @onchange="e => ChangeFallbackAsync(model, e)" disabled="@_busy" /><span class="sc-toggle__track" aria-hidden="true"></span><span>Prefer after refusals</span></label>
+                        <button class="sc-btn sc-btn--sm" aria-label="@($"Test model {model.Name}")" @onclick="() => TestAsync(model)">Test model</button>
+                    </div>
+                    @if (_tests.TryGetValue(model.Name, out var result)) { <p class="sc-muted">@result.Message (@result.Elapsed.TotalSeconds.ToString("F1") s)</p> }
+                </div>
+            }
+        </div>
+    }
+    <button class="sc-btn sc-btn--sm" @onclick="ReloadAsync">Reload model preferences</button>
+</section>
+
+@code {
+    [Parameter] public EventCallback OnSaved { get; set; }
+    private ModelSourcesStore Store => new(App.Paths);
+    private ModelSourcesDocument _document = new(0, []);
+    private string _endpoint = OllamaSetupClient.DefaultEndpoint, _query = "", _model = "", _filter = "";
+    private string? _inventoryEndpoint, _status;
+    private bool _busy, _newest, _disposed;
+    private DateTimeOffset? _checkedAt;
+    private OllamaInventory? _inventory;
+    private OllamaPullProgress? _progress;
+    private IReadOnlyList<OpenModelCandidate> _candidates = [];
+    private OpenModelDetails? _details;
+    private readonly Dictionary<string, OllamaModelTest> _tests = new();
+    private CancellationTokenSource? _operation;
+
+    protected override async Task OnInitializedAsync() { await ReloadAsync(); await CheckAsync(false); }
+    private async Task RunAsync(string status, Func<CancellationToken, Task> work)
+    {
+        if (_busy || _disposed) return;
+        _busy = true; _status = status; _progress = null;
+        using var operation = new CancellationTokenSource(); _operation = operation;
+        try { await work(operation.Token); }
+        catch (OperationCanceledException) { _status = operation.IsCancellationRequested ? "Operation cancelled. Partial downloads can be resumed; refresh to check the server's state." : "The server took too long. Check that Ollama is running and has enough memory, then retry."; }
+        catch (HttpRequestException) { _status = "Could not reach the server. Check the address, start or update Ollama, and try again."; }
+        catch (InvalidOperationException ex) { _status = ex.Message; }
+        catch (Exception) { _status = "The operation could not finish. Existing settings were preserved. Check the connection and reload before retrying."; }
+        finally { _busy = false; _operation = null; }
+    }
+    private Task ReloadAsync() => RunAsync("Reading preferences…", async ct =>
+    {
+        _document = await Task.Run(Store.Read, ct);
+        _endpoint = _document.Sources.FirstOrDefault(s => s.Kind == "Ollama")?.Endpoint ?? OllamaSetupClient.DefaultEndpoint;
+        _status = "Preferences loaded.";
+    });
+    private Task CheckAsync(bool start) => RunAsync(start ? "Starting Ollama…" : "Checking Ollama…", async ct =>
+    {
+        var endpoint = OllamaSetupClient.ValidateEndpoint(_endpoint);
+        _inventory = null; _tests.Clear();
+        _inventory = await Task.Run(() => start ? OllamaDesktopSetup.StartAsync(Ollama, endpoint, ct) : Ollama.InventoryAsync(endpoint, ct), ct);
+        _inventoryEndpoint = endpoint; _checkedAt = DateTimeOffset.Now;
+        _status = "Ollama is ready. Download a model, or test one already installed.";
+    });
+    private Task SearchAsync() => RunAsync("Searching current Hugging Face listings…", async ct =>
+    {
+        var query = _query; var newest = _newest;
+        _candidates = await Task.Run(() => Discovery.SearchAsync(query, newest, ct), ct);
+        _status = $"Found {_candidates.Count} candidates. Publisher labels are shown separately from test results.";
+    });
+    private Task InspectAsync(string repository, string? preferred = null) => RunAsync("Checking published download files and sizes…", async ct =>
+    {
+        _details = await Task.Run(() => Discovery.InspectAsync(repository, ct), ct);
+        _model = _details.Downloads.FirstOrDefault(d => d.Model == preferred)?.Model ?? _details.Downloads.FirstOrDefault()?.Model ?? "";
+        _status = _details.Downloads.Count == 0 ? "No supported GGUF quantization files found. Review the model card." : "Choose a download size, then Download model.";
+    });
+    private Task PullAsync() => RunAsync("Downloading model…", async ct =>
+    {
+        var endpoint = OllamaSetupClient.ValidateEndpoint(_endpoint); var model = OllamaSetupClient.NormalizeModel(_model);
+        await Task.Run(async () =>
+        {
+            var nextUpdate = DateTime.UtcNow;
+            await foreach (var progress in Ollama.PullAsync(endpoint, model, ct))
+            {
+                if (DateTime.UtcNow < nextUpdate && progress.Status != "success") continue;
+                nextUpdate = DateTime.UtcNow.AddMilliseconds(250);
+                if (!_disposed) await InvokeAsync(() => { _progress = progress; _status = progress.Status; StateHasChanged(); });
+            }
+        }, ct);
+        _inventory = await Task.Run(() => Ollama.InventoryAsync(endpoint, ct), ct); _inventoryEndpoint = endpoint; _checkedAt = DateTimeOffset.Now;
+        var installed = _inventory.Models.FirstOrDefault(m => m.Name.Equals(model, StringComparison.OrdinalIgnoreCase) || m.Name.Equals(model + ":latest", StringComparison.OrdinalIgnoreCase));
+        var evidence = installed is not null && _details?.Downloads.Any(d => d.Model == model) == true
+            ? new LocalModelPreference(endpoint, installed.Name, installed.Digest, _details.Candidate.Classification.Behavior, PublisherUrl: _details.Candidate.Url) : null;
+        await ConnectCoreAsync(ct, evidence);
+        _status = "Download verified in Ollama. Talavine Code can now offer its model route if tool support is advertised. Test the model below.";
+    });
+    private Task ConnectAsync() => RunAsync("Connecting Ollama to Talavine Code…", async ct => { await ConnectCoreAsync(ct); _status = "Ollama connected. Installed tool-capable models are available in the session picker and hand-offs."; });
+    private async Task ConnectCoreAsync(CancellationToken ct, LocalModelPreference? evidence = null)
+    {
+        if (App.AnyTurnRunning) throw new InvalidOperationException("The download can stay installed. Finish the running request, then Connect to Talavine Code.");
+        var endpoint = OllamaSetupClient.ValidateEndpoint(_endpoint);
+        var inventory = await Task.Run(() => Ollama.InventoryAsync(endpoint, ct), ct);
+        var model = inventory.Models.FirstOrDefault(m => m.SupportsTools && m.IsOnDevice)?.Name
+            ?? throw new InvalidOperationException("Ollama is connected but no installed model advertises tool support. Download a compatible model or update Ollama.");
+        var previous = _document.Sources.FirstOrDefault(s => s.Kind == "Ollama");
+        var source = (previous ?? new ConfiguredModelSource { Name = "ollama", Kind = "Ollama", RequiresApiKey = false }) with
+        { Endpoint = endpoint, Model = previous is not null && inventory.Models.Any(m => m.Name == previous.Model && m.SupportsTools && m.IsOnDevice) ? previous.Model : model, Enabled = true };
+        var preferences = _document.LocalModels;
+        if (evidence is not null && !preferences.Any(p => p.Endpoint == evidence.Endpoint && p.Model == evidence.Model && p.Digest == evidence.Digest)) preferences = preferences.Append(evidence).ToArray();
+        await SaveAsync(_document with { Sources = _document.Sources.Where(s => s.Kind != "Ollama").Append(source).ToArray(), LocalModels = preferences }, ct);
+        _inventory = inventory; _inventoryEndpoint = endpoint;
+    }
+    private Task TogglePreferenceAsync(ChangeEventArgs e) => RunAsync("Saving fallback preference…", async ct =>
+    { await SaveAsync(_document with { PreferLocalModelsOnDecline = e.Value is true }, ct); _status = "Fallback preference saved."; });
+    private Task ChangeClassificationAsync(OllamaInstalledModel model, ChangeEventArgs e) => SaveModelAsync(model,
+        Enum.TryParse<LocalModelBehavior>(e.Value?.ToString(), out var kind) ? kind : LocalModelBehavior.Unknown, UseOnDecline(model));
+    private Task ChangeFallbackAsync(OllamaInstalledModel model, ChangeEventArgs e) => SaveModelAsync(model, Classification(model).Behavior, e.Value is true);
+    private Task SaveModelAsync(OllamaInstalledModel model, LocalModelBehavior kind, bool use) => RunAsync("Saving this model's classification…", async ct =>
+    {
+        var endpoint = _inventoryEndpoint ?? throw new InvalidOperationException("Check the connection first.");
+        var fresh = await Task.Run(() => Ollama.InventoryAsync(endpoint, ct), ct);
+        if (!fresh.Models.Any(m => m.Name == model.Name && m.Digest == model.Digest)) throw new InvalidOperationException("This model changed or was removed. Check the connection again before saving.");
+        var preference = new LocalModelPreference(endpoint, model.Name, model.Digest, kind, use);
+        await SaveAsync(_document with { LocalModels = _document.LocalModels.Where(p => !(LocalModelBehaviors.EndpointKey(p.Endpoint) == LocalModelBehaviors.EndpointKey(endpoint) && p.Model == model.Name)).Append(preference).ToArray() }, ct);
+        _status = "Saved for this installed version. A replacement model will be classified again.";
+    });
+    private async Task SaveAsync(ModelSourcesDocument draft, CancellationToken ct)
+    {
+        if (App.AnyTurnRunning) throw new InvalidOperationException("Finish the running request before changing model routing.");
+        await Task.Run(() => Store.SaveAsync(draft, ct), ct);
+        _document = await Task.Run(Store.Read, ct);
+        if (App.Workspace is not null && !await App.ReloadWorkspaceAsync()) throw new InvalidOperationException("Saved, but the workspace could not reload. Reopen the repository to apply it.");
+        await OnSaved.InvokeAsync();
+    }
+    private Task TestAsync(OllamaInstalledModel model) => RunAsync("Testing a real tool call; loading a large model can take a few minutes…", async ct =>
+    {
+        var endpoint = _inventoryEndpoint ?? throw new InvalidOperationException("Check the connection first.");
+        _tests[model.Name] = await Task.Run(() => Ollama.TestAsync(endpoint, model.Name, ct), ct);
+        _status = _tests[model.Name].Message;
+    });
+    private LocalModelClassification Classification(OllamaInstalledModel model) => LocalModelBehaviors.Classify(_inventoryEndpoint ?? _endpoint, model, _document.LocalModels);
+    private bool UseOnDecline(OllamaInstalledModel model) => LocalModelBehaviors.Preference(_inventoryEndpoint ?? _endpoint, model, _document.LocalModels)?.UseOnDecline ?? Classification(model).ReducedRefusal;
+    private static string Repository(string model) => model["hf.co/".Length..].Split(':')[0];
+    private static string Size(long bytes) => bytes > 0 ? $"{bytes / 1_000_000_000d:F1} GB" : "Size not reported";
+    private Task GetOllamaAsync() => OpenUrlAsync("https://ollama.com/download");
+    private async Task OpenUrlAsync(string url) { try { await Microsoft.Maui.ApplicationModel.Launcher.Default.OpenAsync(url); } catch { _status = "Could not open the browser. Visit " + url; } }
+    private void Cancel() => _operation?.Cancel();
+    public void Dispose() { _disposed = true; _operation?.Cancel(); }
+}

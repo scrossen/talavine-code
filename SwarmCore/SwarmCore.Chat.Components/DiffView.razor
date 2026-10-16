@@ -1,0 +1,51 @@
+@if (_lines.Count > 0)
+{
+    <div class="chat-diff" role="figure" aria-label="Diff">
+        @foreach (var line in _lines.Take(MaxLines))
+        {
+            <div class="chat-diff__row @ClassFor(line.Kind)"><span class="chat-diff__sign" aria-hidden="true">@SignFor(line.Kind)</span><span class="chat-diff__text">@line.Text</span></div>
+        }
+        @if (_lines.Count > MaxLines)
+        {
+            <div class="chat-diff__more">… @(_lines.Count - MaxLines) more lines</div>
+        }
+    </div>
+}
+
+@code {
+    [Parameter] public string? Diff { get; set; }
+    [Parameter] public int MaxLines { get; set; } = 400;
+
+    private string? _parsedFrom;
+    private IReadOnlyList<DiffLine> _lines = Array.Empty<DiffLine>();
+
+    protected override void OnParametersSet()
+    {
+        if (!string.Equals(Diff, _parsedFrom, StringComparison.Ordinal))
+        {
+            _parsedFrom = Diff;
+            _lines = UnifiedDiff.Parse(Diff);
+        }
+
+        if (MaxLines < 1)
+        {
+            MaxLines = 1;
+        }
+    }
+
+    private static string ClassFor(DiffLineKind kind) => kind switch
+    {
+        DiffLineKind.Add => "chat-diff__add",
+        DiffLineKind.Delete => "chat-diff__del",
+        DiffLineKind.Hunk => "chat-diff__hunk",
+        DiffLineKind.Meta => "chat-diff__meta",
+        _ => "chat-diff__ctx",
+    };
+
+    private static string SignFor(DiffLineKind kind) => kind switch
+    {
+        DiffLineKind.Add => "+",
+        DiffLineKind.Delete => "-",
+        _ => " ",
+    };
+}

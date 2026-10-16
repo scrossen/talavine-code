@@ -1,0 +1,95 @@
+@using Microsoft.AspNetCore.Components.Web
+@using Microsoft.JSInterop
+@inject IJSRuntime JS
+@implements IAsyncDisposable
+<div class="model-picker @(OpenAbove ? "model-picker--above" : "")" @ref="_element">
+    <input class="sc-input" role="combobox" aria-label="Model" aria-autocomplete="list"
+           aria-expanded="@_open" aria-controls="@_listId" aria-activedescendant="@(_active >= 0 ? _listId + "-" + _active : null)"
+           placeholder="Choose or search models…" value="@(_typing ? _query : Value)" disabled="@Disabled"
+           @onfocus="Open" @onclick="Open" @oninput="Search" @onkeydown="KeyAsync" @onkeydown:stopPropagation @onblur="CloseLaterAsync" />
+    <button type="button" class="model-picker__arrow" aria-label="Show models" aria-expanded="@_open"
+            disabled="@Disabled" @onmousedown:preventDefault @onclick="Toggle">▾</button>
+    @if (_open && !Disabled)
+    {
+        var matches = Matches;
+        <div class="model-picker__menu" id="@_listId" role="listbox" aria-label="Models" @onmousedown:preventDefault>
+            @for (var i = 0; i < matches.Count; i++)
+            {
+                var index = i;
+                var model = matches[i];
+                <button type="button" tabindex="-1" role="option" id="@(_listId + "-" + index)"
+                        aria-selected="@(model == Value)" class="model-picker__option @(index == _active ? "is-active" : "")"
+                        @onclick="() => SelectAsync(model)">@model</button>
+            }
+            @if (matches.Count == 0) { <div class="model-picker__empty">No matching models</div> }
+            @if (!string.IsNullOrWhiteSpace(_query) && !Models.Contains(_query.Trim(), StringComparer.Ordinal))
+            {
+                <button type="button" tabindex="-1" class="model-picker__option" @onclick="() => SelectAsync(_query.Trim())">Use model ID: @_query.Trim()</button>
+            }
+        </div>
+    }
+</div>
+
+@code {
+    [Parameter] public string Value { get; set; } = "";
+    [Parameter] public EventCallback<string> ValueChanged { get; set; }
+    [Parameter] public IEnumerable<string> Models { get; set; } = [];
+    [Parameter] public bool Disabled { get; set; }
+    [Parameter] public bool OpenAbove { get; set; }
+    private ElementReference _element;
+    private IJSObjectReference? _module;
+    private readonly string _listId = "models-" + Guid.NewGuid().ToString("N");
+    private bool _open;
+    private string _query = "";
+    private bool _typing;
+    private int _blurVersion;
+    private int _active = -1;
+    private IReadOnlyList<string> Matches => Models.Prepend(Value).Where(m => !string.IsNullOrWhiteSpace(m))
+        .Distinct(StringComparer.Ordinal).Where(m => !_typing || m.Contains(_query.Trim(), StringComparison.OrdinalIgnoreCase)).ToArray();
+    protected override async Task OnAfterRenderAsync(bool firstRender)
+    {
+        if (firstRender)
+        {
+            _module = await JS.InvokeAsync<IJSObjectReference>("import", "./js/modelPicker.js");
+            await _module.InvokeVoidAsync("initialize", _element);
+        }
+        if (_open && _active >= 0 && _module is not null)
+            await _module.InvokeVoidAsync("scrollActive", _element);
+    }
+    public async ValueTask DisposeAsync()
+    {
+        if (_module is not null)
+            try { await _module.DisposeAsync(); } catch (JSDisconnectedException) { }
+    }
+    private void Open() { _blurVersion++; if (!_open) { _typing = false; _query = ""; _active = -1; _open = true; } }
+    private void Toggle() { if (_open) Close(); else Open(); }
+    private void Close() { _blurVersion++; _open = false; _typing = false; _active = -1; }
+    private async Task CloseLaterAsync()
+    {
+        var version = ++_blurVersion;
+        await Task.Delay(200);
+        if (version == _blurVersion) { Close(); await InvokeAsync(StateHasChanged); }
+    }
+    private void Search(ChangeEventArgs e) { _query = e.Value?.ToString() ?? ""; _typing = true; _open = true; _active = Matches.Count > 0 ? 0 : -1; }
+    private async Task KeyAsync(KeyboardEventArgs e)
+    {
+        if (e.Key == "Escape") { Close(); return; }
+        if (e.Key is "ArrowDown" or "ArrowUp")
+        {
+            Open();
+            _active = Math.Clamp(_active + (e.Key == "ArrowDown" ? 1 : -1), 0, Math.Max(0, Matches.Count - 1));
+        }
+        if (e.Key is "Enter" or "Tab" && _open)
+        {
+            var matches = Matches;
+            if (_active >= 0 && _active < matches.Count) await SelectAsync(matches[_active]);
+            else if (matches.Count == 1) await SelectAsync(matches[0]);
+        }
+    }
+    private async Task SelectAsync(string model)
+    {
+        if (Disabled || string.IsNullOrWhiteSpace(model)) return;
+        Close();
+        await ValueChanged.InvokeAsync(model);
+    }
+}

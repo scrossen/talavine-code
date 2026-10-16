@@ -1,0 +1,240 @@
+@using Microsoft.Extensions.DependencyInjection
+@using Microsoft.JSInterop
+@using SwarmCode.App.Services
+@using SwarmCode.Hosting
+@using SwarmCore.Coding.Review
+@using SwarmCore.Coding.Routing
+@inject AppState App
+@inject IJSRuntime JS
+@implements IDisposable
+
+@* /compare: pick two or more models and a judge. The models answer, review each other and may concede; the judge decides only a disagreement. *@
+<dialog class="sc-dialog compare-dialog" aria-labelledby="compare-title" @ref="_dialog" @onclose="OnClosed">
+    <div class="sc-row sc-row--between">
+        <h2 id="compare-title" class="sc-card__title">Compare models</h2>
+        <button type="button" class="sc-btn" @onclick="CloseAsync">Cancel</button>
+    </div>
+    <p class="sc-muted">Each model answers on its own, then they review each other's answers and may concede to a better one. The judge decides only if they still disagree.</p>
+
+    <label class="sc-field__label" for="compare-prompt">Prompt</label>
+    <textarea id="compare-prompt" class="sc-input compare-dialog__prompt" rows="4" placeholder="What should every model answer?"
+              @bind="_question" @bind:event="oninput"></textarea>
+
+    <div class="compare-dialog__cols">
+        <section aria-labelledby="compare-models-label">
+            <div class="sc-row sc-row--between">
+                <span id="compare-models-label" class="sc-field__label">Models to compare</span>
+                <span class="sc-muted" role="status">@_selected.Count selected</span>
+            </div>
+            <input type="search" class="sc-input" aria-label="Search all models" placeholder="Search all models…"
+                   @bind="_search" @bind:event="oninput" />
+            <div class="compare-dialog__list" role="group" aria-labelledby="compare-models-label">
+                @if (string.IsNullOrWhiteSpace(_search))
+                {
+                    var recent = RecentOptions();
+                    if (recent.Count > 0)
+                    {
+                        <div class="compare-dialog__group">Recent</div>
+                        @foreach (var pick in recent) { @Option(pick) }
+                    }
+                    var lanes = LaneOptions().Where(p => !recent.Any(r => ModelCompareChoices.Same(r, p))).ToList();
+                    if (lanes.Count > 0)
+                    {
+                        <div class="compare-dialog__group">Your lanes</div>
+                        @foreach (var pick in lanes) { @Option(pick) }
+                    }
+                    var other = _selected.Where(s => !recent.Concat(lanes).Any(p => ModelCompareChoices.Same(p, s))).ToList();
+                    if (other.Count > 0)
+                    {
+                        <div class="compare-dialog__group">Also selected</div>
+                        @foreach (var pick in other) { @Option(pick) }
+                    }
+                    <p class="sc-muted compare-dialog__hint">
+                        @(_loading > 0 ? "Loading model lists…" : $"Search to add any of {CatalogCount} models your lanes offer.")
+                    </p>
+                }
+                else
+                {
+                    var matches = SearchOptions();
+                    @foreach (var pick in matches) { @Option(pick) }
+                    @if (matches.Count == 0) { <p class="sc-muted compare-dialog__hint">No matching models@(_loading > 0 ? " yet; model lists are still loading" : "").</p> }
+                }
+            </div>
+        </section>
+
+        <section>
+            <label class="sc-field__label" for="compare-judge">Judge</label>
+            <select id="compare-judge" class="sc-input" value="@_judgeKey" @onchange="e => _judgeKey = e.Value?.ToString() ?? string.Empty">
+                <option value="">Choose a judge…</option>
+                @{ var shown = new List<ModelPanelPick>(); }
+                @foreach (var (group, picks) in JudgeGroups())
+                {
+                    var fresh = picks.Where(p => !shown.Any(s => ModelCompareChoices.Same(s, p))).ToList();
+                    shown.AddRange(fresh);
+                    if (fresh.Count == 0) continue;
+                    <optgroup label="@group">
+                        @foreach (var pick in fresh)
+                        {
+                            <option value="@pick.ToString()" selected="@(pick.ToString() == _judgeKey)">@pick.Model · @pick.Lane</option>
+                        }
+                    </optgroup>
+                }
+            </select>
+            <p class="sc-muted">The judge only steps in when the models don't agree on their own. It can be one of the compared models or a different one.</p>
+        </section>
+    </div>
+
+    @if (Problem is { } problem) { <p class="sc-muted compare-dialog__problem">@problem</p> }
+    <div class="compare-dialog__actions">
+        <button type="button" class="sc-btn" @onclick="CloseAsync">Cancel</button>
+        <button type="button" class="sc-btn sc-btn--primary" disabled="@(Problem is not null)" @onclick="RunAsync">Compare @_selected.Count models</button>
+    </div>
+</dialog>
+
+@code {
+    /// <summary>Lanes of the open workspace; native CLI lanes are left out (they cannot answer a plain prompt).</summary>
+    [Parameter] public IReadOnlyList<CodingLane> Lanes { get; set; } = [];
+
+    /// <summary>Called with the prompt, the models and the judge when the person starts the comparison.</summary>
+    [Parameter] public EventCallback<ModelCompareStart> OnStart { get; set; }
+
+    private ElementReference _dialog;
+    private string _question = "", _search = "", _judgeKey = "";
+    private readonly List<ModelPanelPick> _selected = [];
+    private readonly Dictionary<string, IReadOnlyList<string>> _catalog = new(StringComparer.OrdinalIgnoreCase);
+    private int _loading, _generation;
+    private bool _disposed;
+    private CancellationTokenSource? _loads;
+
+    private IReadOnlyList<CodingLane> ApiLanes => Lanes.Where(l => !l.IsNative).ToList();
+    private int CatalogCount => _catalog.Values.Sum(m => m.Count);
+
+    private string? Problem
+        => string.IsNullOrWhiteSpace(_question) ? "Write the prompt every model should answer."
+         : _selected.Count < 2 ? "Pick at least two models."
+         : JudgePick is null ? "Choose a judge."
+         : null;
+
+    private ModelPanelPick? JudgePick => ModelPanelPick.Parse(_judgeKey) is { Model: not null } pick ? pick : null;
+
+    /// <summary>Opens the dialog with <paramref name="question"/> and last time's models and judge; model lists load in the background.</summary>
+    public async Task OpenAsync(string question)
+    {
+        var prefs = App.Preferences.Current;
+        var lanes = ApiLanes;
+        _question = question;
+        _search = "";
+        _selected.Clear();
+        _selected.AddRange(ModelCompareChoices.Available(prefs.LastCompareModels, lanes));
+        // First use: start with the first two lanes so the dialog is one click from running.
+        foreach (var lane in lanes)
+        {
+            if (_selected.Count >= 2) break;
+            if (!IsSelected(ModelCompareChoices.Pick(lane))) _selected.Add(ModelCompareChoices.Pick(lane));
+        }
+        var judge = prefs.CompareJudge is { } stored ? ModelCompareChoices.Available([stored], lanes).FirstOrDefault() : null;
+        _judgeKey = judge?.ToString() ?? "";
+        StateHasChanged();
+        await JS.InvokeVoidAsync("swarmcode.openDialog", _dialog);
+        LoadCatalogs(lanes);
+    }
+
+    private Task CloseAsync() => JS.InvokeVoidAsync("swarmcode.closeDialog", _dialog).AsTask();
+
+    private void OnClosed() => _loads?.Cancel();
+
+    private async Task RunAsync()
+    {
+        if (Problem is not null || JudgePick is not { } judge) return;
+        var models = _selected.ToList();
+        App.Preferences.Update(p => ModelCompareChoices.Remember(p, models, judge));
+        await CloseAsync();
+        await OnStart.InvokeAsync(new ModelCompareStart(_question.Trim(), models, judge));
+    }
+
+    /// <summary>Each lane's model list, fetched off the renderer; the list updates as each lane answers.</summary>
+    private void LoadCatalogs(IReadOnlyList<CodingLane> lanes)
+    {
+        _loads?.Cancel();
+        _loads = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+        var token = _loads.Token;
+        var generation = ++_generation;
+        _loading = 0;
+        if (App.Workspace is not { } host) return;
+        foreach (var lane in lanes.Where(l => !_catalog.ContainsKey(l.Name)))
+        {
+            _loading++;
+            _ = Task.Run(async () =>
+            {
+                IReadOnlyList<string> models;
+                try
+                {
+                    using var scope = host.Services.CreateScope();
+                    models = (await scope.ServiceProvider.GetRequiredService<CodingModelCatalog>().GetCatalogAsync(lane, token)).Models;
+                }
+                catch (Exception) { models = []; }
+                await InvokeAsync(() =>
+                {
+                    if (_disposed || generation != _generation) return;
+                    _loading = Math.Max(0, _loading - 1);
+                    if (models.Count > 0) _catalog[lane.Name] = models;
+                    StateHasChanged();
+                });
+            });
+        }
+    }
+
+    private IReadOnlyList<ModelPanelPick> RecentOptions()
+        => ModelCompareChoices.Available(App.Preferences.Current.RecentCompareModels, ApiLanes);
+
+    private IReadOnlyList<ModelPanelPick> LaneOptions() => ApiLanes.Select(l => ModelCompareChoices.Pick(l)).ToList();
+
+    private IReadOnlyList<ModelPanelPick> SearchOptions()
+    {
+        var query = _search.Trim();
+        var all = RecentOptions().Concat(LaneOptions())
+            .Concat(ApiLanes.SelectMany(l => _catalog.GetValueOrDefault(l.Name, []).Select(m => ModelCompareChoices.Pick(l, m))));
+        var matches = new List<ModelPanelPick>();
+        foreach (var pick in all)
+        {
+            if (!(pick.Model ?? "").Contains(query, StringComparison.OrdinalIgnoreCase) && !pick.Lane.Contains(query, StringComparison.OrdinalIgnoreCase)) continue;
+            if (matches.Any(m => ModelCompareChoices.Same(m, pick))) continue;
+            matches.Add(pick);
+            if (matches.Count >= 60) break;
+        }
+        return matches;
+    }
+
+    private IEnumerable<(string Group, IReadOnlyList<ModelPanelPick> Picks)> JudgeGroups()
+    {
+        if (App.Preferences.Current.CompareJudge is { } judge && ModelCompareChoices.Available([judge], ApiLanes) is { Count: > 0 } last)
+            yield return ("Last judge", last);
+        yield return ("Recent", RecentOptions());
+        yield return ("Being compared", _selected.ToList());
+        yield return ("Your lanes", LaneOptions());
+    }
+
+    private bool IsSelected(ModelPanelPick pick) => _selected.Any(s => ModelCompareChoices.Same(s, pick));
+
+    private void Toggle(ModelPanelPick pick)
+    {
+        var existing = _selected.FindIndex(s => ModelCompareChoices.Same(s, pick));
+        if (existing >= 0) _selected.RemoveAt(existing); else _selected.Add(pick);
+    }
+
+    private RenderFragment Option(ModelPanelPick pick) => __builder =>
+    {
+        <label class="compare-dialog__option">
+            <input type="checkbox" checked="@IsSelected(pick)" @onchange="() => Toggle(pick)" />
+            <span class="compare-dialog__model">@pick.Model</span>
+            <span class="sc-muted">@pick.Lane</span>
+        </label>
+    };
+
+    public void Dispose()
+    {
+        _disposed = true;
+        _loads?.Cancel();
+        _loads?.Dispose();
+    }
+}

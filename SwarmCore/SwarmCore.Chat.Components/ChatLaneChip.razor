@@ -1,0 +1,40 @@
+@* The lane (or route) a coding turn runs on. Hosts feed it from their lane events; nothing renders
+   without a lane. *@
+@if (!string.IsNullOrWhiteSpace(Lane))
+{
+    <span class="@RootClass" title="@(Title ?? DefaultTitle)" @attributes="AdditionalAttributes">
+        @if (IsRunning)
+        {
+            <span class="chat-lane-chip__dot" aria-hidden="true"></span>
+        }
+        @if (!string.IsNullOrWhiteSpace(Label))
+        {
+            <span class="chat-lane-chip__label">@Label</span>
+        }
+        <span class="chat-lane-chip__name">@Lane</span>
+        @if (ShowRoute)
+        {
+            <span class="chat-lane-chip__route">@Route</span>
+        }
+    </span>
+}
+
+@code {
+    /// <summary>The lane name (for example "claude" or "scout-1"). Nothing renders when empty.</summary>
+    [Parameter] public string? Lane { get; set; }
+    /// <summary>Optional route detail (provider/model or a native agent's description), shown after the name when it differs.</summary>
+    [Parameter] public string? Route { get; set; }
+    /// <summary>Optional leading label, for example "Lane".</summary>
+    [Parameter] public string? Label { get; set; }
+    /// <summary>Shows a small activity dot while the turn runs.</summary>
+    [Parameter] public bool IsRunning { get; set; }
+    /// <summary>Tooltip; defaults to "Lane" plus the route when one is given.</summary>
+    [Parameter] public string? Title { get; set; }
+    /// <summary>Extra classes on the root (host styling).</summary>
+    [Parameter] public string? Class { get; set; }
+    [Parameter(CaptureUnmatchedValues = true)] public IReadOnlyDictionary<string, object>? AdditionalAttributes { get; set; }
+
+    private bool ShowRoute => !string.IsNullOrWhiteSpace(Route) && !string.Equals(Route, Lane, StringComparison.Ordinal);
+    private string DefaultTitle => ShowRoute ? $"Lane: {Lane} ({Route})" : "Lane";
+    private string RootClass => string.IsNullOrWhiteSpace(Class) ? "chat-lane-chip" : "chat-lane-chip " + Class;
+}

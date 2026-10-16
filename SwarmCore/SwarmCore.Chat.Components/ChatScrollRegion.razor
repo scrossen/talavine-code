@@ -1,0 +1,89 @@
+@implements IAsyncDisposable
+
+<div class="chat-scroll-host">
+    <div @ref="_element" class="chat-scroll" tabindex="-1">
+        @ChildContent
+    </div>
+    @if (!_following)
+    {
+        <button type="button" class="chat-jump" @onclick="JumpAsync">
+            <span aria-hidden="true">↓</span><span>Jump to latest</span>
+        </button>
+    }
+</div>
+
+@code {
+    [Inject] private IJSRuntime JS { get; set; } = default!;
+
+    [Parameter] public RenderFragment? ChildContent { get; set; }
+    /// <summary>When true, <see cref="ScrollToBottomAsync"/> follows new content while the user is at the bottom.</summary>
+    [Parameter] public bool AutoFollow { get; set; } = true;
+
+    private ElementReference _element;
+    private DotNetObjectReference<ChatScrollRegion>? _self;
+    private bool _following = true;
+    private bool _observing;
+    private bool _disposed;
+
+    /// <summary>
+    /// Scrolls to the newest content when <paramref name="force"/> is set, or when
+    /// <see cref="AutoFollow"/> is on and the user has not scrolled away from the bottom.
+    /// Call after the content has rendered (for example from OnAfterRenderAsync).
+    /// </summary>
+    public async Task ScrollToBottomAsync(bool force = false)
+    {
+        if (_disposed || !(force || (AutoFollow && _following)))
+        {
+            return;
+        }
+
+        if (force && !_following)
+        {
+            _following = true;
+            StateHasChanged();
+        }
+
+        await ChatJs.InvokeVoidAsync(JS, "scrollToBottom", _element, false);
+    }
+
+    protected override async Task OnAfterRenderAsync(bool firstRender)
+    {
+        if (firstRender && !_disposed)
+        {
+            _self = DotNetObjectReference.Create(this);
+            _observing = true;
+            await ChatJs.InvokeVoidAsync(JS, "observeScroll", _element, _self);
+        }
+    }
+
+    [JSInvokable]
+    public Task OnScrollState(bool nearBottom)
+    {
+        if (_disposed || _following == nearBottom)
+        {
+            return Task.CompletedTask;
+        }
+
+        _following = nearBottom;
+        return InvokeAsync(StateHasChanged);
+    }
+
+    private async Task JumpAsync()
+    {
+        _following = true;
+        await ChatJs.InvokeVoidAsync(JS, "scrollToBottom", _element, false);
+    }
+
+    public async ValueTask DisposeAsync()
+    {
+        _disposed = true;
+        if (_observing)
+        {
+            _observing = false;
+            await ChatJs.InvokeVoidAsync(JS, "unobserveScroll", _element);
+        }
+
+        _self?.Dispose();
+        _self = null;
+    }
+}

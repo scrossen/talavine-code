@@ -1,0 +1,147 @@
+@using SwarmCore.Coding.Tools.BackgroundShell
+@implements IDisposable
+
+@if (_shells.Count > 0)
+{
+    <div class="sess-shells" role="region" aria-label="Background shells">
+        <span class="sess-shells__label">Background</span>
+        @foreach (var shell in _shells)
+        {
+            var id = shell.Id;
+            var open = id == _openId;
+            <button type="button" @key="id" class="sess-chip sess-shell-chip @(open ? "sess-shell-chip--open" : "")"
+                    title="@shell.Command" aria-expanded="@(open ? "true" : "false")" @onclick="() => Toggle(id)">
+                @if (shell.IsRunning) { <span class="sess-running__dot" aria-hidden="true"></span> }
+                <span class="sess-shell-chip__name">@shell.Name</span>
+                <span class="sess-shell-chip__state">@StateLabel(shell)</span>
+            </button>
+        }
+    </div>
+    @if (_shells.FirstOrDefault(s => s.Id == _openId) is { } current)
+    {
+        <div class="sess-shell-panel">
+            <div class="sess-shell-panel__head">
+                <strong class="sess-shell-panel__name">@current.Name</strong>
+                <span class="sess-muted" title="@current.WorkingDirectory">@current.Command</span>
+                <span class="sess-shell-panel__actions">
+                    @if (current.IsRunning)
+                    {
+                        <button type="button" class="sess-btn" disabled="@_busy" @onclick="() => StopAsync(current.Id)">Stop</button>
+                    }
+                    else
+                    {
+                        <button type="button" class="sess-btn" disabled="@_busy" @onclick="() => RemoveAsync(current.Id)">Remove</button>
+                    }
+                    <button type="button" class="sess-btn" @onclick="() => Toggle(current.Id)">Close</button>
+                </span>
+            </div>
+            <pre class="sess-shell-panel__output">@(_output.Length == 0 ? "No output yet." : _output)</pre>
+        </div>
+    }
+}
+
+@code {
+    /// <summary>The open workspace's shell manager; null when the host offers no background shells.</summary>
+    [Parameter] public BackgroundShellManager? Manager { get; set; }
+    [Parameter] public string SessionId { get; set; } = "";
+
+    private BackgroundShellManager? _subscribed;
+    private string? _subscribedSession;
+    private IReadOnlyList<BackgroundShellInfo> _shells = [];
+    private string? _openId;
+    private string _output = "";
+    private bool _busy;
+    private int _refreshPending;
+    private bool _disposed;
+
+    protected override void OnParametersSet()
+    {
+        if (ReferenceEquals(_subscribed, Manager) && _subscribedSession == SessionId) return;
+        if (_subscribed is not null) _subscribed.Changed -= OnChanged;
+        _subscribed = Manager;
+        _subscribedSession = SessionId;
+        _openId = null;
+        _output = "";
+        _shells = [];
+        if (Manager is not null)
+        {
+            Manager.Changed += OnChanged;
+            ScheduleRefresh(TimeSpan.Zero);
+        }
+    }
+
+    private static string StateLabel(BackgroundShellInfo shell) => shell.Status switch
+    {
+        BackgroundShellStatus.Running => "running",
+        BackgroundShellStatus.Exited => shell.ExitCode is { } code ? $"exited {code}" : "exited",
+        _ => "stopped",
+    };
+
+    private void OnChanged(BackgroundShellChange change)
+    {
+        if (change.Owner != _subscribedSession) return;
+        // Output only matters to the open panel; chips change on start, exit, stop and removal.
+        if (change.Kind == BackgroundShellChangeKind.Output && change.ShellId != _openId) return;
+        ScheduleRefresh(TimeSpan.FromMilliseconds(200));
+    }
+
+    /// <summary>Coalesces bursts of changes into one snapshot taken off the renderer and one render.</summary>
+    private void ScheduleRefresh(TimeSpan delay)
+    {
+        if (Interlocked.Exchange(ref _refreshPending, 1) == 1) return;
+        _ = Task.Run(async () =>
+        {
+            if (delay > TimeSpan.Zero) await Task.Delay(delay);
+            Interlocked.Exchange(ref _refreshPending, 0);
+            var manager = _subscribed;
+            var session = _subscribedSession;
+            var openId = _openId;
+            if (manager is null || session is null || _disposed) return;
+            IReadOnlyList<BackgroundShellInfo> shells;
+            string output = "";
+            try
+            {
+                shells = manager.List(session);
+                if (openId is not null && shells.Any(s => s.Id == openId)) output = manager.Peek(session, openId);
+            }
+            catch (Exception ex) when (ex is InvalidOperationException or ObjectDisposedException) { shells = []; }
+            if (_disposed) return;
+            await InvokeAsync(() =>
+            {
+                if (_disposed || !ReferenceEquals(manager, _subscribed) || session != _subscribedSession) return;
+                _shells = shells;
+                if (_openId == openId) _output = output;
+                if (_openId is not null && !shells.Any(s => s.Id == _openId)) { _openId = null; _output = ""; }
+                StateHasChanged();
+            });
+        });
+    }
+
+    private void Toggle(string id)
+    {
+        _openId = _openId == id ? null : id;
+        _output = "";
+        ScheduleRefresh(TimeSpan.Zero);
+    }
+
+    private async Task StopAsync(string id) => await RunAsync(manager => manager.Stop(SessionId, id));
+
+    private async Task RemoveAsync(string id) => await RunAsync(manager => manager.Forget(SessionId, id));
+
+    private async Task RunAsync(Action<BackgroundShellManager> action)
+    {
+        if (Manager is not { } manager) return;
+        _busy = true;
+        try { await Task.Run(() => action(manager)); }
+        catch (InvalidOperationException) { /* already gone */ }
+        finally { _busy = false; }
+        ScheduleRefresh(TimeSpan.Zero);
+    }
+
+    public void Dispose()
+    {
+        _disposed = true;
+        if (_subscribed is not null) _subscribed.Changed -= OnChanged;
+        _subscribed = null;
+    }
+}

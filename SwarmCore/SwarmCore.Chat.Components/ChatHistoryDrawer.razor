@@ -1,0 +1,228 @@
+@using SwarmCore.Agent.Runtime
+
+@if (Visible && !Persistent)
+{
+    <div class="chat-history-backdrop" @onclick="OnClose"></div>
+}
+<aside class="chat-history @(Visible ? "chat-history--open" : "") @(Persistent ? "chat-history--persistent" : "")"
+       aria-label="Conversations" aria-hidden="@(Visible ? "false" : "true")" inert="@(!Visible)"
+       @onclick:stopPropagation="true">
+    <div class="chat-history__head">
+        <span class="chat-history__title">@Title</span>
+        <button type="button" class="chat-history__btn" aria-label="Close conversations" title="Close conversations" @onclick="OnClose">
+            <span aria-hidden="true">✕</span>
+        </button>
+    </div>
+    <button type="button" class="chat-history__new" disabled="@Busy" @onclick="OnNewChat">
+        <span aria-hidden="true">+</span><span>New chat</span>
+    </button>
+    @if (Destinations is not null)
+    {
+        <nav class="chat-history__destinations" aria-label="Workspace">@Destinations</nav>
+    }
+    <div class="chat-history__section-head">
+        <span>Conversations</span>
+        <button type="button" class="chat-history__filter" aria-pressed="@(_pinnedOnly ? "true" : "false")" @onclick="() => _pinnedOnly = !_pinnedOnly"
+                title="@(_pinnedOnly ? "Show all conversations" : "Show pinned conversations")">@(_pinnedOnly ? "All chats" : "Pinned")</button>
+    </div>
+    <div class="chat-history__search">
+        <span aria-hidden="true">⌕</span>
+        <input type="search" placeholder="Search all conversations…" aria-label="Search all conversations"
+               data-testid="chat-history-search" value="@Search" @oninput="SearchChangedAsync" maxlength="256" />
+        @if (!string.IsNullOrEmpty(Search))
+        {
+            <button type="button" class="chat-history__search-clear" @onclick='() => OnSearch.InvokeAsync("")' aria-label="Clear search">
+                <span aria-hidden="true">✕</span>
+            </button>
+        }
+    </div>
+    @if (Busy)
+    {
+        <p class="chat-history__hint" role="status">Working in this chat. Stop the response before switching conversations.</p>
+    }
+    <div class="chat-history__list" aria-busy="@(Loading ? "true" : "false")">
+        @if (Loading)
+        {
+            <div class="chat-history__empty" role="status"><span class="chat-spinner" aria-hidden="true"></span> Searching your conversations…</div>
+        }
+        else if (!string.IsNullOrWhiteSpace(Error))
+        {
+            <div class="chat-history__empty" role="alert">@Error <button type="button" class="chat-history__filter" @onclick="OnRetry">Try again</button></div>
+        }
+        else if (Filtered.Count == 0)
+        {
+            <div class="chat-history__empty">
+                @(string.IsNullOrEmpty(Search) ? (_pinnedOnly ? "Pin a conversation to keep it close." : "Your conversations will be saved here.") : "No conversations match. Try a name, phrase, or topic from a message.")
+            </div>
+        }
+        else
+        {
+            @foreach (var group in Grouped)
+            {
+                <div class="chat-history__group-label">@group.Label</div>
+                @foreach (var c in group.Items)
+                {
+                    var captured = c;
+                    var isCurrent = string.Equals(c.Id, CurrentId, StringComparison.Ordinal);
+                    var isRenaming = string.Equals(c.Id, _renamingId, StringComparison.Ordinal);
+                    var subject = string.IsNullOrWhiteSpace(c.Title) ? "Untitled chat" : c.Title;
+                    var preview = SearchResults.FirstOrDefault(result => result.Conversation.Id == c.Id)?.Preview;
+                    <div class="chat-history__item @(isCurrent ? "chat-history__item--active" : "")">
+                        @if (isRenaming)
+                        {
+                            <input class="chat-history__rename-input" aria-label="Conversation name"
+                                   @ref="_renameInput" value="@_renameText"
+                                   @oninput="@(e => _renameText = e.Value?.ToString() ?? "")"
+                                   @onkeydown="HandleRenameKey" @onblur="CommitRenameAsync" />
+                        }
+                        else
+                        {
+                            <button type="button" class="chat-history__select" disabled="@Busy"
+                                    aria-current="@(isCurrent ? "page" : null)"
+                                    @onclick="() => OnSelect.InvokeAsync(captured.Id)">
+                                <span class="chat-history__item-icon @(c.IsPinned ? "chat-history__pin-on" : "")" aria-hidden="true">@(c.IsPinned ? "★" : "○")</span>
+                                <span class="chat-history__item-text">
+                                    <span class="chat-history__item-title" title="@subject">@subject</span>
+                                    @if (!string.IsNullOrWhiteSpace(preview))
+                                    {
+                                        <span class="chat-history__preview">@preview</span>
+                                    }
+                                    <time class="chat-history__item-time" datetime="@c.LastActivityUtc.ToString("O")">@c.LastActivityUtc.ToLocalTime().ToString("MMM d · h:mm tt")</time>
+                                </span>
+                            </button>
+                            <div class="chat-history__item-actions">
+                                <button type="button" class="chat-history__item-btn" title="@(c.IsPinned ? "Unpin" : "Pin")"
+                                        aria-label="@(c.IsPinned ? "Unpin conversation" : "Pin conversation")"
+                                        @onclick="() => OnTogglePin.InvokeAsync(captured.Id)">
+                                    <span class="@(c.IsPinned ? "chat-history__pin-on" : "")" aria-hidden="true">@(c.IsPinned ? "★" : "☆")</span>
+                                </button>
+                                <button type="button" class="chat-history__item-btn" title="Rename" aria-label="Rename conversation"
+                                        @onclick="() => BeginRename(captured)"><span aria-hidden="true">✎</span></button>
+                                <button type="button" class="chat-history__item-btn chat-history__item-btn--danger" title="Delete" aria-label="Delete conversation" disabled="@Busy"
+                                        @onclick="() => OnDelete.InvokeAsync(captured.Id)"><span aria-hidden="true">🗑</span></button>
+                            </div>
+                        }
+                    </div>
+                }
+            }
+            @if (HasMore)
+            {
+                <p class="chat-history__hint">@(string.IsNullOrEmpty(Search)
+                    ? "Showing the most recent conversations. Search to find older ones."
+                    : "Showing the closest matches. Add words to narrow the search.")</p>
+            }
+        }
+    </div>
+</aside>
+
+@code {
+    [Parameter] public bool Visible { get; set; }
+    [Parameter] public bool Persistent { get; set; }
+    [Parameter] public IReadOnlyList<ChatConversationInfo> Conversations { get; set; } = Array.Empty<ChatConversationInfo>();
+    /// <summary>The host capped <see cref="Conversations"/> at its page size, so older conversations or matches exist.</summary>
+    [Parameter] public bool HasMore { get; set; }
+    [Parameter] public string? CurrentId { get; set; }
+    [Parameter] public bool Loading { get; set; }
+    [Parameter] public EventCallback OnNewChat { get; set; }
+    [Parameter] public EventCallback OnClose { get; set; }
+    [Parameter] public EventCallback<string> OnSelect { get; set; }
+    [Parameter] public EventCallback<string> OnDelete { get; set; }
+    [Parameter] public EventCallback<string> OnTogglePin { get; set; }
+    [Parameter] public EventCallback<ConversationRenameRequest> OnRename { get; set; }
+
+    [Parameter] public bool Busy { get; set; }
+    [Parameter] public string Search { get; set; } = "";
+    [Parameter] public string? Error { get; set; }
+    [Parameter] public IReadOnlyList<ChatConversationSearchResult> SearchResults { get; set; } = Array.Empty<ChatConversationSearchResult>();
+    [Parameter] public EventCallback<string> OnSearch { get; set; }
+    [Parameter] public EventCallback OnRetry { get; set; }
+
+    /// <summary>Heading shown at the top of the drawer.</summary>
+    [Parameter] public string Title { get; set; } = "Conversations";
+    /// <summary>Optional host-supplied links (agents, memory, saved results...) rendered under "New chat".</summary>
+    [Parameter] public RenderFragment? Destinations { get; set; }
+
+    private bool _pinnedOnly;
+    private Task SearchChangedAsync(ChangeEventArgs args) => OnSearch.InvokeAsync(args.Value?.ToString() ?? "");
+    private string? _renamingId;
+    private string _renameText = "";
+    private ElementReference _renameInput;
+    private bool _focusRename;
+
+    private IReadOnlyList<ChatConversationInfo> Filtered => _pinnedOnly
+        ? Conversations.Where(conversation => conversation.IsPinned).ToList()
+        : Conversations;
+
+    private sealed record Group(string Label, List<ChatConversationInfo> Items);
+
+    private IReadOnlyList<Group> Grouped
+    {
+        get
+        {
+            var now = DateTime.Now;
+            var today = now.Date;
+            var pinned = new Group("Pinned", new());
+            var buckets = new[]
+            {
+                new Group("Today", new()),
+                new Group("Yesterday", new()),
+                new Group("Previous 7 days", new()),
+                new Group("Previous 30 days", new()),
+                new Group("Older", new())
+            };
+
+            foreach (var c in Filtered)
+            {
+                if (c.IsPinned) { pinned.Items.Add(c); continue; }
+                var d = c.LastActivityUtc.ToLocalTime().Date;
+                var days = (today - d).Days;
+                var bucket = days <= 0 ? buckets[0]
+                    : days == 1 ? buckets[1]
+                    : days <= 7 ? buckets[2]
+                    : days <= 30 ? buckets[3]
+                    : buckets[4];
+                bucket.Items.Add(c);
+            }
+
+            var result = new List<Group>();
+            if (pinned.Items.Count > 0) result.Add(pinned);
+            result.AddRange(buckets.Where(b => b.Items.Count > 0));
+            return result;
+        }
+    }
+
+    private void BeginRename(ChatConversationInfo c)
+    {
+        _renamingId = c.Id;
+        _renameText = c.Title ?? "";
+        _focusRename = true;
+    }
+
+    protected override async Task OnAfterRenderAsync(bool firstRender)
+    {
+        if (_focusRename)
+        {
+            _focusRename = false;
+            try { await _renameInput.FocusAsync(); } catch { /* best effort */ }
+        }
+    }
+
+    private async Task HandleRenameKey(KeyboardEventArgs e)
+    {
+        if (e.Key == "Enter") await CommitRenameAsync();
+        else if (e.Key == "Escape") CancelRename();
+    }
+
+    private async Task CommitRenameAsync()
+    {
+        var id = _renamingId;
+        var text = _renameText.Trim();
+        _renamingId = null;
+        if (!string.IsNullOrEmpty(id) && !string.IsNullOrEmpty(text))
+        {
+            await OnRename.InvokeAsync(new ConversationRenameRequest(id, text));
+        }
+    }
+
+    private void CancelRename() => _renamingId = null;
+}

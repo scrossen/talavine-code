@@ -1,0 +1,382 @@
+@page "/session/{SessionId}"
+@implements IDisposable
+@inject AppState App
+@inject NavigationManager Nav
+
+<PageTitle>@(_session?.Title ?? "Session") - Talavine Code</PageTitle>
+
+@if (App.Workspace is null && !App.IsOpeningWorkspace)
+{
+    <div class="sess-empty-page">
+        <div class="sess-card">
+            <h2>Open a repository</h2>
+            <p>Sessions belong to a repository. Open one to continue.</p>
+            <a class="sess-btn sess-btn--primary" href="/">Open a repository</a>
+        </div>
+    </div>
+}
+else if (_loading || App.IsOpeningWorkspace)
+{
+    <div class="sess-empty-page"><Spinner /></div>
+}
+else if (_session is null)
+{
+    <div class="sess-empty-page">
+        <div class="sess-card">
+            <h2>Session not found</h2>
+            <p>This session no longer exists.</p>
+            <button type="button" class="sess-btn sess-btn--primary" @onclick="NewSessionAsync">New session</button>
+        </div>
+    </div>
+}
+else if (_runner is null)
+{
+    <div class="sess-empty-page">
+        <div class="sess-card">
+            <h2>Different repository</h2>
+            <p>This session belongs to <strong>@AppNavigation.FolderName(_session.RepositoryRoot)</strong>, but <strong>@AppNavigation.FolderName(App.RepositoryRoot ?? "")</strong> is open.</p>
+            <p class="sess-muted">@_session.RepositoryRoot</p>
+            @if (_openError is not null) { <p class="sess-error">@_openError</p> }
+            <button type="button" class="sess-btn sess-btn--primary" @onclick="OpenSessionRepositoryAsync">Open @AppNavigation.FolderName(_session.RepositoryRoot)</button>
+        </div>
+    </div>
+}
+else
+{
+    <div class="sess-page @(_showChanges ? "sess-page--changes" : "")" tabindex="-1" @onkeydown="OnPageKeyDown">
+        <div class="sess-main">
+            <SessionHeader Title="@_session.Title"
+                           RepositoryName="@AppNavigation.FolderName(_session.RepositoryRoot)"
+                           RepositoryPath="@_session.RepositoryRoot"
+                           Lane="@(_runner.ActiveLane ?? _lane)"
+                           Model="@(_runner.ActiveModel ?? _model)"
+                           ArtifactsOpen="_showArtifacts"
+                           OnToggleArtifacts="ToggleArtifacts"
+                           IsRunning="_runner.IsRunning"
+                           ChangesOpen="_showChanges"
+                           ChangeCount="_changeCount"
+                           OnRename="RenameAsync"
+                           OnToggleChanges="ToggleChanges"
+                           OnNewSession="NewSessionAsync"
+                           ParentId="@_session.ParentSessionId"
+                           ParentTitle="@_parentTitle"
+                           CreatedUtc="_session.CreatedUtc"
+                           LastActivityUtc="_session.LastActivityUtc"
+                           ActiveAgents="@App.Agents.Children(_session.Id).Count(a => App.Agents.IsActive(a.Id))" />
+            <BackgroundShellStrip Manager="@(App.Workspace?.Services.GetService<SwarmCore.Coding.Tools.BackgroundShell.BackgroundShellManager>())" SessionId="@_session.Id" />
+            <div class="sess-memory-bar">
+                <label class="sc-toggle" title="A temporary session neither uses nor adds to what Talavine Code remembers about you.">
+                    <input type="checkbox" checked="@_session.Temporary" @onchange="ToggleTemporaryAsync" aria-label="Temporary session (memory off)" />
+                    <span class="sc-toggle__track"></span><span>Temporary (memory off)</span>
+                </label>
+                @if (!App.Preferences.Current.PersonalMemoryEnabled || !App.MemoryOptions.Enabled)
+                {
+                    <span class="sc-muted">Memory is off. <a href="/settings/memory">Settings &gt; Memory</a></span>
+                }
+            </div>
+
+            <RepoHooksPrompt Workspace="App.Workspace" />
+            <RepoSettingsPrompt Workspace="App.Workspace" />
+            <div class="sess-body">
+                <ChatScrollRegion @ref="_scroll" AutoFollow="true">
+                    @{
+                        var entries = _runner.Entries;
+                    }
+                    @if (entries.Count == 0 && _notes.Count == 0)
+                    {
+                        <div class="sess-welcome">
+                            <div class="sess-card">
+                                <h2>What should I build?</h2>
+                                <p>Describe a change, a bug, or a question about this repository.</p>
+                                <div class="sess-examples">
+                                    @foreach (var example in Examples)
+                                    {
+                                        var text = example;
+                                        <button type="button" class="sess-example" @onclick="() => UseExampleAsync(text)">@text</button>
+                                    }
+                                </div>
+                            </div>
+                        </div>
+                    }
+                    @{
+                        _recoveryNoticeId = FindRecoveryNotice(entries, _runner.IsRunning);
+                        DateTime? shownDay = null;
+                    }
+                    @foreach (var entry in entries)
+                    {
+                        var day = entry.AtUtc.ToLocalTime().Date;
+                        if (shownDay != day)
+                        {
+                            shownDay = day;
+                            <div class="sess-day" role="separator" aria-label="@AppNavigation.DayLabel(day)"><span class="sess-day__label" title="@day.ToString("D")">@AppNavigation.DayLabel(day)</span></div>
+                        }
+                        @RenderEntry(entry)
+                    }
+                    @if (_runner.IsRunning && ShowWorkingIndicator(entries))
+                    {
+                        <div class="sess-working"><span class="sc-spinner"></span> Working…</div>
+                    }
+                    @foreach (var note in _notes)
+                    {
+                        <ChatNotice @key="note.Id" Kind="@note.Kind" Text="@note.Text" Details="@note.Details" />
+                    }
+                </ChatScrollRegion>
+            </div>
+
+            <div class="sess-footer">
+                @if (_runner.JobState != "Idle")
+                {
+                    <div class="sess-job-status" role="status">
+                        <span class="sess-job-status__label">
+                            @if (_runner.IsRunning) { <span class="sc-spinner" aria-hidden="true"></span> }
+                            @JobStateLabel(_runner.JobState)
+                        </span>
+                        @if (_runner.ActiveLane is { } activeLane) { <span class="sess-muted">@activeLane</span> }
+                        <span class="sess-muted">@_runner.CompletedToolCalls tools · @ToolCallSummary.FormatElapsed(_runner.Elapsed)</span>
+                        <details class="sess-job-details">
+                            <summary>Run details</summary>
+                            <div class="sess-job-details__body">
+                                @if (_runner.Phase is { } phase) { <span>Phase: @phase</span> }
+                                <span>@(_runner.ReportedTokens is { } tokens ? $"{tokens:N0} reported tokens" : "Token usage unavailable")</span>
+                                @if (_runner.ReportedCostUsd is { } cost) { <span>$@cost.ToString("0.0000") reported cost</span> }
+                            </div>
+                        </details>
+                        @if (_runner.Acceptance is { } acceptance) { <span>@AcceptanceLabel(acceptance.Status)</span> }
+                        @if (_runner.HasInterruptedWork)
+                        {
+                            <button type="button" class="sess-btn" @onclick="ContinueInterruptedWork">Continue interrupted work</button>
+                        }
+                        @if (!_runner.IsRunning && _runner.QueuePaused && _runner.QueuedMessages.Count > 0)
+                        {
+                            <span class="sess-muted">· @_runner.QueuedMessages.Count queued, paused</span>
+                            <button type="button" class="sess-btn" @onclick="ResumeQueueAsync">Run queued follow-ups</button>
+                        }
+                    </div>
+                }
+                <PlanChecklist Plan="_runner.Plan" AwaitingApproval="_runner.PlanAwaitingApproval" OnApprove="ApprovePlanAsync" />
+                <QueuedMessages Items="_runner.QueuedMessages" IsRunning="_runner.IsRunning" OnRemove="RemoveQueued" OnEdit="EditQueuedAsync" OnSteer="SteerQueuedAsync" />
+                <AttachmentIntake @key="SessionId" SessionId="@SessionId" @bind-Files="_attachments" BusyChanged="value => _attachmentsBusy = value" OnOpen="OpenArtifact">
+                <ChatComposer @ref="_composer"
+                              HasAttachments="@(_attachments.Count > 0)"
+                              Disabled="_attachmentsBusy"
+                              Value="@_draft"
+                              ValueChanged="OnDraftChanged"
+                              Placeholder="@(_runner.IsRunning ? (_sendMode == "steer" ? "Correct the current task…" : "Queue a follow-up…") : "Ask Talavine Code to work on this repository")"
+                              IsRunning="_runner.IsRunning"
+                              ShowSendWhileRunning="true"
+                              SendLabel="@(_runner.IsRunning ? (_sendMode == "steer" ? "Steer now" : "Queue") : "Send")"
+                              OnSend="OnSendAsync"
+                              OnStop="StopAsync"
+                              SlashCommands="SlashCommands">
+                    <Toolbar>
+                        <SwarmCore.Chat.Components.DictateButton TargetSelector=".chat-composer__input" Class="sess-dictate" />
+                        <label class="sess-lane-label" for="session-lane">Next message</label>
+                        <select id="session-lane" class="sess-lane-select" aria-label="Provider for next message" value="@_lane" @onchange="OnLaneChanged">
+                            @foreach (var lane in CodingLaneSelections.ForPicker(Lanes, _lane))
+                            {
+                                <option value="@lane.Name" selected="@(lane.Name == _lane)">@lane.SelectionLabel</option>
+                            }
+                        </select>
+                        <ModelPicker OpenAbove="true" @key="_lane" Value="@_model" ValueChanged="SaveModelAsync" Models="ModelChoices" Disabled="_modelsLoading" />
+                        <ReasoningPicker Model="@_model" ModelChanged="SaveModelAsync" Lane="@Lanes.FirstOrDefault(l => l.Name == _lane)" Workspace="@App.Workspace" Disabled="_modelsLoading" />
+                        <button type="button" class="sess-btn" disabled="@_modelsLoading" @onclick="RefreshModelsAsync" aria-label="Refresh models">Refresh models</button>
+                        @if (_session?.Selection?.UserSelected == true)
+                        {
+                            <span class="sess-muted" title="Messages start with your choice. If it refuses, handoff follows your settings. Use /auto to let Talavine Code choose the starting model.">Starts with your choice</span>
+                        }
+                        @if (_modelSource is not null) { <span class="sess-muted">@_modelSource</span> }
+                        @if (_modelsLoading) { <span class="sess-muted" role="status">Loading models…</span> }
+                        @if (_modelError is not null) { <span class="sess-muted" title="@_modelError">Model list unavailable; custom IDs still work.</span> }
+                        @if (_runner.IsRunning)
+                        {
+                            <select class="sess-lane-select" aria-label="Follow-up delivery" @bind="_sendMode">
+                                <option value="queue">Queue after current work</option>
+                                <option value="steer">Interrupt and steer now</option>
+                            </select>
+                        }
+                        <button type="button" class="sess-btn @(_runner.PlanMode ? "sess-btn--active" : "")" aria-pressed="@(_runner.PlanMode ? "true" : "false")"
+                                title="@(_runner.PlanMode ? "Plan first is on: the agent investigates read-only and proposes a plan before changing anything." : "Ask the agent to investigate read-only and propose a plan before changing anything.")"
+                                @onclick="TogglePlanMode">Plan first</button>
+                                                @{ var permissionMode = App.Preferences.Current.Mode; }
+                        <button type="button" class="sess-approval @(permissionMode == CodingPermissionMode.Auto ? "" : "sess-approval--on")" @onclick="CyclePermissionMode"
+                                title="@(Settings.ModeNote(permissionMode)) Click to change; allow and deny rules are in Settings.">
+                            @(permissionMode switch { CodingPermissionMode.AskRisky => "Ask risky", CodingPermissionMode.Ask => "Ask", _ => "Auto" })
+                        </button>
+                    </Toolbar>
+                    <Hint>@(_runner.IsRunning && _sendMode == "steer" ? "Steer now stops the current turn, then resumes with your correction and saved tool results." : "Enter to send · Shift+Enter newline · Esc to stop · /help for commands")</Hint>
+                </ChatComposer>
+                </AttachmentIntake>
+            </div>
+        </div>
+
+        <ModelCompareDialog @ref="_compare" Lanes="Lanes" OnStart="RunComparisonAsync" />
+
+        @if (_showChanges)
+        {
+            <ChangesPanel Source="ChangesSource" RefreshToken="_refreshToken" Class="sess-changes" ButtonClass="sess-btn"
+                          OnClose="ToggleChanges" OnCountChanged="OnChangeCount">
+                <FileActions Context="file">
+                    <button type="button" class="sess-btn" @onclick="() => OpenArtifact(file.Path)">Open file in artifacts</button>
+                    <OpenInEditorButton Targets="@(new[] { new SwarmCore.Coding.Ide.EditorTarget(file.Path) })" RepositoryRoot="@_session.RepositoryRoot" />
+                </FileActions>
+            </ChangesPanel>
+        }
+        @if (_showArtifacts)
+        {
+            <ArtifactPanel @key="_session.RepositoryRoot" RepositoryRoot="@_session.RepositoryRoot" FilePath="@_artifactPath" OnClose="ToggleArtifacts" />
+        }
+    </div>
+}
+
+@code {
+    private static string JobStateLabel(string state) => state switch
+    {
+        "Completed" => "Answer ready",
+        "Interrupted" => "Interrupted — inspect saved work before continuing",
+        "Incomplete" => "Work incomplete",
+        "Failed" => "Needs attention",
+        _ => state,
+    };
+    private static string AcceptanceLabel(CodingAcceptanceStatus status) => status switch
+    {
+        CodingAcceptanceStatus.Passed => "· Acceptance checks passed",
+        CodingAcceptanceStatus.Failed => "· Acceptance checks failed",
+        _ => "· Completion unverified",
+    };
+    private RenderFragment RenderEntry(SwarmCode.Hosting.TranscriptEntry entry) => __builder =>
+    {
+        switch (entry)
+        {
+            case UserEntry user when user.IsContinuation:
+                var lines = user.Text.Split('\n');
+                var expanded = _expanded.Contains(user.Id);
+                var shown = expanded || lines.Length <= 1 ? user.Text : lines[0].Trim();
+                <ChatMessageBubble @key="user.Id" Role="user" Markdown="@shown" IsContinuation="true" Meta="@UserMeta(user)" title="@AppNavigation.FullTime(user.AtUtc)">
+                    @if (lines.Length > 1)
+                    {
+                        <button type="button" class="sess-more" @onclick="() => ToggleExpanded(user.Id)">@(expanded ? "show less" : "show more")</button>
+                    }
+                </ChatMessageBubble>
+                break;
+            case UserEntry user:
+                <ChatMessageBubble @key="user.Id" Role="user" Markdown="@user.Text" Meta="@UserMeta(user)" title="@AppNavigation.FullTime(user.AtUtc)">
+                    @foreach (var file in user.Attachments)
+                    {
+                        <button type="button" class="sess-file-link" @onclick="() => OpenArtifact(file.LocalPath)">@file.FileName</button>
+                    }
+                </ChatMessageBubble>
+                break;
+            case AssistantEntry assistant:
+                var reasoning = assistant.Reasoning;
+                if (App.Preferences.Current.ShowReasoning && reasoning.Length > 0)
+                {
+                    <ReasoningBlock @key="@(assistant.Id + "-r")" Text="@reasoning" IsActive="@(assistant.IsStreaming && assistant.Text.Length == 0)" InitiallyExpanded="false" />
+                }
+                if (assistant.Text.Length > 0 || assistant.IsStreaming)
+                {
+                    <ChatMessageBubble @key="assistant.Id" Role="assistant" Markdown="@assistant.Text" IsStreaming="assistant.IsStreaming" Meta="@AssistantMeta(assistant)" title="@AppNavigation.FullTime(assistant.AtUtc)" />
+                }
+                break;
+            case ToolCallEntry tool:
+                <div class="sess-tool-entry" @key="tool.Id">
+                <ToolCallCard @key="tool.Id"
+                              ToolName="@tool.ToolName"
+                              InputJson="@tool.InputJson"
+                              Result="@tool.Result"
+                              State="@MapState(tool.State)"
+                              AutoExpandErrors="false"
+                              Elapsed="tool.Elapsed"
+                              ProgressStatus="@StepStatus(tool)"
+                              ProgressFraction="StepFraction(tool)"
+                              StartedAt="StepStarted(tool)"
+                              CancelRequested="StepCancelRequested(tool)"
+                              OnCancel="() => CancelStep(tool)">
+                    <HeaderActions><OpenInEditorButton Targets="EditorTargets(tool)" RepositoryRoot="@_session?.RepositoryRoot" /></HeaderActions>
+                </ToolCallCard>
+                @foreach (var path in SwarmCore.Coding.Files.CodingFilePreviews.References(tool.InputJson))
+                {
+                    <button type="button" class="sess-file-link" title="@path" @onclick="() => OpenArtifact(path)">Open @System.IO.Path.GetFileName(path)</button>
+                }
+                </div>
+                break;
+            case NoticeEntry notice when notice.Id == _recoveryNoticeId:
+                var presentation = ChatNoticePresentation.Create(notice.Text, notice.Details);
+                <ChatNotice @key="notice.Id" Kind="recovery" Title="@RecoveryTitle(notice)" Actions="RecoveryActions(notice)">
+                    @presentation.Summary
+                    @if (!string.IsNullOrWhiteSpace(presentation.Details))
+                    {
+                        <details class="chat-notice__details">
+                            <summary>Details</summary>
+                            <pre>@presentation.Details</pre>
+                        </details>
+                    }
+                </ChatNotice>
+                break;
+            case NoticeEntry notice:
+                <ChatNotice @key="notice.Id" Kind="@NoticeKindName(notice.Kind)" Text="@notice.Text" Details="@notice.Details" />
+                break;
+            case TurnChangesEntry changes:
+                <div class="sess-turn-changes" @key="changes.Id">
+                    <span class="sess-muted">@FilesChangedLabel(changes)</span>
+                    @if (changes.Undone)
+                    {
+                        <span class="sess-muted">· undone</span>
+                    }
+                    else if (_undoPrompt?.EntryId != changes.Id)
+                    {
+                        <button type="button" class="sess-btn" disabled="@(_runner?.IsRunning == true || _undoBusy)" title="Restore the files this turn changed" @onclick="() => PrepareUndoAsync(changes)">Undo</button>
+                    }
+                </div>
+                @if (_undoPrompt is { } prompt && prompt.EntryId == changes.Id)
+                {
+                    <div class="sess-undo" role="dialog" aria-label="Undo this turn's file changes">
+                        <p>@prompt.Preview.Summary</p>
+                        <ul class="sess-undo__files">
+                            @foreach (var file in prompt.Preview.Changes.Where(f => !prompt.Preview.AlreadyRestored.Contains(f.Path)).Take(UndoListLimit))
+                            {
+                                var conflict = prompt.Preview.Conflicts.Contains(file.Path);
+                                <li class="@(conflict ? "sess-undo__conflict" : "")">@UndoVerb(file) @file.Path@(conflict ? " (changed since this turn)" : "")</li>
+                            }
+                        </ul>
+                        @if (prompt.Preview.Changes.Count - prompt.Preview.AlreadyRestored.Count > UndoListLimit)
+                        {
+                            <p class="sess-muted">and @(prompt.Preview.Changes.Count - prompt.Preview.AlreadyRestored.Count - UndoListLimit) more</p>
+                        }
+                        <div class="sess-undo__actions">
+                            @if (prompt.Preview.Conflicts.Count == 0)
+                            {
+                                <button type="button" class="sess-btn sess-btn--primary" disabled="@_undoBusy" @onclick="() => RunUndoAsync(changes, SwarmCore.Coding.Checkpoints.TurnUndoConflictMode.Refuse)">Undo @Files(prompt.Preview.Changes.Count - prompt.Preview.AlreadyRestored.Count)</button>
+                            }
+                            else
+                            {
+                                <button type="button" class="sess-btn" disabled="@_undoBusy" @onclick="() => RunUndoAsync(changes, SwarmCore.Coding.Checkpoints.TurnUndoConflictMode.Skip)">Skip changed files</button>
+                                <button type="button" class="sess-btn sess-btn--danger" disabled="@_undoBusy" @onclick="() => RunUndoAsync(changes, SwarmCore.Coding.Checkpoints.TurnUndoConflictMode.Force)">Undo anyway</button>
+                            }
+                            <button type="button" class="sess-btn" disabled="@_undoBusy" @onclick="CancelUndo">Cancel</button>
+                        </div>
+                    </div>
+                }
+                break;
+            case PermissionEntry permission:
+                <PermissionCard @key="permission.Id"
+                                Title="@PermissionTitle(permission)"
+                                Target="@PermissionTarget(permission)"
+                                Permissions="permission.Permissions"
+                                Decision="PermissionDecision(permission)"
+                                OnDecide="decision => DecidePermission(permission, decision)"
+                                CanAlwaysAllow="CanGrantForConversation(permission)"
+                                AlwaysAllowLabel="@ConversationGrantLabel"
+                                CanChange="CanChangePermission(permission)"
+                                ChangeRequested="PermissionChangeRequested(permission)"
+                                OnChange="() => ChangePermission(permission)"
+                                ReceiptActions="PermissionReceiptNote(permission)" />
+                break;
+            case QuestionEntry question:
+                <QuestionCard @key="question.Id"
+                              Entry="question"
+                              OnAnswer="answer => AnswerQuestion(question, answer.Text, answer.Selected)"
+                              OnSkip="() => SkipQuestion(question)" />
+                break;
+        }
+    };
+}

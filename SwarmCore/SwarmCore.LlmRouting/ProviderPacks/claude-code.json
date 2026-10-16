@@ -1,0 +1,64 @@
+{
+  "schemaVersion": 1,
+  "packId": "talavine.claude-code",
+  "version": "2026.09.03.1",
+  "providerName": "ClaudeCode",
+  "modelPrefix": "claude-code",
+  "executionDialect": "claude-code-print-v1",
+  "modelDefaults": { "frontier": "claude-code:opus", "balanced": "claude-code:default", "economy": "claude-code:haiku" },
+  "subscriptionCli": {
+    "automaticRoutingEnabled": true,
+    "discoveryPriority": 10,
+    "catalogRefreshDays": 7,
+    "command": "claude",
+    "npmPackage": "@anthropic-ai/claude-code",
+    "environmentVariables": [
+      "SWARMCORE_CLAUDE_CODE_CLI",
+      "TALAVINE_CLAUDE_CLI",
+      "CLAUDE_CODE_CLI",
+      "CLAUDE_CLI"
+    ],
+    "loginArguments": ["auth", "login"],
+    "loginStatusArguments": ["auth", "status"],
+    "authenticatedStatusMarkers": [],
+    "recognizedStatusMarkers": ["not logged in", "signed out"],
+    "defaultModel": "claude-code:default",
+    "builtInModels": [
+      "claude-code:sonnet",
+      "claude-code:opus",
+      "claude-code:haiku",
+      "claude-code:claude-fable-5",
+      "claude-code:default"
+    ],
+    "relativeCapacityWeights": {
+      "claude-code:haiku": 1,
+      "claude-code:sonnet": 3,
+      "claude-code:default": 3,
+      "claude-code:opus": 10,
+      "claude-code:claude-fable-5": 25
+    },
+    "reasoningEfforts": [],
+    "discoveryReasoningEfforts": [],
+    "helpArguments": ["--help"],
+    "modelConfigPaths": [],
+    "inferenceArguments": [
+      "-p",
+      "--input-format", "text",
+      "--output-format", "text",
+      "--max-turns", "{maxTurns}",
+      "--setting-sources", "",
+      "--tools", "",
+      "--strict-mcp-config",
+      "--no-chrome",
+      "--no-session-persistence"
+    ],
+    "modelArgument": "--model",
+    "reasoningConfigFormat": "",
+    "foundationProviders": ["Claude", "Anthropic"],
+    "capabilityAliases": {
+      "default": ["sonnet"],
+      "best": ["sonnet"],
+      "opusplan": ["opus"]
+    }
+  }
+}

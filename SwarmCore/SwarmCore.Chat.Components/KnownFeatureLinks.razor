@@ -1,0 +1,53 @@
+@* Verified "Open in <product>" navigation beside an assistant answer. The host
+   supplies the route catalog and how a route opens; model output only decides
+   which catalog entries are mentioned. *@
+@if (_links.Count > 0)
+{
+    <nav class="chat-feature-links" aria-label="Related @ProductLabel pages">
+        <span class="chat-feature-links__label">Open in @ProductLabel</span>
+        @foreach (var link in _links)
+        {
+            var captured = link;
+            <a class="chat-feature-links__link"
+               href="@captured.Route"
+               target="_blank"
+               rel="noopener noreferrer"
+               title="Open @captured.Label in a new @ProductLabel window"
+               @onclick="@(() => OnOpen.InvokeAsync(captured))"
+               @onclick:preventDefault="@OnOpen.HasDelegate">
+                @if (Icon is not null)
+                {
+                    @Icon
+                }
+                else
+                {
+                    <span class="chat-feature-links__icon" aria-hidden="true">↗</span>
+                }
+                <span>@captured.Label</span>
+            </a>
+        }
+    </nav>
+}
+
+@code {
+    /// <summary>Assistant-authored text scanned for catalog terms.</summary>
+    [Parameter] public string? Text { get; set; }
+    /// <summary>The host's verified route catalog. Routes never come from model output.</summary>
+    [Parameter] public IEnumerable<ChatKnownFeatureLink>? Features { get; set; }
+    /// <summary>Product name used in the label, accessible name, and link titles.</summary>
+    [Parameter, EditorRequired] public string ProductLabel { get; set; } = "";
+    /// <summary>
+    /// Opens a route through the host (for example a native window). When set, the
+    /// browser's default navigation is suppressed; when unset the anchor navigates normally.
+    /// </summary>
+    [Parameter] public EventCallback<ChatKnownFeatureLink> OnOpen { get; set; }
+    /// <summary>Host icon rendered before each label. Defaults to an arrow glyph.</summary>
+    [Parameter] public RenderFragment? Icon { get; set; }
+
+    private IReadOnlyList<ChatKnownFeatureLink> _links = [];
+
+    protected override void OnParametersSet()
+    {
+        _links = ChatKnownFeatureLinks.FindReferenced(Text, Features);
+    }
+}

@@ -1,0 +1,81 @@
+{
+  "schemaVersion": 1,
+  "packId": "talavine.openai",
+  "version": "2026.09.04.1",
+  "providerName": "OpenAI",
+  "modelPrefix": "openai",
+  "executionDialect": "openai-model-transports-v3",
+  "modelDefaults": { "frontier": "gpt-6-astra", "balanced": "gpt-5.6-terra", "economy": "gpt-5.6-luna", "embedding": "text-embedding-3-small" },
+  "directApi": {
+    "baseUrl": "https://api.openai.com/v1",
+    "executionEndpoints": ["https://api.openai.com/v1/chat/completions", "https://api.openai.com/v1/responses"],
+    "defaultModel": "gpt-5.6-terra",
+    "defaultEmbeddingModel": "text-embedding-3-small",
+    "defaultModels": [
+      "gpt-6-astra", "gpt-5.6", "gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna",
+      "gpt-5.5", "gpt-5.4", "gpt-5.4-mini", "gpt-5.4-nano",
+      "gpt-4.1-mini", "gpt-4.1-nano", "gpt-4.1",
+      "gpt-5", "gpt-5-mini", "gpt-5-nano",
+      "gpt-4o-mini", "gpt-4o-mini-2024-07-18", "gpt-4o",
+      "gpt-4o-2024-11-20", "gpt-4o-2024-08-06", "chatgpt-4o-latest",
+      "gpt-4-turbo", "gpt-4-turbo-2024-04-09", "gpt-4", "gpt-3.5-turbo",
+      "o3", "o3-mini", "o1", "o1-mini",
+      "text-embedding-3-small", "text-embedding-3-large", "text-embedding-ada-002"
+    ],
+    "modelFacts": {
+      "gpt-6-astra": {
+        "displayName": "GPT-6 Astra", "supportsChat": true, "supportsVision": true,
+        "maxContextTokens": 1050000, "inputCostPer1K": 0.010, "outputCostPer1K": 0.050,
+        "description": "Responses API. Account access is rollout-dependent; catalog listing and a configured API key do not prove execution or Model Scout admission.",
+        "executionTransport": "responses",
+        "transports": [
+          { "transport": "responses", "text": 2, "streaming": 2, "tools": 2, "images": 2, "structuredOutput": 2 },
+          { "transport": "chat-completions", "text": 2, "streaming": 2, "tools": 1, "images": 2, "structuredOutput": 2 }
+        ]
+      },
+      "gpt-5.6": { "displayName": "GPT-5.6 Sol", "supportsChat": true, "supportsVision": true, "maxContextTokens": 1050000, "inputCostPer1K": 0.004, "outputCostPer1K": 0.020 },
+      "gpt-5.6-sol": { "displayName": "GPT-5.6 Sol", "supportsChat": true, "supportsVision": true, "maxContextTokens": 1050000, "inputCostPer1K": 0.004, "outputCostPer1K": 0.020 },
+      "gpt-5.6-terra": { "displayName": "GPT-5.6 Terra", "supportsChat": true, "supportsVision": true, "maxContextTokens": 1050000, "inputCostPer1K": 0.002, "outputCostPer1K": 0.012 },
+      "gpt-5.6-luna": { "displayName": "GPT-5.6 Luna", "supportsChat": true, "supportsVision": true, "maxContextTokens": 1050000, "inputCostPer1K": 0.00020, "outputCostPer1K": 0.00120 },
+      "gpt-5.5": { "displayName": "GPT-5.5", "supportsChat": true, "supportsVision": true, "maxContextTokens": 1050000, "inputCostPer1K": 0.005, "outputCostPer1K": 0.030 },
+      "gpt-5.4": { "displayName": "GPT-5.4", "supportsChat": true, "supportsVision": true, "maxContextTokens": 1050000, "inputCostPer1K": 0.0025, "outputCostPer1K": 0.015 },
+      "gpt-5.4-mini": { "displayName": "GPT-5.4 Mini", "supportsChat": true, "supportsVision": true, "maxContextTokens": 400000, "inputCostPer1K": 0.00075, "outputCostPer1K": 0.0045 },
+      "gpt-5.4-nano": { "displayName": "GPT-5.4 Nano", "supportsChat": true, "supportsVision": true, "maxContextTokens": 400000, "inputCostPer1K": 0.00020, "outputCostPer1K": 0.00125 },
+      "gpt-5": { "displayName": "GPT-5", "supportsChat": true, "supportsVision": true, "maxContextTokens": 400000, "inputCostPer1K": 0.00125, "outputCostPer1K": 0.01 },
+      "gpt-5-mini": { "displayName": "GPT-5 Mini", "supportsChat": true, "supportsVision": true, "maxContextTokens": 400000, "inputCostPer1K": 0.00025, "outputCostPer1K": 0.002 },
+      "gpt-5-nano": { "displayName": "GPT-5 Nano", "supportsChat": true, "supportsVision": true, "maxContextTokens": 400000, "inputCostPer1K": 0.00005, "outputCostPer1K": 0.0004 },
+      "gpt-4.1": { "displayName": "GPT-4.1", "supportsChat": true, "supportsVision": true, "maxContextTokens": 1000000, "inputCostPer1K": 0.002, "outputCostPer1K": 0.008 },
+      "gpt-4.1-mini": { "displayName": "GPT-4.1 Mini", "supportsChat": true, "supportsVision": true, "maxContextTokens": 1000000, "inputCostPer1K": 0.0004, "outputCostPer1K": 0.0016 },
+      "gpt-4.1-nano": { "displayName": "GPT-4.1 Nano", "supportsChat": true, "supportsVision": true, "maxContextTokens": 1000000, "inputCostPer1K": 0.0001, "outputCostPer1K": 0.0004 },
+      "gpt-4o": { "displayName": "GPT-4o", "supportsChat": true, "supportsVision": true, "maxContextTokens": 128000, "inputCostPer1K": 0.0025, "outputCostPer1K": 0.01 },
+      "gpt-4o-2024-11-20": { "displayName": "GPT-4o (2024-11-20)", "supportsChat": true, "supportsVision": true, "maxContextTokens": 128000, "inputCostPer1K": 0.0025, "outputCostPer1K": 0.01 },
+      "gpt-4o-2024-08-06": { "displayName": "GPT-4o (2024-08-06)", "supportsChat": true, "supportsVision": true, "maxContextTokens": 128000, "inputCostPer1K": 0.0025, "outputCostPer1K": 0.01 },
+      "chatgpt-4o-latest": { "displayName": "ChatGPT-4o (latest)", "supportsChat": true, "supportsVision": true, "maxContextTokens": 128000 },
+      "gpt-4o-mini": { "displayName": "GPT-4o Mini", "supportsChat": true, "supportsVision": true, "maxContextTokens": 128000, "inputCostPer1K": 0.00015, "outputCostPer1K": 0.0006 },
+      "gpt-4o-mini-2024-07-18": { "displayName": "GPT-4o Mini (2024-07-18)", "supportsChat": true, "supportsVision": true, "maxContextTokens": 128000, "inputCostPer1K": 0.00015, "outputCostPer1K": 0.0006 },
+      "gpt-4-turbo": { "displayName": "GPT-4 Turbo", "supportsChat": true, "supportsVision": true, "maxContextTokens": 128000, "inputCostPer1K": 0.01, "outputCostPer1K": 0.03 },
+      "gpt-4-turbo-2024-04-09": { "displayName": "GPT-4 Turbo (2024-04-09)", "supportsChat": true, "supportsVision": true, "maxContextTokens": 128000, "inputCostPer1K": 0.01, "outputCostPer1K": 0.03 },
+      "gpt-4": { "displayName": "GPT-4", "supportsChat": true, "supportsVision": false, "maxContextTokens": 8192, "inputCostPer1K": 0.03, "outputCostPer1K": 0.06 },
+      "gpt-3.5-turbo": { "displayName": "GPT-3.5 Turbo", "supportsChat": true, "supportsVision": false, "maxContextTokens": 16385, "inputCostPer1K": 0.0005, "outputCostPer1K": 0.0015 },
+      "o1": { "displayName": "o1", "supportsChat": true, "supportsVision": true, "maxContextTokens": 200000, "inputCostPer1K": 0.015, "outputCostPer1K": 0.06 },
+      "o1-mini": { "displayName": "o1 Mini", "supportsChat": true, "supportsVision": false, "maxContextTokens": 128000, "inputCostPer1K": 0.003, "outputCostPer1K": 0.012 },
+      "o3": { "displayName": "o3", "supportsChat": true, "supportsVision": true, "maxContextTokens": 200000, "inputCostPer1K": 0.01, "outputCostPer1K": 0.04 },
+      "o3-mini": { "displayName": "o3 Mini", "supportsChat": true, "supportsVision": false, "maxContextTokens": 200000, "inputCostPer1K": 0.0011, "outputCostPer1K": 0.0044 },
+      "text-embedding-3-small": { "displayName": "Embedding 3 Small", "supportsChat": false, "supportsEmbeddings": true, "supportsVision": false, "maxContextTokens": 8191, "inputCostPer1K": 0.00002 },
+      "text-embedding-3-large": { "displayName": "Embedding 3 Large", "supportsChat": false, "supportsEmbeddings": true, "supportsVision": false, "maxContextTokens": 8191, "inputCostPer1K": 0.00013 },
+      "text-embedding-ada-002": { "displayName": "Embedding Ada 002", "supportsChat": false, "supportsEmbeddings": true, "supportsVision": false, "maxContextTokens": 8191, "inputCostPer1K": 0.0001 }
+    },
+    "preferredModels": [
+      "gpt-5.6-luna", "gpt-5.6-terra", "gpt-5.6-sol", "gpt-6-astra",
+      "gpt-5.4-mini", "gpt-5.4-nano", "gpt-4.1-mini", "gpt-4.1-nano",
+      "gpt-4o-mini", "gpt-5.4", "gpt-4.1", "gpt-4o"
+    ],
+    "visionModelPatterns": ["gpt-4o", "gpt-5", "gpt-6", "o1", "o3"],
+    "nonVisionModelPatterns": ["gpt-5-nano", "o1-mini"],
+    "catalogModelPrefixes": ["gpt-", "o1", "o3", "o4", "text-embedding-"],
+    "modelScoutCandidates": ["gpt-6-astra", "gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna", "gpt-5.5", "gpt-5.4-mini", "gpt-5.4-nano"],
+    "modelScoutSuggested": ["gpt-5.6-terra"],
+    "automaticMeteredCandidates": ["gpt-5.6-luna", "gpt-5.6-terra", "gpt-5.4-mini", "gpt-5.4-nano"],
+    "qualificationPriority": 10
+  }
+}

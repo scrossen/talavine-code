@@ -1,0 +1,30 @@
+<!doctype html>
+<html lang="en">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; worker-src 'self' blob:; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; connect-src 'self'; object-src 'none'; base-uri 'none'">
+    <title>PDF preview</title>
+    <style>
+        * { box-sizing: border-box; }
+        body { margin: 0; font: 13px system-ui, sans-serif; background: #e6e6e6; color: #222; }
+        nav { position: sticky; top: 0; display: flex; align-items: center; justify-content: center; flex-wrap: wrap; gap: 8px; padding: 8px; background: #f7f7f7; border-bottom: 1px solid #ccc; z-index: 1; }
+        button, select { font: inherit; padding: 4px 8px; }
+        #pages { white-space: nowrap; }
+        #status { padding: 12px; margin: 0; }
+        #page { padding: 12px; overflow: auto; text-align: center; }
+        canvas { display: block; margin: 0 auto; background: white; box-shadow: 0 1px 5px #0003; }
+    </style>
+</head>
+<body>
+    <nav aria-label="PDF page controls">
+        <button id="previous" disabled aria-label="Previous PDF page">←</button>
+        <span id="pages" aria-live="polite">Loading…</span>
+        <button id="next" disabled aria-label="Next PDF page">→</button>
+        <select id="zoom" aria-label="PDF zoom"><option value="fit">Fit width</option><option value="1">100%</option><option value="1.5">150%</option><option value="2">200%</option></select>
+    </nav>
+    <p id="status" role="status">Loading PDF…</p>
+    <main id="page" aria-label="PDF page"></main>
+    <script type="module" src="js/pdf-preview.js"></script>
+</body>
+</html>

@@ -1,0 +1,98 @@
+<div class="@RootClass" @attributes="AdditionalAttributes">
+    @if (IsUser)
+    {
+        @Attachments
+    }
+    @if (ContinuationLabel is not null)
+    {
+        <div class="chat-msg__agent">@ContinuationLabel</div>
+    }
+    @if (AgentLabel is not null)
+    {
+        <div class="chat-msg__agent">@AgentLabel</div>
+    }
+    @if (Body is not null)
+    {
+        @Body
+    }
+    else if (IsUser)
+    {
+        @if (!string.IsNullOrEmpty(Markdown))
+        {
+            <div class="chat-msg__text">@Markdown</div>
+        }
+    }
+    else
+    {
+        <MarkdownView Markdown="@Markdown" Class="chat-msg__markdown" />
+        @if (IsStreaming)
+        {
+            <span class="chat-msg__caret" aria-hidden="true"></span>
+        }
+    }
+    @if (TrustLine is not null)
+    {
+        <ChatTrustLine>@TrustLine</ChatTrustLine>
+    }
+    @if (!IsUser)
+    {
+        @Attachments
+    }
+    @if (Sources is not null)
+    {
+        <div class="chat-msg__sources" aria-label="@SourcesLabel">@Sources</div>
+    }
+    @if (Artifacts is not null)
+    {
+        <div class="chat-msg__artifacts" aria-label="Artifacts">@Artifacts</div>
+    }
+    @ChildContent
+    @if (Actions is not null)
+    {
+        <div class="chat-msg__actions">@Actions</div>
+    }
+    @if (!string.IsNullOrWhiteSpace(Meta))
+    {
+        <div class="chat-msg__meta">@Meta</div>
+    }
+</div>
+
+@code {
+    /// <summary>"user" or "assistant".</summary>
+    [Parameter] public string Role { get; set; } = "assistant";
+    /// <summary>Message text, used when no <see cref="Body"/> is supplied: markdown for assistant messages, plain text for user messages.</summary>
+    [Parameter] public string? Markdown { get; set; }
+    [Parameter] public bool IsStreaming { get; set; }
+    [Parameter] public string? Meta { get; set; }
+    /// <summary>A follow-up the runner sent on the user's behalf (muted styling).</summary>
+    [Parameter] public bool IsContinuation { get; set; }
+
+    /// <summary>Replaces the default text body, for example a reasoning block followed by host-rendered answer text, or a turn's interleaved parts.</summary>
+    [Parameter] public RenderFragment? Body { get; set; }
+    /// <summary>Images and files: before the text on user messages, after it on assistant messages.</summary>
+    [Parameter] public RenderFragment? Attachments { get; set; }
+    /// <summary>A line above the agent label, such as "Continued automatically".</summary>
+    [Parameter] public RenderFragment? ContinuationLabel { get; set; }
+    /// <summary>Who answered. Rendered even when empty, so a streaming turn keeps its layout.</summary>
+    [Parameter] public RenderFragment? AgentLabel { get; set; }
+    /// <summary>How far to trust the answer, under the body.</summary>
+    [Parameter] public RenderFragment? TrustLine { get; set; }
+    /// <summary>Cited sources for the answer.</summary>
+    [Parameter] public RenderFragment? Sources { get; set; }
+    [Parameter] public string SourcesLabel { get; set; } = "Answer sources";
+    /// <summary>Artifacts the answer produced.</summary>
+    [Parameter] public RenderFragment? Artifacts { get; set; }
+    /// <summary>Per-message actions (copy, regenerate, …), revealed on hover or focus.</summary>
+    [Parameter] public RenderFragment? Actions { get; set; }
+    /// <summary>Anything else, after sources and artifacts (for example a recovery notice or file links).</summary>
+    [Parameter] public RenderFragment? ChildContent { get; set; }
+
+    /// <summary>Extra attributes for the root element, such as <c>data-turn-id</c>.</summary>
+    [Parameter(CaptureUnmatchedValues = true)] public IReadOnlyDictionary<string, object>? AdditionalAttributes { get; set; }
+
+    private bool IsUser => string.Equals(Role, "user", StringComparison.OrdinalIgnoreCase);
+    private string RootClass =>
+        "chat-msg chat-msg--" + (IsUser ? "user" : "assistant")
+        + (IsStreaming ? " chat-msg--streaming" : "")
+        + (IsContinuation ? " chat-msg--continuation" : "");
+}

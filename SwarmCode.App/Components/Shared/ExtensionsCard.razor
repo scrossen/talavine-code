@@ -1,0 +1,131 @@
+@using Microsoft.Extensions.Configuration
+@using Microsoft.Extensions.Options
+@using SwarmCore.Coding
+@using SwarmCore.Coding.Extensions
+@using SwarmCode.Hosting.Extensions
+@inject AppState State
+
+@* Read-only inventory of custom commands, skills and hooks, plus the repository hook approval. *@
+<section class="sc-card">
+    <h2 class="sc-card__title">Extensions</h2>
+    <p class="sc-card__copy">
+        Custom commands, skills and hooks from <span class="sc-mono">.swarmcode/</span> (and <span class="sc-mono">.claude/</span>) in the open repository
+        and from <span class="sc-mono">commands/</span> and <span class="sc-mono">skills/</span> in the data folder. User hooks are set in
+        <span class="sc-mono">settings.json</span> under <span class="sc-mono">Coding:Hooks</span>.
+    </p>
+    @if (_error is not null) { <div class="sc-notice sc-notice--error" role="alert">@_error</div> }
+    @if (_inventory is not { } inv)
+    {
+        <p class="sc-muted">@(_loading ? "Looking for extensions…" : "Nothing found.")</p>
+    }
+    else
+    {
+        <div class="sc-list">
+            @foreach (var command in inv.Commands)
+            {
+                <div class="sc-list__row">
+                    <div class="sc-grow"><div class="sc-field__label">/@command.Name <span class="sc-muted">@command.Description</span></div><div class="sc-mono sc-muted">@command.Path</div></div>
+                    <span class="sc-chip">command</span>
+                </div>
+            }
+            @foreach (var skill in inv.Skills)
+            {
+                <div class="sc-list__row">
+                    <div class="sc-grow"><div class="sc-field__label">@skill.Name <span class="sc-muted">@skill.Description</span></div><div class="sc-mono sc-muted">@skill.SkillFilePath</div></div>
+                    <span class="sc-chip">skill</span>
+                </div>
+            }
+            @foreach (var hook in inv.UserHooks)
+            {
+                <div class="sc-list__row">
+                    <div class="sc-grow"><div class="sc-field__label">@hook.Event@(hook.Matcher is null ? "" : $" [{hook.Matcher}]")</div><div class="sc-mono sc-muted">@hook.Command</div></div>
+                    <span class="sc-chip">user hook</span>
+                </div>
+            }
+            @if (inv.RepositoryHooks is { Exists: true } repo)
+            {
+                @foreach (var hook in repo.Hooks)
+                {
+                    <div class="sc-list__row">
+                        <div class="sc-grow"><div class="sc-field__label">@hook.Event@(hook.Matcher is null ? "" : $" [{hook.Matcher}]")</div><div class="sc-mono sc-muted">@hook.Command</div></div>
+                        <span class="sc-chip @(repo.Approved ? "" : "sc-chip--off")">repository hook</span>
+                    </div>
+                }
+                <div class="sc-list__row">
+                    <div class="sc-grow">
+                        <div class="sc-field__label">Repository hooks</div>
+                        <div class="sc-mono sc-muted">@repo.Path</div>
+                        @if (repo.Problem is not null) { <div class="sc-muted">@repo.Problem</div> }
+                    </div>
+                    <span class="sc-chip @(repo.Approved ? "sc-chip--ok" : "sc-chip--warn")">@(repo.Approved ? "allowed" : repo.Problem is not null ? "off" : "not allowed")</span>
+                    @if (repo.NeedsApproval)
+                    {
+                        <button type="button" class="sc-btn sc-btn--sm" disabled="@_busy" @onclick="() => DecideAsync(repo, allow: true)">Allow</button>
+                    }
+                    else if (repo.Approved)
+                    {
+                        <button type="button" class="sc-btn sc-btn--sm" disabled="@_busy" @onclick="() => DecideAsync(repo, allow: false)">Revoke</button>
+                    }
+                </div>
+            }
+            @if (inv.Commands.Count == 0 && inv.Skills.Count == 0 && inv.UserHooks.Count == 0 && inv.RepositoryHooks is not { Exists: true })
+            {
+                <p class="sc-muted">No custom commands, skills or hooks found.</p>
+            }
+        </div>
+    }
+</section>
+
+@code {
+    private SwarmCodeExtensionInventory? _inventory;
+    private bool _loading = true, _busy;
+    private string? _error;
+
+    protected override Task OnInitializedAsync() => RefreshAsync();
+
+    private ICodingHookApprovalStore Approvals
+        => State.Workspace?.Services.GetService<ICodingHookApprovalStore>() ?? new FileCodingHookApprovalStore(State.Paths);
+
+    private async Task RefreshAsync()
+    {
+        _loading = true;
+        try
+        {
+            var workspace = State.Workspace;
+            var root = workspace?.RepositoryRoot;
+            var paths = State.Paths;
+            var approvals = Approvals;
+            var builtIns = SwarmCode.App.Components.Pages.Session.BuiltInSlashCommands.Select(c => c.Name).ToArray();
+            _inventory = await Task.Run(async () =>
+            {
+                var hooks = workspace?.CodingOptions.Hooks ?? UserHooks(paths);
+                return await SwarmCodeExtensions.InventoryAsync(root, paths, hooks, approvals, builtIns);
+            });
+        }
+        catch (Exception ex) { _error = "Could not read extensions: " + ex.Message; }
+        finally { _loading = false; }
+    }
+
+    private static CodingHooksOptions UserHooks(SwarmCodeDataPaths paths)
+    {
+        var hooks = new CodingHooksOptions();
+        SwarmCodeHostComposer.BuildConfiguration(paths).GetSection(CodingOptions.SectionName + ":Hooks").Bind(hooks);
+        return hooks;
+    }
+
+    private async Task DecideAsync(RepoHookInspection repo, bool allow)
+    {
+        if (State.Workspace?.RepositoryRoot is not { } root) return;
+        _busy = true;
+        _error = null;
+        try
+        {
+            var approvals = Approvals;
+            if (allow && repo.Sha256 is { } sha) await Task.Run(() => approvals.ApproveAsync(root, sha));
+            else if (!allow) await Task.Run(() => approvals.RevokeAsync(root));
+        }
+        catch (Exception ex) { _error = "Could not save the decision: " + ex.Message; }
+        finally { _busy = false; }
+        await RefreshAsync();
+    }
+}

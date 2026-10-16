@@ -1,0 +1,50 @@
+@using SwarmCore.Coding.Planning
+@* The session's task list (plan.update or a native agent's own todo list) as a compact strip above the composer. *@
+@if (Plan.Total > 0 || AwaitingApproval)
+{
+    <div class="sess-plan" role="region" aria-label="Plan">
+        @if (Plan.Total > 0)
+        {
+            <details class="sess-plan__list" open="@_open" @ontoggle="Toggle">
+                <summary>
+                    <span class="sess-plan__count">Plan @Plan.CompletedCount/@Plan.Total</span>
+                    @if (Plan.Current is { } current) { <span class="sess-plan__current" title="@current.Content">@current.Content</span> }
+                </summary>
+                <ol class="sess-plan__items">
+                    @foreach (var item in Plan.Items)
+                    {
+                        <li class="sess-plan__item sess-plan__item--@ConversationPlanRules.Format(item.Status)"
+                            aria-current="@(item.Status == PlanItemStatus.InProgress ? "step" : null)">
+                            <span class="sess-plan__mark" aria-hidden="true">@Mark(item.Status)</span>
+                            <span>@item.Content</span>
+                        </li>
+                    }
+                </ol>
+            </details>
+        }
+        @if (AwaitingApproval)
+        {
+            <div class="sess-plan__approve">
+                <span class="sess-muted">Plan proposed. Approve to implement it, or keep chatting to refine it.</span>
+                <button type="button" class="sess-btn sess-btn--primary" @onclick="() => OnApprove.InvokeAsync()">Approve plan</button>
+            </div>
+        }
+    </div>
+}
+
+@code {
+    [Parameter] public ConversationPlan Plan { get; set; } = ConversationPlan.Empty;
+    [Parameter] public bool AwaitingApproval { get; set; }
+    [Parameter] public EventCallback OnApprove { get; set; }
+
+    private bool _open;
+
+    private void Toggle() => _open = !_open;
+
+    private static string Mark(PlanItemStatus status) => status switch
+    {
+        PlanItemStatus.Completed => "✓",
+        PlanItemStatus.InProgress => "▸",
+        _ => "○",
+    };
+}

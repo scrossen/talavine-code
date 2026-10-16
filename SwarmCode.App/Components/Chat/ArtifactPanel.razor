@@ -1,0 +1,133 @@
+@using SwarmCore.Coding.Files
+@implements IDisposable
+
+<aside class="sess-artifacts" aria-label="Artifacts" @onkeydown:stopPropagation>
+    <div class="sess-artifacts__head">
+        <strong>Artifacts</strong>
+        <button type="button" class="sess-btn" @onclick="PickFileAsync">Open file…</button>
+        <button type="button" class="sess-btn" aria-label="Close artifacts" @onclick="() => OnClose.InvokeAsync()">×</button>
+    </div>
+    <form class="sess-artifacts__path" @onsubmit="OpenPathAsync" @onsubmit:preventDefault>
+        <input class="sc-input" aria-label="Artifact file path" @bind="_path" @bind:event="oninput" placeholder="Repository-relative or full file path" />
+        <button type="submit" class="sess-btn">Open</button>
+    </form>
+    @if (_error is not null) { <p class="sess-artifacts__error" role="alert">@_error</p> }
+    <div class="sess-artifacts__toolbar">
+        <button type="button" class="sess-btn" @onclick="ToggleBrowserAsync">@(_browse ? "Hide files" : "Browse repository")</button>
+        @if (_preview is not null)
+        {
+            <button type="button" class="sess-btn" @onclick="RefreshAsync">Refresh</button>
+            <button type="button" class="sess-btn" @onclick="OpenExternalAsync">Open in default app</button>
+            @if (_preview.Text is not null && _preview.Kind is CodingFilePreviewKind.Markdown or CodingFilePreviewKind.Html)
+            {
+                <button type="button" class="sess-btn" aria-pressed="@_source" @onclick="() => _source = !_source">@(_source ? "Preview" : "Source")</button>
+            }
+        }
+    </div>
+    @if (_browse)
+    {
+        <div class="sess-artifacts__browser">
+            <div class="sess-artifacts__folder">
+                <button type="button" class="sess-btn" @onclick="ParentAsync">↑</button>
+                <span title="@_directory">@System.IO.Path.GetRelativePath(RepositoryRoot, _directory)</span>
+            </div>
+            @foreach (var item in _files)
+            {
+                <button type="button" class="sess-artifacts__file" title="@item.Path" @onclick="() => SelectAsync(item)">
+                    <span aria-hidden="true">@(item.IsDirectory ? "▸" : "▤")</span> @item.Name
+                </button>
+            }
+            @if (_files.Count == 0) { <p class="sess-muted">No files in this folder.</p> }
+        </div>
+    }
+    @if (_loading) { <div class="sess-artifacts__empty" role="status"><Spinner /> Loading file…</div> }
+    else if (_preview is { } preview)
+    {
+        <div class="sess-artifacts__title"><strong>@preview.Name</strong><span class="sess-muted">@preview.Bytes.ToString("N0") bytes</span></div>
+        <div class="sess-artifacts__preview">
+            @if (!_source && preview.Kind == CodingFilePreviewKind.Markdown)
+            {
+                <MarkdownView Markdown="@preview.Text" />
+            }
+            else if (preview.Kind == CodingFilePreviewKind.Image)
+            {
+                <img class="sess-artifacts__image" src="@preview.DataUrl" alt="@preview.Name" />
+            }
+            else if (preview.Kind == CodingFilePreviewKind.Pdf)
+            {
+                <iframe class="sess-artifacts__frame" title="@preview.Name" src="@("pdf-preview.html#" + preview.DataUrl!.Split(',', 2)[1])"></iframe>
+            }
+            else if (!_source && preview.Kind == CodingFilePreviewKind.Html)
+            {
+                <iframe class="sess-artifacts__frame" title="@preview.Name" sandbox="" srcdoc="@SandboxHtml(preview.Text)"></iframe>
+            }
+            else { <pre class="sess-artifacts__text">@preview.Text</pre> }
+        </div>
+    }
+    else { <div class="sess-artifacts__empty">Open a file to view Markdown, code, CSV, HTML, images or PDF alongside your conversation.</div> }
+</aside>
+
+@code {
+    [Parameter, EditorRequired] public string RepositoryRoot { get; set; } = "";
+    [Parameter] public string? FilePath { get; set; }
+    [Parameter] public EventCallback OnClose { get; set; }
+    private CodingFilePreview? _preview;
+    private IReadOnlyList<CodingFileItem> _files = [];
+    private string _path = "", _directory = "";
+    private string? _seenPath, _error;
+    private bool _loading, _source, _browse;
+    private int _generation;
+    private readonly CancellationTokenSource _lifetime = new();
+
+    protected override async Task OnParametersSetAsync()
+    {
+        if (_directory.Length == 0) _directory = RepositoryRoot;
+        if (FilePath is not null && FilePath != _seenPath) { _seenPath = FilePath; _path = FilePath; await OpenPathAsync(); }
+    }
+    private async Task OpenPathAsync()
+    {
+        if (string.IsNullOrWhiteSpace(_path)) { _error = "Enter a file path or choose Open file."; return; }
+        var generation = ++_generation;
+        _loading = true; _error = null; _source = false;
+        try
+        {
+            var fullPath = System.IO.Path.GetFullPath(_path.Trim(), RepositoryRoot);
+            var preview = await Task.Run(() => CodingFilePreviews.ReadAsync(fullPath, _lifetime.Token), _lifetime.Token);
+            if (generation == _generation) { _preview = preview; _path = fullPath; }
+        }
+        catch (OperationCanceledException) { }
+        catch (Exception ex) { if (generation == _generation) { _error = ex.Message; _preview = null; } }
+        finally { if (generation == _generation) _loading = false; }
+    }
+    private Task RefreshAsync() => OpenPathAsync();
+    private async Task PickFileAsync()
+    {
+        try { var file = await FilePicker.Default.PickAsync(new PickOptions { PickerTitle = "Open an artifact" }); if (file is not null) { _path = file.FullPath; await OpenPathAsync(); } }
+        catch (Exception ex) { _error = ex.Message; }
+    }
+    private async Task OpenExternalAsync()
+    {
+        try { if (_preview is not null && !await Launcher.Default.OpenAsync(new OpenFileRequest { File = new ReadOnlyFile(_preview.Path) })) _error = "No app could open this file."; }
+        catch (Exception ex) { _error = ex.Message; }
+    }
+    private async Task ToggleBrowserAsync() { _browse = !_browse; if (_browse) await ListAsync(); }
+    private async Task ListAsync()
+    {
+        try { _files = await Task.Run(() => CodingFilePreviews.ListDirectory(_directory), _lifetime.Token); }
+        catch (OperationCanceledException) { }
+        catch (Exception ex) { _error = ex.Message; }
+    }
+    private async Task SelectAsync(CodingFileItem item)
+    {
+        if (item.IsDirectory) { _directory = item.Path; await ListAsync(); }
+        else { _path = item.Path; _browse = false; await OpenPathAsync(); }
+    }
+    private async Task ParentAsync()
+    {
+        if (string.Equals(System.IO.Path.GetFullPath(_directory).TrimEnd('\\', '/'), System.IO.Path.GetFullPath(RepositoryRoot).TrimEnd('\\', '/'), StringComparison.OrdinalIgnoreCase)) return;
+        _directory = System.IO.Path.GetDirectoryName(_directory) ?? RepositoryRoot;
+        await ListAsync();
+    }
+    private static string SandboxHtml(string? html) => "<meta http-equiv=\"Content-Security-Policy\" content=\"default-src 'none'; img-src data:; style-src 'unsafe-inline';\">" + html;
+    public void Dispose() { ++_generation; _lifetime.Cancel(); _lifetime.Dispose(); }
+}

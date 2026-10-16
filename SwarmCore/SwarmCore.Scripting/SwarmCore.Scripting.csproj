@@ -1,0 +1,18 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <TargetFramework>net11.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <RootNamespace>SwarmCore.Scripting</RootNamespace>
+    <!-- Assembly.TryGetRawMetadata (metadata references without a file on disk) is a byte* API. -->
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+    <Description>Shared, reusable C# scripting for the Swarm family: a Roslyn compile/run host and the single source of truth for dangerous-API safety rules used to gate agent-authored code.</Description>
+    <Authors>Scott Crossen</Authors>
+    <NoWarn>$(NoWarn);CS8618</NoWarn>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Microsoft.CodeAnalysis.CSharp.Scripting" Version="5.9.0" />
+    <PackageReference Include="Microsoft.Extensions.Logging.Abstractions" Version="11.0.0-rc.2.26504.105" />
+  </ItemGroup>
+</Project>

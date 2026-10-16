@@ -1,0 +1,31 @@
+{
+  "schemaVersion": 1,
+  "packId": "talavine.gemini",
+  "version": "2026.08.27.1",
+  "providerName": "Gemini",
+  "modelPrefix": "gemini",
+  "executionDialect": "gemini-generate-content-v1beta",
+  "modelDefaults": { "frontier": "gemini-3.1-pro-preview", "balanced": "gemini-2.5-flash", "economy": "gemini-3.1-flash-lite", "embedding": "gemini-embedding-001" },
+  "directApi": {
+    "baseUrl": "https://generativelanguage.googleapis.com/v1beta",
+    "executionEndpoints": ["https://generativelanguage.googleapis.com/v1beta"],
+    "defaultModel": "gemini-2.5-flash",
+    "defaultEmbeddingModel": "gemini-embedding-001",
+    "defaultModels": [
+      "gemini-3.1-pro-preview", "gemini-2.5-flash", "gemini-3.1-flash-lite",
+      "gemini-embedding-001", "gemini-embedding-2"
+    ],
+    "modelFacts": {
+      "gemini-3.1-pro-preview": { "displayName": "Gemini 3.1 Pro Preview", "supportsChat": true, "supportsVision": true, "maxContextTokens": 1000000, "inputCostPer1K": 0.002, "outputCostPer1K": 0.012 },
+      "gemini-2.5-flash": { "displayName": "Gemini 2.5 Flash", "supportsChat": true, "supportsVision": true, "maxContextTokens": 1000000, "inputCostPer1K": 0.0003, "outputCostPer1K": 0.0025 },
+      "gemini-3.1-flash-lite": { "displayName": "Gemini 3.1 Flash-Lite", "supportsChat": true, "supportsVision": true, "maxContextTokens": 1000000, "inputCostPer1K": 0.00025, "outputCostPer1K": 0.0015 },
+      "gemini-embedding-001": { "displayName": "Gemini Embedding 001", "supportsChat": false, "supportsEmbeddings": true, "supportsVision": false, "maxContextTokens": 2048, "inputCostPer1K": 0.00015 },
+      "gemini-embedding-2": { "displayName": "Gemini Embedding 2", "supportsChat": false, "supportsEmbeddings": true, "supportsVision": true, "maxContextTokens": 8192, "inputCostPer1K": 0.0002 }
+    },
+    "preferredModels": ["gemini-3.1-pro-preview", "gemini-2.5-flash", "gemini-3.1-flash-lite"],
+    "visionModelPatterns": ["gemini-1.5", "gemini-2", "gemini-3", "gemini-flash", "gemini-pro"],
+    "modelScoutCandidates": [],
+    "modelScoutSuggested": [],
+    "qualificationPriority": 30
+  }
+}

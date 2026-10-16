@@ -1,0 +1,51 @@
+<Project>
+  <PropertyGroup>
+    <MauiVersion>11.0.0-rc.2.26505.5</MauiVersion>
+    <!-- Every project targets .NET 11 (RC2). -->
+    <TalavineTargetNetVersion>11.0</TalavineTargetNetVersion>
+    <TalavineMauiCanaryVersion>11.0.0-rc.2.26513.6</TalavineMauiCanaryVersion>
+
+    <!--
+      Mac Catalyst target selection. The development and stable names are kept
+      so release tooling can still select either explicitly; both currently
+      resolve to net11.0-maccatalyst because the shared libraries are net11.0.
+      The signed/notarized .NET 11 Mac release smoke remains to be validated.
+    -->
+    <TalavineMacDevelopmentTargetFramework>net11.0-maccatalyst</TalavineMacDevelopmentTargetFramework>
+    <TalavineMacStableTargetFramework>net11.0-maccatalyst</TalavineMacStableTargetFramework>
+    <!--
+      The workload set's original RC2 MAUI application packages predate MAUI's
+      Xcode 27 adoption and abort at startup with a MauiSearchBar registrar
+      TypeLoadException. Pin the first validated post-adoption RC2 daily while
+      retaining the official workload SDK/tasks installed by the workload set.
+    -->
+    <TalavineMacMauiVersion>11.0.0-rc.2.26513.6</TalavineMacMauiVersion>
+    <TalavineStableMauiVersion>11.0.0-rc.2.26505.5</TalavineStableMauiVersion>
+
+    <!-- Speed up development builds -->
+    <UseXamlPreCompilation>false</UseXamlPreCompilation>
+    <XamlPreCompilationEnabled>false</XamlPreCompilationEnabled>
+    <MauiEnableXamlCTask>false</MauiEnableXamlCTask>
+
+    <!--
+      Keep conventional generated trees excluded even when a caller redirects
+      BaseOutputPath (for example, the isolated VS Code Talavine build). The SDK
+      normally derives these exclusions from BaseOutputPath; without explicit
+      bin/obj entries, changing that property makes stale app output eligible for
+      implicit Razor/static-web-asset discovery and can produce BLAZOR106.
+    -->
+    <DefaultItemExcludesInProjectFolder>$(DefaultItemExcludesInProjectFolder);bin/**;obj/**</DefaultItemExcludesInProjectFolder>
+
+    <!-- Enable building Windows targets on non-Windows platforms -->
+    <EnableWindowsTargeting>true</EnableWindowsTargeting>
+
+    <!--
+      Dual-license defaults. See LICENSING.md at the repo root for the per-project mapping.
+      MIT is the repo-wide default; AGPL-coverred projects override PackageLicenseExpression
+      in their own .csproj.
+    -->
+    <Copyright>Copyright (c) 2026 Scott Crossen</Copyright>
+    <PackageLicenseExpression>MIT</PackageLicenseExpression>
+  </PropertyGroup>
+
+</Project>

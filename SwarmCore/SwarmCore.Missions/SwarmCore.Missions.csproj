@@ -1,0 +1,14 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <TargetFramework>net11.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <Description>Reusable resource-bound mission execution: native containment, browser, MCP and file/HTTP tools.</Description>
+  </PropertyGroup>
+  <ItemGroup>
+    <ProjectReference Include="../SwarmCore.Agent/SwarmCore.Agent.csproj" />
+    <ProjectReference Include="../SwarmCore.Mcp/SwarmCore.Mcp.csproj" />
+    <ProjectReference Include="../SwarmCore.Services/SwarmCore.Services.csproj" />
+    <PackageReference Include="Microsoft.Playwright" Version="1.57.0" />
+  </ItemGroup>
+</Project>

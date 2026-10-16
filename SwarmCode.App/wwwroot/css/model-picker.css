@@ -1,0 +1,11 @@
+.model-picker { position: relative; width: min(24rem, 100%); min-width: 12rem; display: inline-block; vertical-align: middle; }
+.model-picker input { width: 100%; padding-right: 1.8rem; }
+.model-picker__arrow { position: absolute; right: .2rem; top: .15rem; height: calc(100% - .3rem); width: 1.8rem; border: 0; background: transparent; color: var(--sc-muted); cursor: pointer; }
+.model-picker__arrow:hover { color: var(--sc-text); }
+.model-picker__menu { position: absolute; top: calc(100% + .25rem); left: 0; width: max(100%, 22rem); max-width: min(36rem, 85vw); max-height: 18rem; overflow-y: auto; z-index: 100; padding: .25rem; background: var(--sc-panel); border: 1px solid var(--sc-border); border-radius: var(--sc-radius); box-shadow: var(--sc-shadow); }
+.model-picker__option { display: block; width: 100%; border: 0; background: transparent; color: var(--sc-text); padding: .5rem .65rem; text-align: left; overflow-wrap: anywhere; cursor: pointer; }
+.model-picker__option:hover, .model-picker__option.is-active { background: var(--sc-accent-soft); }
+.model-picker__option[aria-selected=true] { font-weight: 600; }
+.model-picker__empty { padding: .6rem; color: var(--sc-muted); }
+
+.model-picker--above .model-picker__menu { top: auto; bottom: calc(100% + .25rem); }

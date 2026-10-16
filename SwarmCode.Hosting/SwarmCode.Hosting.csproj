@@ -1,0 +1,31 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <TargetFramework>net11.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <LangVersion>latest</LangVersion>
+    <RootNamespace>SwarmCode.Hosting</RootNamespace>
+    <PackageLicenseExpression>MIT</PackageLicenseExpression>
+    <Description>Talavine Code host composition shared by the console and the desktop app: data paths, BYOK key provider, LLM routing seams, file-backed conversation and transcript stores, the OS-keystore secret vault, the MCP bridge that lends the vault to native coding agents, workspace hosts, and the conversation runner.</Description>
+    <NoWarn>$(NoWarn);CS8618</NoWarn>
+  </PropertyGroup>
+  <ItemGroup>
+    <PackageReference Include="Microsoft.Extensions.Configuration.Binder" Version="11.0.0-rc.2.26504.105" />
+    <PackageReference Include="Microsoft.Extensions.Configuration.EnvironmentVariables" Version="11.0.0-rc.2.26504.105" />
+    <PackageReference Include="Microsoft.Extensions.Configuration.Json" Version="11.0.0-rc.2.26504.105" />
+    <PackageReference Include="Microsoft.Extensions.Logging.Configuration" Version="11.0.0-rc.2.26504.105" />
+    <PackageReference Include="Microsoft.Extensions.Hosting" Version="11.0.0-rc.2.26504.105" />
+    <PackageReference Include="Microsoft.Extensions.Http" Version="11.0.0-rc.2.26504.105" />
+    <PackageReference Include="Microsoft.Extensions.Logging" Version="11.0.0-rc.2.26504.105" />
+    <PackageReference Include="ModelContextProtocol" Version="2.0.0" />
+  </ItemGroup>
+  <ItemGroup>
+    <ProjectReference Include="..\SwarmCore\SwarmCore.Coding\SwarmCore.Coding.csproj" />
+    <ProjectReference Include="..\SwarmCore\SwarmCore.LlmRouting\SwarmCore.LlmRouting.csproj" />
+    <ProjectReference Include="..\SwarmCore\SwarmCore.Secrets\SwarmCore.Secrets.csproj" />
+    <ProjectReference Include="..\SwarmCore\SwarmCore.PersonalMemory\SwarmCore.PersonalMemory.csproj" />
+  </ItemGroup>
+  <ItemGroup>
+    <InternalsVisibleTo Include="SwarmCode.Hosting.Tests" />
+  </ItemGroup>
+</Project>

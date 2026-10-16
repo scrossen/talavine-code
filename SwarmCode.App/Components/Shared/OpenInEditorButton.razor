@@ -1,0 +1,37 @@
+@using SwarmCore.Coding.Ide
+@inject IdeIntegration Ide
+
+@* "Open in VS Code" for one file location, or a small menu when a tool touched several. Clicks never toggle the
+   card it sits in. The open itself runs off the UI thread inside IdeIntegration. *@
+@if (Targets is { Count: > 0 } targets)
+{
+    if (targets.Count == 1)
+    {
+        var only = targets[0];
+        <button type="button" class="sess-editor-btn" title="@($"{Ide.OpenLabel}: {only.Label}")"
+                @onclick="() => OpenAsync(only)" @onclick:stopPropagation="true">@Ide.OpenLabel</button>
+    }
+    else
+    {
+        <details class="sess-editor-menu" @onclick:stopPropagation="true">
+            <summary class="sess-editor-btn" title="@Ide.OpenLabel">@Ide.OpenLabel (@targets.Count)</summary>
+            <div class="sess-editor-menu__list" role="menu">
+                @foreach (var target in targets)
+                {
+                    var item = target;
+                    <button type="button" role="menuitem" class="sess-editor-menu__item" title="@item.Label"
+                            @onclick="() => OpenAsync(item)" @onclick:stopPropagation="true">@item.Label</button>
+                }
+            </div>
+        </details>
+    }
+}
+
+@code {
+    [Parameter] public IReadOnlyList<EditorTarget>? Targets { get; set; }
+
+    /// <summary>The session's repository; relative paths resolve against it and may not leave it.</summary>
+    [Parameter] public string? RepositoryRoot { get; set; }
+
+    private Task OpenAsync(EditorTarget target) => Ide.OpenAsync(target, RepositoryRoot);
+}

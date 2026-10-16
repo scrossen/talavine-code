@@ -1,0 +1,52 @@
+<div @ref="_element" class="@RootClassAttribute">@((MarkupString)_html)</div>
+
+@code {
+    [Inject] private IJSRuntime JS { get; set; } = default!;
+
+    [Parameter] public string? Markdown { get; set; }
+    [Parameter] public string? Class { get; set; }
+    /// <summary>
+    /// The base class that the shared stylesheet targets. A host that styles rendered
+    /// markdown with its own stylesheet can pass an empty string (or its own class) and
+    /// put its classes in <see cref="Class"/>.
+    /// </summary>
+    [Parameter] public string RootClass { get; set; } = "chat-md";
+    /// <summary>Host pipeline choices (sanitizer, raw HTML, block decoration, link policy). Null uses the shared defaults.</summary>
+    [Parameter] public ChatMarkdownOptions? Options { get; set; }
+
+    private ElementReference _element;
+    private string? _renderedSource;
+    private ChatMarkdownOptions? _renderedOptions;
+    private string _html = string.Empty;
+    private bool _enhance;
+
+    private string RootClassAttribute =>
+        string.Join(' ', new[] { RootClass, Class }.Where(static value => !string.IsNullOrWhiteSpace(value)).Select(static value => value!.Trim()));
+
+    protected override void OnParametersSet()
+    {
+        if (!string.Equals(Markdown, _renderedSource, StringComparison.Ordinal)
+            // Value comparison: a host may construct equal options inline on every render.
+            || !Equals(Options, _renderedOptions))
+        {
+            _renderedSource = Markdown;
+            _renderedOptions = Options;
+            _html = ChatMarkdown.ToHtml(Markdown, Options);
+            // Only the shared pipeline's own decoration adds the copy button; never
+            // infer it from answer text or host-sanitized markup.
+            _enhance = (Options ?? ChatMarkdownOptions.Default).DecorateBlocks
+                       && _html.Contains("<pre class=\"chat-code\">", StringComparison.Ordinal);
+        }
+    }
+
+    protected override async Task OnAfterRenderAsync(bool firstRender)
+    {
+        if (!_enhance)
+        {
+            return;
+        }
+
+        _enhance = false;
+        await ChatJs.InvokeVoidAsync(JS, "enhanceCodeBlocks", _element);
+    }
+}

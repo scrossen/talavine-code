@@ -1,0 +1,7 @@
+@* How far to trust an answer, shown under its text. Used by ChatMessageBubble's
+   TrustLine slot and directly by hosts that interleave several answer parts. *@
+<div class="chat-msg__trust-line">@ChildContent</div>
+
+@code {
+    [Parameter] public RenderFragment? ChildContent { get; set; }
+}

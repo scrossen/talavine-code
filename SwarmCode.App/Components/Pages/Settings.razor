@@ -1,0 +1,1404 @@
+@page "/settings"
+@implements IDisposable
+@inject AppState State
+@inject IJSRuntime JS
+@using SwarmCore.Coding.Routing
+@using SwarmCore.Secrets
+@using SwarmCore.Coding
+@using SwarmCore.Coding.Computer
+@using SwarmCore.Coding.Files
+@using SwarmCode.Hosting.Web
+
+<PageTitle>Settings - Talavine Code</PageTitle>
+
+<div class="sc-page">
+    <header class="sc-topbar">
+        <div>
+            <h1 class="sc-topbar__title">Settings</h1>
+            <p class="sc-topbar__copy">Make it yours. Open a category, or ask the agent to change a setting.</p>
+        </div>
+        <div class="sc-topbar__actions">
+            <a class="sc-btn sc-btn--primary" href="@(_returnSessionId is null ? "/" : AppNavigation.SessionUrl(_returnSessionId))">
+                @(_returnSessionId is null ? "Back to home" : "Back to session")
+            </a>
+        </div>
+    </header>
+
+    @if (_message is not null)
+    {
+        <div class="sc-notice @(_messageIsError ? "sc-notice--error" : "sc-notice--info")" role="status">@_message</div>
+    }
+
+    <div class="sc-settings-intro">
+        <span class="sc-chip">You can just ask</span>
+        <p>“Make my current selections the default model, provider and reasoning.”</p>
+        <span class="sc-muted">The agent can read and change settings for you.</span>
+    </div>
+    <label class="sc-field__label" for="sc-settings-search">Find a setting</label>
+    <input id="sc-settings-search" class="sc-input sc-settings-search" type="search" placeholder="Search models, permissions, Chrome…" @bind="_settingsSearch" @bind:event="oninput" />
+    <div class="sc-settings-grid">
+    <SettingsDialog Id="models" Title="Models and defaults" Description="Starting provider, model and reasoning." Filter="@_settingsSearch" Message="@_message" IsError="@_messageIsError" Summary="@(Prefs.DefaultModel ?? "Use configured defaults")">
+    <section class="sc-card">
+        <h2 class="sc-card__title">Models</h2>
+        <div class="sc-row">
+            <div class="sc-field">
+                <label class="sc-field__label" for="sc-default-model-lane">Default model for new sessions</label>
+                <select id="sc-default-model-lane" class="sc-select" value="@_defaultModelLane" @onchange="DefaultModelLaneChangedAsync">
+                    <option value="">Use the configured default</option>
+                    @foreach (var lane in CodingLaneSelections.ForPicker(AvailableLanes().ToArray(), _defaultModelLane)) { <option value="@lane.Name">@lane.SelectionLabel</option> }
+                </select>
+            </div>
+            @if (!string.IsNullOrEmpty(_defaultModelLane))
+            {
+                <div class="sc-field">
+                    <label class="sc-field__label" for="sc-default-model">Model</label>
+                    <input id="sc-default-model" class="sc-input sc-input--mono" list="sc-default-models" @bind="_defaultModel" />
+                    <button type="button" class="sc-btn sc-btn--sm" disabled="@_defaultModelsLoading" @onclick="RefreshDefaultModelsAsync">Refresh models</button>
+                    <span class="sc-muted" role="status">@(_defaultModelsLoading ? "Loading models…" : _defaultModelStatus)</span>
+                    <datalist id="sc-default-models">@foreach (var model in _defaultModels) { <option value="@model"></option> }</datalist>
+                </div>
+            }
+            <ReasoningPicker @bind-Model="_defaultModel" Lane="@AvailableLanes().FirstOrDefault(l => l.Name == _defaultModelLane)" Workspace="@State.Workspace" />
+            <button type="button" class="sc-btn sc-btn--primary" @onclick="SaveDefaultModelAsync">Save defaults</button>
+            <button type="button" class="sc-btn" @onclick="LoadDefaultModel">Reload defaults</button>
+            @if (_returnSessionId is not null)
+            {
+                <button type="button" class="sc-btn" @onclick="UseCurrentDefaultsAsync">Use current session selections</button>
+            }
+        </div>
+        <p class="sc-muted">New sessions start with this model. Existing sessions keep their selection. @if (!AvailableLanes().Any()) { <span>Open a repository to detect installed models, or add a model route below.</span> }</p>
+    </section>
+<DecisionSelectionSettingsPanel />
+    </SettingsDialog>
+    <SettingsDialog Id="providers" Title="Providers and API keys" Description="Connect a cloud provider or model server." Filter="@_settingsSearch" Message="@_message" IsError="@_messageIsError">
+<ModelSourcesPanel OnSaved="SourcesChangedAsync" />
+
+    <section class="sc-card">
+        <h2 class="sc-card__title">Cloud API keys</h2>
+        <p class="sc-card__copy">Paste an API key for each cloud provider you want to use. Keys are stored in the protected vault on this computer and never shown again.</p>
+        <div class="sc-list">
+            @foreach (var provider in ByokProviders)
+            {
+                var name = provider;
+                <div class="sc-list__row">
+                    <span class="sc-list__label"><strong>@name</strong></span>
+                    @if (_keyStatus.TryGetValue(name, out var has) && has)
+                    {
+                        <span class="sc-chip sc-chip--ok">Key set</span>
+                    }
+                    else
+                    {
+                        <span class="sc-chip sc-chip--warn">Missing</span>
+                    }
+                    <input type="password" class="sc-input" autocomplete="off" placeholder="Paste API key"
+                           value="@KeyInput(name)" @oninput="e => _keyInputs[name] = e.Value?.ToString() ?? string.Empty" />
+                    <button type="button" class="sc-btn sc-btn--sm" @onclick="() => SaveKeyAsync(name)">Save</button>
+                    @if (_keyStatus.TryGetValue(name, out var set) && set)
+                    {
+                        <button type="button" class="sc-btn sc-btn--sm sc-btn--danger" title="Remove key" @onclick="() => ClearKeyAsync(name)">✕</button>
+                    }
+                </div>
+            }
+        </div>
+        <p class="sc-muted">
+            Subscription tools (Claude Code, Codex, Gemini CLI) sign in through their own command line and need no key here.
+            @if (State.Workspace is not null)
+            {
+                var cli = State.Workspace.Lanes.Where(l => l.IsNative || l.Provider is "ClaudeCode" or "CodexCli").ToList();
+                @if (cli.Count > 0)
+                {
+                    <span>Detected: </span>
+                    @foreach (var l in cli)
+                    {
+                        var off = NativeOff && l.IsNative;
+                        <span class="sc-chip @(off ? "sc-chip--off" : "sc-chip--ok")" title="@(off ? NativeApprovalNote : null)">@l.Name</span> <text> </text>
+                    }
+                }
+                else
+                {
+                    <span>None detected on this computer.</span>
+                }
+            }
+        </p>
+    </section>
+    </SettingsDialog>
+    <SettingsDialog Id="behavior" Title="Appearance and permissions" Description="Text size, reasoning display, editor and approvals." Filter="@_settingsSearch" Message="@_message" IsError="@_messageIsError">
+    <section class="sc-card">
+        <h2 class="sc-card__title">Behavior</h2>
+        <p class="sc-card__copy">Control how cautious the agent is and how the chat looks.</p>
+        <div class="sc-list">
+            <div class="sc-list__row">
+                <div class="sc-field">
+                    <label class="sc-field__label" for="sc-permission-mode">Permission mode</label>
+                    <select id="sc-permission-mode" class="sc-select" value="@CodingPermissionPolicy.Name(Prefs.Mode)" @onchange="e => SetMode(e.Value)">
+                        <option value="auto">Auto: everything runs</option>
+                        <option value="ask-risky">Ask before risky actions</option>
+                        <option value="ask">Ask before every action</option>
+                    </select>
+                </div>
+                <p class="sc-muted sc-note">@ModeNote(Prefs.Mode) Agents a session starts use at least that session's mode.@(NativeOff ? " " + NativeApprovalNote : "")</p>
+                <div class="sc-muted sc-note">
+                    <span>Always allow: </span>@RuleList(_permissionRules.Allow)
+                    <span> · Never allow: </span>@RuleList(_permissionRules.Deny)
+                    <div>Edit <code>Coding:Permissions:Allow</code> / <code>Deny</code> (tool-id globs such as <code>git.commit</code> or <code>shell.*</code>) in <code>@SettingsFile.Path</code>. Deny always wins; allowed tools skip the prompt.</div>
+                </div>
+                @if (_repositoryRules is { Exists: true } repoRules)
+                {
+                    <div class="sc-muted sc-note">
+                        <span>Repository deny (always applied): </span>@RuleList(repoRules.Deny)
+                        <span> · Repository allow: </span>@RuleList(repoRules.Allow)
+                        @if (repoRules.Allow.Count > 0)
+                        {
+                            <span class="sc-chip @(repoRules.Approved ? "sc-chip--ok" : "sc-chip--warn")">@(repoRules.Approved ? "allowed" : "not allowed")</span>
+                            @if (repoRules.NeedsApproval)
+                            {
+                                <button type="button" class="sc-btn sc-btn--sm" disabled="@_busy" @onclick="() => DecideRepositoryRulesAsync(repoRules, allow: true)">Allow</button>
+                            }
+                            else if (repoRules.Approved)
+                            {
+                                <button type="button" class="sc-btn sc-btn--sm" disabled="@_busy" @onclick="() => DecideRepositoryRulesAsync(repoRules, allow: false)">Revoke</button>
+                            }
+                        }
+                        <div>From <code>.swarmcode/settings.json</code> or <code>.claude/settings.json</code> in the open repository (<code>permissions.allow</code> / <code>deny</code>). Deny rules always apply; allow rules apply only after you allow that exact content, and any change asks again.</div>
+                        @foreach (var problem in repoRules.Problems) { <div>@problem</div> }
+                        @if (_repositoryRulesError is not null) { <div>@_repositoryRulesError</div> }
+                    </div>
+                }
+            </div>
+            <div class="sc-list__row">
+                <label class="sc-field"><span class="sc-field__label">Theme</span>
+                    <select class="sc-select" aria-label="Theme" value="@Prefs.Theme" @onchange="SetTheme">
+                        <option value="system">System</option><option value="light">Light</option><option value="dark">Dark</option>
+                    </select>
+                </label>
+            </div>
+            <div class="sc-list__row">
+                <label class="sc-toggle">
+                    <input type="checkbox" checked="@Prefs.ShowReasoning" @onchange="e => UpdatePref(p => p.ShowReasoning = (bool)e.Value!)" />
+                    <span class="sc-toggle__track"></span>
+                    <span>Show the model's reasoning when available</span>
+                </label>
+            </div>
+            <div class="sc-list__row">
+                <label class="sc-field__label" for="sc-zoom">Text size (@Prefs.Zoom.ToString("0.00")x)</label>
+                <input id="sc-zoom" type="range" class="sc-range" min="0.8" max="1.4" step="0.05" value="@Prefs.Zoom.ToString(System.Globalization.CultureInfo.InvariantCulture)"
+                       @onchange="e => UpdatePref(p => p.Zoom = ParseZoom(e.Value))" />
+            </div>
+            <div class="sc-list__row">
+                <label class="sc-field__label" for="sc-editor-command">Editor command (optional)</label>
+                <input id="sc-editor-command" class="sc-input sc-input--mono" placeholder="VS Code" value="@Prefs.EditorCommand"
+                       @onchange="e => UpdatePref(p => p.EditorCommand = string.IsNullOrWhiteSpace(e.Value?.ToString()) ? null : e.Value!.ToString()!.Trim())" />
+                <p class="sc-muted sc-note">Used by "Open in editor". Empty uses VS Code. A command such as <code>cursor</code> gets <code>--goto file:line:col</code>; use <code>{file}</code>, <code>{line}</code> and <code>{column}</code> for other editors.</p>
+            </div>
+        </div>
+    </section>
+    </SettingsDialog>
+    <SettingsDialog Id="memory" Title="Memory" Description="What the agent remembers and how it learns." Filter="@_settingsSearch" Message="@_message" IsError="@_messageIsError" Summary="@(Prefs.PersonalMemoryEnabled && State.MemoryOptions.Enabled ? "On" : "Off")">
+    <MemorySettings Embedded="true" />
+    </SettingsDialog>
+    <SettingsDialog Id="credentials" Title="Credentials" Description="Save or import passwords, tokens and keys." Filter="@_settingsSearch" Message="@_message" IsError="@_messageIsError" Summary="@($"{_secrets.Count} saved")">
+    <section class="sc-card">
+        <h2 class="sc-card__title">Credentials</h2>
+        <p class="sc-card__copy">
+            Passwords, tokens, and keys the agent may use without ever seeing them. Each value is encrypted with a key held by
+            @(KeyStoreLabel) and stored in <span class="sc-mono">secrets.db</span>. In chat, the agent writes
+            <span class="sc-mono">{{secret:name}}</span> where a value belongs and it is filled in when the command runs.
+            You can also type <span class="sc-mono">/secret name value</span> in any session.
+        </p>
+        @if (!State.KeyStore.IsAvailable)
+        {
+            <div class="sc-notice sc-notice--error" role="alert">@(OperatingSystem.IsMacOS() || OperatingSystem.IsMacCatalyst()
+                ? "Encrypted credential storage is unavailable. New credentials cannot be stored until the OS keystore is available."
+                : "No OS keystore is available on this computer, so new values are stored with a plaintext marker. File permissions on the data folder are the only protection.")</div>
+        }
+
+        @if (_secrets.Count == 0)
+        {
+            <p class="sc-muted">Nothing stored yet.</p>
+        }
+        else
+        {
+            <div class="sc-row">
+                <span class="sc-muted">@_secrets.Count saved credentials</span>
+                <button type="button" class="sc-btn" @onclick="OpenCredentialsAsync">View saved credentials</button>
+            </div>
+        }
+
+        <dialog id="sc-credentials-dialog" class="sc-dialog" aria-labelledby="sc-credentials-title" @ref="_credentialsDialog" @onclose="ClearCredentialSearch">
+            <div class="sc-row sc-row--between">
+                <h2 id="sc-credentials-title" class="sc-card__title">Saved credentials</h2>
+                <button type="button" class="sc-btn" @onclick="CloseCredentialsAsync">Close</button>
+            </div>
+            <p class="sc-muted">Names and account hints only. Passwords and tokens stay protected.</p>
+            <label class="sc-field__label" for="sc-credential-search">Search credentials</label>
+            <input id="sc-credential-search" class="sc-input" type="search" @bind="_credentialSearch" @bind:event="oninput" />
+            <p class="sc-muted">@FilteredSecrets().Count() of @_secrets.Count credentials</p>
+            <div class="sc-dialog__list">
+            <table class="sc-table">
+                <thead><tr><th>Name</th><th>Kind</th><th>Site</th><th>User</th><th>Last used</th><th></th></tr></thead>
+                <tbody>
+                    @foreach (var s in FilteredSecrets())
+                    {
+                        var entry = s;
+                        <tr>
+                            <td><span class="sc-mono">@entry.Name</span>@if (!entry.IsEncrypted) { <span class="sc-chip sc-chip--warn" title="Stored without OS keystore protection">plain</span> }</td>
+                            <td>@entry.Kind</td>
+                            <td>@(SecretNames.Host(entry.Site) ?? entry.Site)</td>
+                            <td>@entry.UsernameHint</td>
+                            <td>@(entry.LastUsedUtc is { } used ? used.ToLocalTime().ToString("g") : "never")</td>
+                            <td><button type="button" class="sc-btn sc-btn--sm sc-btn--danger" title="Delete" aria-label="Delete secret" @onclick="() => DeleteSecretAsync(entry.Name)">✕</button></td>
+                        </tr>
+                    }
+                </tbody>
+            </table>
+            @if (!FilteredSecrets().Any()) { <p class="sc-muted">No matching credentials.</p> }
+            </div>
+        </dialog>
+
+        <div class="sc-row">
+            <div class="sc-field">
+                <label class="sc-field__label" for="sc-secret-name">Name</label>
+                <input id="sc-secret-name" class="sc-input sc-input--mono" placeholder="github-token" @bind="_secretName" />
+            </div>
+            <div class="sc-field">
+                <label class="sc-field__label" for="sc-secret-value">Value</label>
+                <input id="sc-secret-value" type="password" class="sc-input" autocomplete="off" placeholder="Paste the password, token, or key" @bind="_secretValue" />
+            </div>
+            <div class="sc-field">
+                <label class="sc-field__label" for="sc-secret-site">Site (optional)</label>
+                <input id="sc-secret-site" class="sc-input" placeholder="https://github.com" @bind="_secretSite" />
+            </div>
+            <div class="sc-field">
+                <label class="sc-field__label" for="sc-secret-user">Username (optional)</label>
+                <input id="sc-secret-user" class="sc-input" autocomplete="off" @bind="_secretUsername" />
+            </div>
+        </div>
+        <div class="sc-row">
+            <button type="button" class="sc-btn sc-btn--primary" @onclick="SaveSecretAsync">Save credential</button>
+            <button type="button" class="sc-btn" @onclick="ImportPasswordsAsync">Import passwords (CSV)</button>
+            <span class="sc-muted">Chrome, Edge, Firefox, Bitwarden, 1Password, and LastPass exports are recognized.</span>
+            @if (_busy) { <span class="sc-spinner"></span> }
+        </div>
+    </section>
+    </SettingsDialog>
+    <SettingsDialog Id="connections" Title="Connected apps and tools" Description="MCP servers and your account connectors." Filter="@_settingsSearch" Message="@_message" IsError="@_messageIsError">
+    <section class="sc-card">
+        <h2 class="sc-card__title">Connected data (MCP servers)</h2>
+        <p class="sc-card__copy">
+            Connect local programs or shared HTTP servers that give the agent tools over the Model Context Protocol, such as a Talavine data hub.
+            Native agents connect to them, and API models see their tools as
+            <span class="sc-mono">mcp.server.tool</span>. Talavine can add itself here from its MCP Connectors page.
+            The list lives in <span class="sc-mono">@State.Paths.McpServersPath</span>.
+        </p>
+        @foreach (var problem in _mcpProblems)
+        {
+            <div class="sc-notice sc-notice--error" role="alert">@problem</div>
+        }
+        @if (_mcpServers.Count == 0)
+        {
+            <p class="sc-muted">No servers connected.</p>
+        }
+        else
+        {
+            <table class="sc-table">
+                <thead><tr><th>Name</th><th>Command or URL</th><th>Arguments</th><th>Environment</th><th>Flags</th><th></th></tr></thead>
+                <tbody>
+                    @foreach (var server in _mcpServers)
+                    {
+                        var entry = server;
+                        <tr>
+                            <td><span class="sc-mono">@entry.Name</span></td>
+                            <td><span class="sc-mono">@(entry.Url ?? entry.Launch?.Command)</span></td>
+                            <td><span class="sc-mono">@string.Join(" ", entry.Launch?.Arguments ?? [])</span></td>
+                            <td><span class="sc-mono">@string.Join(", ", entry.Launch?.EnvironmentVariables.Keys ?? [])</span></td>
+                            <td>@if (entry.Trusted) { <span class="sc-chip sc-chip--warn" title="Its read-only claims skip approval">trusted</span> } @if (entry.Required) { <span class="sc-chip sc-chip--ok">required</span> }</td>
+                            <td><button type="button" class="sc-btn sc-btn--sm sc-btn--danger" title="Remove" aria-label="Remove MCP server" disabled="@(_busy || State.AnyTurnRunning)" @onclick="() => RemoveMcpServerAsync(entry.Name)">✕</button></td>
+                        </tr>
+                    }
+                </tbody>
+            </table>
+        }
+        <div class="sc-row">
+            <div class="sc-field"><label class="sc-field__label" for="sc-mcp-name">Name</label><input id="sc-mcp-name" class="sc-input sc-input--mono" placeholder="talavine" @bind="_mcpName" /></div>
+            <div class="sc-field"><label class="sc-field__label" for="sc-mcp-transport">Connection</label><select id="sc-mcp-transport" class="sc-input" @bind="_mcpTransport"><option value="stdio">Local program (stdio)</option><option value="http">Streamable HTTP</option></select></div>
+            @if (_mcpHttp)
+            {
+                <div class="sc-field"><label class="sc-field__label" for="sc-mcp-url">Endpoint URL</label><input id="sc-mcp-url" class="sc-input sc-input--mono" placeholder="http://127.0.0.1:9123/mcp" @bind="_mcpUrl" /></div>
+                <div class="sc-field"><label class="sc-field__label" for="sc-mcp-bearer">Bearer credential reference (optional)</label><input id="sc-mcp-bearer" class="sc-input sc-input--mono" placeholder="{{secret:hub-token}}" @bind="_mcpBearer" /></div>
+            }
+            else
+            {
+            <div class="sc-field"><label class="sc-field__label" for="sc-mcp-command">Command</label><input id="sc-mcp-command" class="sc-input sc-input--mono" @bind="_mcpCommand" /></div>
+            <div class="sc-field"><label class="sc-field__label" for="sc-mcp-args">Arguments (one per line)</label><textarea id="sc-mcp-args" class="sc-input sc-input--mono" @bind="_mcpArguments"></textarea></div>
+            <div class="sc-field"><label class="sc-field__label" for="sc-mcp-env">Environment (NAME=value per line)</label><textarea id="sc-mcp-env" class="sc-input sc-input--mono" @bind="_mcpEnvironment"></textarea></div>
+            }
+        </div>
+        <div class="sc-row">
+            <label class="sc-toggle"><input type="checkbox" @bind="_mcpTrusted" /><span class="sc-toggle__track"></span><span>Trust its read-only labels (its read-only tools then run without approval)</span></label>
+            <label class="sc-toggle"><input type="checkbox" @bind="_mcpRequired" /><span class="sc-toggle__track"></span><span>Required (Codex stops instead of running without it)</span></label>
+        </div>
+        <label class="sc-toggle">
+            <input type="checkbox" aria-label="Allow Codex app connectors" checked="@_allowCodexApps" disabled="@(_busy || State.AnyTurnRunning)"
+                   @onchange="e => SetAllowCodexAppsAsync((bool)e.Value!)" />
+            <span class="sc-toggle__track"></span>
+            <span>Allow Codex app connectors</span>
+        </label>
+        <p class="sc-muted">Codex can also load the connectors you linked in your own Codex app and answer from their live data. This switch controls those app connectors. Additional MCP servers from your Codex configuration can still load. Each Codex turn names this host's configured servers and reports preflight or startup failures.</p>
+        <label class="sc-toggle">
+            <input type="checkbox" aria-label="Allow claude.ai connectors" checked="@_allowClaudeAi" disabled="@(_busy || State.AnyTurnRunning)"
+                   @onchange="e => SetAllowClaudeAiAsync((bool)e.Value!)" />
+            <span class="sc-toggle__track"></span>
+            <span>Allow claude.ai connectors</span>
+        </label>
+        <p class="sc-muted">Claude Code can also load the connectors linked on your claude.ai account, such as Gmail or Google Drive, and answer from your live accounts instead of the data you connected here. This switch controls those connectors. MCP servers from your Claude Code configuration can still load.</p>
+        <p class="sc-muted">For HTTP authentication, save the credential under Credentials and enter its {{secret:name}} reference above. Environment fields for local programs are saved as plain text; keep passwords and tokens out of them.</p>
+        <button type="button" class="sc-btn sc-btn--primary" disabled="@(_busy || State.AnyTurnRunning)" @onclick="SaveMcpServerAsync">Save server</button>
+    </section>
+    </SettingsDialog>
+    </div>
+    <details class="sc-settings-more" open="@(!string.IsNullOrWhiteSpace(_settingsSearch))">
+    <summary>More settings <span class="sc-muted">Work limits, browser, attachments and advanced options</span></summary>
+    <div class="sc-settings-grid">
+    <SettingsDialog Id="local-models" Title="Local models" Description="Set up Ollama, download models and choose fallbacks." Filter="@_settingsSearch" Message="@_message" IsError="@_messageIsError">
+        <OllamaSetupPanel OnSaved="SourcesChangedAsync" />
+    </SettingsDialog>
+    <SettingsDialog Id="work" Title="Work limits and verification" Description="Time, tool calls, tokens and completion checks." Filter="@_settingsSearch" Message="@_message" IsError="@_messageIsError">
+    <section class="sc-card">
+        <h2 class="sc-card__title">Work limits and verification</h2>
+        <p class="sc-card__copy">Limits apply across all models in a job. Zero means unlimited. Verification checks run after the model finishes; a finished answer alone does not prove the task is complete.</p>
+        <div class="sc-row">
+            <div class="sc-field"><label class="sc-field__label" for="sc-limit-minutes">Time limit (minutes)</label><input id="sc-limit-minutes" class="sc-input" type="number" min="0" @bind="_limitMinutes" /></div>
+            <div class="sc-field"><label class="sc-field__label" for="sc-limit-tools">Tool calls</label><input id="sc-limit-tools" class="sc-input" type="number" min="0" @bind="_limitTools" /></div>
+            <div class="sc-field"><label class="sc-field__label" for="sc-limit-tokens">Reported tokens</label><input id="sc-limit-tokens" class="sc-input" type="number" min="0" @bind="_limitTokens" /></div>
+            <div class="sc-field"><label class="sc-field__label" for="sc-repair-attempts">Verification repair attempts</label><input id="sc-repair-attempts" class="sc-input" type="number" min="0" max="10" @bind="_repairAttempts" /></div>
+        </div>
+        <p class="sc-muted">Token limits depend on provider usage reports. Providers that do not report usage show it as unavailable.</p>
+        @foreach (var row in _checks)
+        {
+            var check = row;
+            <div class="sc-row">
+                <div class="sc-field"><label class="sc-field__label">Check name</label><input class="sc-input" aria-label="Check name" @bind="check.Name" /></div>
+                <div class="sc-field"><label class="sc-field__label">Executable</label><input class="sc-input" aria-label="Check executable" placeholder="dotnet" @bind="check.FileName" /></div>
+                <div class="sc-field"><label class="sc-field__label">Arguments (one per line)</label><textarea class="sc-input" aria-label="Check arguments" placeholder="test" @bind="check.Arguments"></textarea></div>
+                <div class="sc-field"><label class="sc-field__label">Required output (optional)</label><input class="sc-input" aria-label="Required check output" @bind="check.RequiredOutput" /></div>
+                <button type="button" class="sc-btn sc-btn--sm sc-btn--danger" @onclick="() => _checks.Remove(check)">Remove check</button>
+            </div>
+        }
+        <button type="button" class="sc-btn" @onclick="() => _checks.Add(new())">Add verification check</button>
+    </section>
+<button type="button" class="sc-btn sc-btn--primary" disabled="@(_busy || State.AnyTurnRunning)" @onclick="SaveRuntimeAsync">Save work settings</button>
+    </SettingsDialog>
+    <SettingsDialog Id="computer" Title="Browser and computer" Description="Chrome profiles and computer control." Filter="@_settingsSearch" Message="@_message" IsError="@_messageIsError">
+    <section class="sc-card">
+        <h2 class="sc-card__title">Chrome and computer control</h2>
+        <p class="sc-card__copy">Use your regular Chrome to keep your existing tabs and signed-in sessions. Chrome asks you to allow the connection. @SwarmCode.App.Services.PlatformText.DesktopControl</p>
+        <label class="sc-toggle"><input type="checkbox" @bind="_computer.Enabled" /><span class="sc-toggle__track"></span><span>Enable Chrome and computer tools</span></label>
+        <label class="sc-toggle"><input type="checkbox" @bind="_computer.UsePersonalChrome" /><span class="sc-toggle__track"></span><span>Use my regular Chrome profile and sessions</span></label>
+        @if (_computer.UsePersonalChrome)
+        {
+            <p class="sc-muted">In Chrome 144 or newer, open connection setup, enable remote debugging, then return here and connect. Choose Allow when Chrome asks.</p>
+            <div class="sc-row">
+                <button type="button" class="sc-btn" @onclick="OpenChromeSetup">Open Chrome connection setup</button>
+                <button type="button" class="sc-btn" @onclick="TestChromeAsync">Connect to Chrome</button>
+            </div>
+            @if (_chromeStatus is not null) { <p class="sc-muted" role="status">@_chromeStatus</p> }
+            <div class="sc-field"><label class="sc-field__label" for="sc-personal-chrome">Chrome user data folder (optional)</label><input id="sc-personal-chrome" class="sc-input sc-input--mono" placeholder="@PersonalChromeConnection.DefaultUserDataDirectory" @bind="_computer.PersonalChromeUserDataDirectory" /></div>
+        }
+        else
+        {
+        <div class="sc-row">
+            <div class="sc-field"><label class="sc-field__label" for="sc-chrome-profile">Chrome profile folder</label><input id="sc-chrome-profile" class="sc-input sc-input--mono" @bind="_computer.BrowserProfileDirectory" /></div>
+        </div>
+        <p class="sc-muted">This launches a separate Talavine Code Chrome profile. Sign in there once to save sessions in that profile.</p>
+        }
+        <details><summary>Advanced Chrome connection</summary><div class="sc-field"><label class="sc-field__label" for="sc-chrome-cdp">Existing Chrome connection (overrides profile choice)</label><input id="sc-chrome-cdp" class="sc-input" placeholder="http://127.0.0.1:9222" @bind="_computer.ChromeCdpEndpoint" /></div></details>
+        <button type="button" class="sc-btn sc-btn--primary" disabled="@(_busy || State.AnyTurnRunning)" @onclick="SaveComputerAsync">Save computer settings</button>
+        @if (State.AnyTurnRunning) { <p class="sc-muted">Stop active work before changing runtime settings.</p> }
+    </section>
+    </SettingsDialog>
+    <SettingsDialog Id="attachments" Title="Attachments" Description="File sizes, file counts and extracted text." Filter="@_settingsSearch" Message="@_message" IsError="@_messageIsError">
+    <section class="sc-card">
+        <h2 class="sc-card__title">Attachments</h2>
+        <p class="sc-card__copy">Zero means unlimited. These optional limits control local imports and extracted text; each provider still applies its own request and context limits.</p>
+        <div class="sc-row">
+            <div class="sc-field"><label class="sc-field__label" for="sc-file-limit">Per file (MB)</label><input id="sc-file-limit" class="sc-input" type="number" min="0" step="any" @bind="_attachmentFileMb" /></div>
+            <div class="sc-field"><label class="sc-field__label" for="sc-total-limit">Total per message (MB)</label><input id="sc-total-limit" class="sc-input" type="number" min="0" step="any" @bind="_attachmentTotalMb" /></div>
+            <div class="sc-field"><label class="sc-field__label" for="sc-count-limit">Files per message</label><input id="sc-count-limit" class="sc-input" type="number" min="0" @bind="_attachmentCount" /></div>
+            <div class="sc-field"><label class="sc-field__label" for="sc-text-limit">Extracted text (characters)</label><input id="sc-text-limit" class="sc-input" type="number" min="0" @bind="_attachmentText" /></div>
+        </div>
+        <button type="button" class="sc-btn sc-btn--primary" disabled="@(_busy || State.AnyTurnRunning)" @onclick="SaveAttachmentsAsync">Save attachment settings</button>
+        @if (State.AnyTurnRunning) { <p class="sc-muted">Finish or stop active work before changing attachment limits.</p> }
+    </section>
+    </SettingsDialog>
+    <SettingsDialog Id="search" Title="Web search" Description="Connect Brave Search for current information." Filter="@_settingsSearch" Message="@_message" IsError="@_messageIsError" Summary="@(_braveConfigured ? "Connected" : "Not connected")">
+    <section class="sc-card">
+        <h2 class="sc-card__title">Web search</h2>
+        <p class="sc-card__copy">
+            Lets API-key models search the web for current information (<span class="sc-mono">web.search</span>) through Brave Search.
+            The key is stored in the protected vault and never shown to the agent.
+            <a href="@SwarmCodeWebSearch.KeyUrl" target="_blank" rel="noopener noreferrer">Get a Brave Search API key</a>.
+        </p>
+        <div class="sc-row">
+            <span class="sc-chip @(_braveConfigured ? "sc-chip--ok" : "sc-chip--warn")">@(_braveConfigured ? "Configured" : "Not configured")</span>
+            <input type="password" class="sc-input" autocomplete="off" placeholder="Paste Brave Search API key" aria-label="Brave Search API key"
+                   value="@_braveKeyInput" @oninput="e => _braveKeyInput = e.Value?.ToString() ?? string.Empty" />
+            <button type="button" class="sc-btn sc-btn--sm" @onclick="SaveBraveKeyAsync">Save</button>
+            @if (_braveConfigured)
+            {
+                <button type="button" class="sc-btn sc-btn--sm sc-btn--danger" @onclick="RemoveBraveKeyAsync">Remove</button>
+            }
+        </div>
+    </section>
+    </SettingsDialog>
+    <SettingsDialog Id="fallback" Title="Model handoff" Description="Fallback order, discovery and price limits." Filter="@_settingsSearch" Message="@_message" IsError="@_messageIsError">
+    <section class="sc-card">
+        <h2 class="sc-card__title">Lanes</h2>
+        <p class="sc-card__copy">A lane is one model the agent can run on. Lanes higher in the list are tried first when a task is handed off.</p>
+        @if (_lanes.Count == 0)
+        {
+            <p class="sc-muted">No custom lanes: the app is using lanes it detected automatically. Add one to take control.</p>
+        }
+        else
+        {
+            <table class="sc-table">
+                <thead><tr><th>Name</th><th>Provider</th><th>Model</th><th>Description</th><th></th></tr></thead>
+                <tbody>
+                    @for (var i = 0; i < _lanes.Count; i++)
+                    {
+                        var index = i;
+                        var row = _lanes[i];
+                        var laneOff = NativeOff && IsNativeProvider(row.Provider);
+                        <tr class="@(laneOff ? "sc-lane--off" : null)" title="@(laneOff ? NativeApprovalNote : null)">
+                            <td><input class="sc-input" @bind="row.Name" aria-label="Lane name" /></td>
+                            <td><input class="sc-input" list="sc-provider-ids" @bind="row.Provider" aria-label="Provider" /></td>
+                            <td><input class="sc-input sc-input--mono" @bind="row.Model" aria-label="Model" /></td>
+                            <td><input class="sc-input" @bind="row.Description" aria-label="Description" /></td>
+                            <td>
+                                <div class="sc-row">
+                                    <button type="button" class="sc-btn sc-btn--sm" title="Move up" aria-label="Move up" @onclick="() => Move(index, -1)">↑</button>
+                                    <button type="button" class="sc-btn sc-btn--sm" title="Move down" aria-label="Move down" @onclick="() => Move(index, 1)">↓</button>
+                                    <button type="button" class="sc-btn sc-btn--sm sc-btn--danger" title="Remove" aria-label="Remove lane" @onclick="() => _lanes.RemoveAt(index)">✕</button>
+                                </div>
+                            </td>
+                        </tr>
+                    }
+                </tbody>
+            </table>
+            @if (NativeOff && _lanes.Any(r => IsNativeProvider(r.Provider)))
+            {
+                <p class="sc-muted sc-note">Dimmed lanes are native agents. @NativeApprovalNote</p>
+            }
+        }
+        <datalist id="sc-provider-ids">
+            @foreach (var id in KnownProviders) { <option value="@id"></option> }
+        </datalist>
+
+        <div class="sc-row">
+            <button type="button" class="sc-btn" @onclick="AddLane">Add lane</button>
+        </div>
+
+        <div class="sc-row">
+            <div class="sc-field">
+                <label class="sc-field__label" for="sc-default-lane">Default lane</label>
+                <select id="sc-default-lane" class="sc-select" @bind="_laneDefault">
+                    <option value="">First lane</option>
+                    @foreach (var n in LaneNames()) { <option value="@n">@n</option> }
+                </select>
+            </div>
+            <div class="sc-field">
+                <label class="sc-field__label" for="sc-max-lanes">Max lanes per request</label>
+                <input id="sc-max-lanes" type="number" min="1" max="10" class="sc-input" @bind="_maxLanes" />
+            </div>
+            <label class="sc-toggle">
+                <input type="checkbox" @bind="_handOff" />
+                <span class="sc-toggle__track"></span>
+                <span>Try another route when a provider is unavailable or a model declines the request</span>
+            </label>
+        </div>
+
+        <div class="sc-row">
+            <button type="button" class="sc-btn sc-btn--primary" @onclick="SaveLanesAsync">Save lanes</button>
+            <button type="button" class="sc-btn" @onclick="ResetLanesAsync">Reset to detected defaults</button>
+            @if (_busy) { <span class="sc-spinner"></span> }
+        </div>
+    </section>
+    <section class="sc-card">
+        <h2 class="sc-card__title">Fallback model search</h2>
+        <p class="sc-card__copy">When a provider is unavailable, search configured catalogs for alternatives within these limits. Your model choice determines where to start. When a model declines, enabled hand-offs prefer your less restricted fallback models. All attempts count toward Max lanes per request.</p>
+        <label class="sc-toggle">
+            <input id="sc-discovery-enabled" type="checkbox" @bind="_fallbackDiscovery.Enabled" />
+            <span class="sc-toggle__track"></span><span>Find alternative models when a provider is unavailable</span>
+        </label>
+        <label class="sc-toggle">
+            <input id="sc-response-memory" type="checkbox" @bind="_fallbackDiscovery.RememberResponses" />
+            <span class="sc-toggle__track"></span><span>Remember model responses and use them to rank alternatives</span>
+        </label>
+        <div class="sc-row">
+            <div class="sc-field"><label class="sc-field__label" for="sc-discovery-providers">Catalog providers</label><input id="sc-discovery-providers" class="sc-input" @bind="_discoveryProviders" placeholder="OpenRouter" /></div>
+            <div class="sc-field"><label class="sc-field__label" for="sc-discovery-namespaces">Preferred model families</label><input id="sc-discovery-namespaces" class="sc-input" @bind="_discoveryNamespaces" placeholder="Comma-separated catalog namespaces" /></div>
+        </div>
+        <div class="sc-row">
+            <div class="sc-field"><label class="sc-field__label" for="sc-discovery-count">Candidates per request</label><input id="sc-discovery-count" class="sc-input" type="number" min="1" max="10" @bind="_fallbackDiscovery.MaxCandidates" /></div>
+            <div class="sc-field"><label class="sc-field__label" for="sc-discovery-input">Max input price per million tokens ($)</label><input id="sc-discovery-input" class="sc-input" type="number" min="0" step="0.01" @bind="_fallbackDiscovery.MaxInputPricePerMillionUsd" /></div>
+            <div class="sc-field"><label class="sc-field__label" for="sc-discovery-output">Max output price per million tokens ($)</label><input id="sc-discovery-output" class="sc-input" type="number" min="0" step="0.01" @bind="_fallbackDiscovery.MaxOutputPricePerMillionUsd" /></div>
+        </div>
+        <p class="sc-muted">Catalog prices and tool support filter candidates; they do not prove quality or willingness. The chat names every model tried and retains its result.</p>
+        <button class="sc-btn sc-btn--primary" disabled="@_busy" @onclick="SaveFallbackDiscoveryAsync">Save model search</button>
+    </section>
+    </SettingsDialog>
+    <SettingsDialog Id="extensions" Title="Extensions" Description="Inspect commands, skills and hooks." Filter="@_settingsSearch" Message="@_message" IsError="@_messageIsError">
+<ExtensionsCard />
+    </SettingsDialog>
+    @if (AppState.SelfImprovementAvailable)
+    {
+    <SettingsDialog Id="improvement" Title="Self-improvement" Description="Idle cycles and development preferences." Filter="@_settingsSearch" Message="@_message" IsError="@_messageIsError">
+    <section class="sc-card">
+        <h2 class="sc-card__title">Self-improvement</h2>
+        <p class="sc-card__copy">Talavine Code fixes its own defects and builds features people asked it for, in an isolated worktree of its source, while nobody is using it. Each cycle must pass the build and test checks before its branch is kept. See the <a href="/self-improvement">Self-improvement</a> page for the backlog.</p>
+        <div class="sc-list">
+            <div class="sc-list__row">
+                <label class="sc-toggle">
+                    <input type="checkbox" @bind="_selfImprovement.Enabled" />
+                    <span class="sc-toggle__track"></span>
+                    <span>Observe defects and feature requests, and run improvement cycles when idle</span>
+                </label>
+            </div>
+            <div class="sc-list__row">
+                <label class="sc-field__label" for="sc-si-repo">Talavine Code source repository</label>
+                <input id="sc-si-repo" class="sc-input sc-input--mono" placeholder="@(_selfImprovementDetected ?? "Not found: enter the checkout folder")" value="@_selfImprovement.RepositoryRoot"
+                       @onchange="e => _selfImprovement.RepositoryRoot = string.IsNullOrWhiteSpace(e.Value?.ToString()) ? null : e.Value!.ToString()!.Trim()" />
+                <p class="sc-muted sc-note">@(_selfImprovementDetected is null ? "No checkout was detected near this build; cycles stay off until a folder is set." : "Empty uses the detected checkout: " + _selfImprovementDetected)</p>
+            </div>
+            <div class="sc-row">
+                <div class="sc-field"><label class="sc-field__label" for="sc-si-idle">Quiet minutes before a cycle starts</label><input id="sc-si-idle" class="sc-input" type="number" min="1" max="720" @bind="_selfImprovementIdleMinutes" /></div>
+                <div class="sc-field"><label class="sc-field__label" for="sc-si-attempts">Attempts per item</label><input id="sc-si-attempts" class="sc-input" type="number" min="1" max="10" @bind="_selfImprovement.MaxAttemptsPerItem" /></div>
+                <div class="sc-field"><label class="sc-field__label" for="sc-si-lane">Lane (empty: your default)</label><input id="sc-si-lane" class="sc-input" @bind="_selfImprovement.Lane" /></div>
+            </div>
+            <div class="sc-list__row">
+                <label class="sc-toggle"><input type="checkbox" @bind="_selfImprovement.AllowNativeLanes" /><span class="sc-toggle__track"></span><span>Let native CLI lanes (Claude Code, Codex) run cycles unattended</span></label>
+            </div>
+            <div class="sc-list__row">
+                <label class="sc-toggle"><input type="checkbox" @bind="_selfImprovement.StopWhenUserReturns" /><span class="sc-toggle__track"></span><span>Stop a running cycle when you come back (it waits for the next quiet moment)</span></label>
+            </div>
+            <div class="sc-list__row">
+                <label class="sc-toggle"><input type="checkbox" @bind="_selfImprovement.AllowUnderDebugger" /><span class="sc-toggle__track"></span><span>Let cycles start while a debugger is attached (the "self-improvement" VS Code launch profile sets this)</span></label>
+            </div>
+            <div class="sc-list__row">
+                <label class="sc-toggle"><input type="checkbox" @bind="_selfImprovement.MergeVerifiedFixes" /><span class="sc-toggle__track"></span><span>Fast-forward a verified fix into the source checkout when it is clean and unchanged</span></label>
+                <p class="sc-muted sc-note">Off: every verified fix stays on its own <code>swarmcode/self-improvement-…</code> branch for you to review and merge. Build and test commands are discovered from the repository; override them under <code>Coding:SelfImprovement:Checks</code> in <code>@SettingsFile.Path</code>.</p>
+            </div>
+            <div class="sc-row">
+                <button type="button" class="sc-btn sc-btn--primary" disabled="@_busy" @onclick="SaveSelfImprovementAsync">Save self-improvement settings</button>
+            </div>
+        </div>
+    </section>
+    </SettingsDialog>
+    }
+    <SettingsDialog Id="data" Title="Data and logs" Description="Find local files and storage information." Filter="@_settingsSearch" Message="@_message" IsError="@_messageIsError">
+    <section class="sc-card">
+        <h2 class="sc-card__title">Data</h2>
+        <p class="sc-card__copy">Where Talavine Code keeps its sessions, settings, secrets, and logs on this computer.</p>
+        <div class="sc-list">
+            <div class="sc-list__row">
+                <div class="sc-grow"><div class="sc-field__label">Data folder</div><div class="sc-mono">@State.Paths.RootDirectory</div></div>
+                <button type="button" class="sc-btn sc-btn--sm" @onclick="() => FolderLauncher.OpenAsync(State.Paths.RootDirectory)">Open folder</button>
+            </div>
+            <div class="sc-list__row">
+                <div class="sc-grow"><div class="sc-field__label">Secret vault</div><div class="sc-mono">@State.Paths.SecretsDbPath</div></div>
+                <span class="sc-chip @(State.KeyStore.IsAvailable ? "sc-chip--ok" : "sc-chip--warn")">@KeyStoreLabel</span>
+            </div>
+            <div class="sc-list__row">
+                <div class="sc-grow"><div class="sc-field__label">Log file</div><div class="sc-mono">@(MauiProgram.LogPath ?? State.Paths.LogPath)</div></div>
+                <button type="button" class="sc-btn sc-btn--sm" @onclick="OpenLogFolder">Open folder</button>
+            </div>
+        </div>
+    </section>
+    </SettingsDialog>
+    </div>
+    </details>
+</div>
+
+@code {
+    private UserSettingsFile? _settingsFile;
+    private UserSettingsFile SettingsFile => _settingsFile ??= new(State.Paths);
+    private string _settingsSearch = "";
+    private static readonly string[] ByokProviders = ["OpenAI", "Claude", "Gemini", "OpenRouter", "DeepSeek", "Grok", "HuggingFace", "Venice"];
+    private static readonly string[] KnownProviders = ["ClaudeCodeNative", "CodexNative", "GeminiCliNative", "ClaudeCode", "CodexCli", "OpenAI", "Claude", "Gemini", "OpenRouter", "DeepSeek", "Grok", "HuggingFace", "Venice", "Ollama", "LMStudio"];
+
+    /// <summary>Why native lanes are dimmed while a mode asks or deny rules exist (the orchestrator skips them and says so in the chat).</summary>
+    private const string NativeApprovalNote =
+        "Native lanes (Claude Code, Codex, Gemini CLI agents) run their own tools without Talavine Code's prompts and rules, so while the mode asks or deny rules exist they are skipped and the next non-native lane runs instead.";
+
+    private CodingPermissionRules _permissionRules = new();
+    private RepositoryPermissionInspection? _repositoryRules;
+
+    private bool NativeOff => CodingPermissionPolicy.From(Prefs.Mode, RepositoryPermissionRules.Merge(_permissionRules, _repositoryRules)).Restricts;
+
+    /// <summary>Reads the open repository's own permission rules and whether their allow rules are approved.</summary>
+    private async Task LoadRepositoryRulesAsync()
+    {
+        if (State.Workspace is not { } workspace) { _repositoryRules = null; return; }
+        var services = workspace.Services;
+        var root = workspace.RepositoryRoot;
+        try { _repositoryRules = await Task.Run(() => SwarmCodePermissions.InspectRepositoryAsync(services, root)); }
+        catch (Exception) { _repositoryRules = null; }
+    }
+
+    private async Task DecideRepositoryRulesAsync(RepositoryPermissionInspection rules, bool allow)
+    {
+        if (State.Workspace is not { } workspace || workspace.Services.GetService<ICodingRepositorySettingsApprovalStore>() is not { } approvals) return;
+        _busy = true;
+        try
+        {
+            var root = workspace.RepositoryRoot;
+            if (allow && rules.Sha256 is { } sha) await Task.Run(() => approvals.ApproveAsync(root, sha));
+            else if (!allow) await Task.Run(() => approvals.RevokeAsync(root));
+            await LoadRepositoryRulesAsync();
+        }
+        catch (Exception ex) { _repositoryRulesError = "Could not save the decision: " + ex.Message; }
+        finally { _busy = false; }
+    }
+
+    private string? _repositoryRulesError;
+
+    private void SetTheme(ChangeEventArgs e) => UpdatePref(p => p.Theme = e.Value?.ToString() ?? "system");
+
+    private void SetMode(object? value)
+    {
+        if (CodingPermissionPolicy.TryParse(value?.ToString(), out var mode)) UpdatePref(p => p.SetMode(mode));
+    }
+
+    internal static string ModeNote(CodingPermissionMode mode) => mode switch
+    {
+        CodingPermissionMode.AskRisky => "Reads and file edits in the workspace run; commands, git commit/push, sends, deletions and computer/browser control wait for your approval.",
+        CodingPermissionMode.Ask => "Every action with a side effect waits for your approval; reads run.",
+        _ => "Your request authorizes the tools it needs; nothing waits for approval.",
+    };
+
+    private static RenderFragment RuleList(IReadOnlyList<string> rules) => builder =>
+    {
+        if (rules.Count == 0) { builder.AddContent(0, "none"); return; }
+        var seq = 0;
+        foreach (var rule in rules)
+        {
+            builder.OpenElement(seq++, "code");
+            builder.AddContent(seq++, rule);
+            builder.CloseElement();
+            builder.AddContent(seq++, " ");
+        }
+    };
+
+    private static bool IsNativeProvider(string? provider)
+        => !string.IsNullOrWhiteSpace(provider) && new CodingLane("x", provider.Trim(), "m").IsNative;
+
+    private sealed class LaneRow
+    {
+        public string Name { get; set; } = "";
+        public string Provider { get; set; } = "";
+        public string Model { get; set; } = "";
+        public string? Description { get; set; }
+    }
+
+    private readonly Dictionary<string, string> _keyInputs = new();
+    private readonly Dictionary<string, bool> _keyStatus = new();
+    private bool _braveConfigured;
+    private string _braveKeyInput = "";
+    private List<LaneRow> _lanes = [];
+    private List<SecretEntry> _secrets = [];
+    private ElementReference _credentialsDialog;
+    private string _credentialSearch = "";
+    private string? _defaultModelStatus;
+    private bool _defaultModelsLoading;
+    private int _defaultModelGeneration;
+    private string? _defaultLaneBaseline, _defaultModelBaseline;
+    private string _defaultModelLane = "";
+    private string _defaultModel = "";
+    private IReadOnlyList<string> _defaultModels = [];
+    private string? _chromeStatus;
+    private bool _connectingChrome;
+    private string _laneDefault = "";
+    private int _maxLanes = 3;
+    private bool _handOff = true;
+    private CodingFallbackDiscoveryOptions _fallbackDiscovery = new();
+    private string _discoveryProviders = "";
+    private string _discoveryNamespaces = "";
+    private IReadOnlyList<ModelResponseSummary> _modelHistory = [];
+    private string? _modelHistoryError;
+    private bool _busy;
+    private string? _message;
+    private bool _messageIsError;
+    private string _secretName = "";
+    private string _secretValue = "";
+    private string _secretSite = "";
+    private string _secretUsername = "";
+    private string? _returnSessionId;
+    private decimal _attachmentFileMb, _attachmentTotalMb;
+    private int _attachmentCount, _attachmentText;
+    private int _limitMinutes;
+    private int _limitTools;
+    private long _limitTokens;
+    private int _limitIterations;
+    private int _repairAttempts = 1;
+    private CodingComputerOptions _computer = new();
+    private List<CheckRow> _checks = [];
+    private sealed class CheckRow
+    {
+        public string Name { get; set; } = "";
+        public string FileName { get; set; } = "";
+        public string Arguments { get; set; } = "";
+        public string? WorkingDirectory { get; set; }
+        public int TimeoutSeconds { get; set; } = 300;
+        public int ExpectedExitCode { get; set; }
+        public string? RequiredOutput { get; set; }
+    }
+
+    private AppPreferences Prefs => State.Preferences.Current;
+
+    private string KeyStoreLabel => State.KeyStore.ProviderId switch
+    {
+        "dpapi" => "Windows (DPAPI, this user)",
+        "keychain" => "macOS Keychain (this device)",
+        _ => "no OS keystore",
+    };
+
+    protected override async Task OnInitializedAsync()
+    {
+        State.Changed += OnChanged;
+        LoadLanes();
+        LoadDefaultModel();
+        await SourcesChangedAsync();
+        await Task.Run(LoadRuntimeSettings);
+        await Task.Run(LoadSelfImprovement);
+        await LoadRepositoryRulesAsync();
+        if (!string.IsNullOrEmpty(_defaultModelLane)) await RefreshDefaultModelsAsync();
+        await RefreshMcpServersAsync();
+        await RefreshReturnDestinationAsync();
+        await RefreshKeysAsync();
+        await RefreshSecretsAsync();
+        await RefreshModelHistoryAsync();
+    }
+
+    private void OnChanged() => _ = InvokeAsync(async () => { await RefreshReturnDestinationAsync(); await RefreshKeysAsync(); StateHasChanged(); });
+
+    private IReadOnlyList<CodingLane> _sourceLanes = [];
+    private async Task SourcesChangedAsync()
+    {
+        _sourceLanes = await Task.Run(() => new ModelSourcesStore(State.Paths).Read().Sources.Where(s => s.Enabled)
+            .Select(s => new CodingLane(s.Name, s.Provider, s.Model)).ToArray());
+        LoadLanes();
+        await RefreshKeysAsync();
+    }
+    private IEnumerable<CodingLane> AvailableLanes() => State.Workspace?.Lanes ?? SettingsFile.ReadLanes().Lanes.Concat(_sourceLanes).DistinctBy(l => l.Name).ToArray();
+
+    private void LoadDefaultModel()
+    {
+        var prefs = Prefs;
+        _defaultLaneBaseline = prefs.DefaultLane; _defaultModelBaseline = prefs.DefaultModel;
+        _defaultModelLane = prefs.DefaultLane ?? "";
+        _defaultModel = Prefs.DefaultModel ?? AvailableLanes().FirstOrDefault(l => l.Name.Equals(_defaultModelLane, StringComparison.OrdinalIgnoreCase))?.Model ?? "";
+        _defaultModels = [];
+    }
+
+    private async Task DefaultModelLaneChangedAsync(ChangeEventArgs e)
+    {
+        _defaultModelLane = e.Value?.ToString() ?? "";
+        var selected = AvailableLanes().FirstOrDefault(l => l.Name.Equals(_defaultModelLane, StringComparison.OrdinalIgnoreCase));
+        _defaultModel = selected?.Model ?? "";
+        _defaultModels = [];
+        var generation = ++_defaultModelGeneration;
+        _defaultModelStatus = null;
+        _defaultModelsLoading = false;
+        if (selected is null || State.Workspace is not { } workspace) return;
+        _defaultModelsLoading = true;
+        try
+        {
+            var models = await Task.Run(async () =>
+            {
+                using var scope = workspace.Services.CreateScope();
+                return await scope.ServiceProvider.GetRequiredService<CodingModelCatalog>().GetCatalogAsync(selected);
+            });
+            if (generation == _defaultModelGeneration) { _defaultModels = models.Models; _defaultModelStatus = models.Source; }
+        }
+        catch (Exception ex) { if (generation == _defaultModelGeneration) _defaultModelStatus = ex is OperationCanceledException ? "Model lookup timed out. Refresh to retry or enter a custom model ID." : ex.Message; }
+        finally { if (generation == _defaultModelGeneration) _defaultModelsLoading = false; }
+    }
+
+    private async Task RefreshDefaultModelsAsync()
+    {
+        var model = _defaultModel;
+        var pending = DefaultModelLaneChangedAsync(new ChangeEventArgs { Value = _defaultModelLane });
+        _defaultModel = model;
+        await pending;
+    }
+
+    private async Task UseCurrentDefaultsAsync()
+    {
+        if (_returnSessionId is null) return;
+        var session = await State.Sessions.GetAsync(_returnSessionId);
+        var lane = session?.Selection?.Route ?? session?.LaneName;
+        var model = session?.Selection?.Model ?? (lane is null ? null : session?.ModelChoices.GetValueOrDefault(lane));
+        model ??= AvailableLanes().FirstOrDefault(l => l.Name == lane)?.Model;
+        if (lane is null || string.IsNullOrWhiteSpace(model)) { Show("Select a provider and model in the session first.", true); return; }
+        _defaultModelLane = lane; _defaultModel = model;
+        await SaveDefaultModelAsync();
+    }
+
+    private async Task SaveDefaultModelAsync()
+    {
+        try
+        {
+            if (!string.IsNullOrEmpty(_defaultModelLane))
+            {
+                if (!AvailableLanes().Any(l => l.Name.Equals(_defaultModelLane, StringComparison.OrdinalIgnoreCase)))
+                { Show("Choose an available model route.", true); return; }
+                if (string.IsNullOrWhiteSpace(_defaultModel)) { Show("Choose a model first.", true); return; }
+            }
+            var lane = string.IsNullOrEmpty(_defaultModelLane) ? null : _defaultModelLane;
+            var model = lane is null ? null : _defaultModel.Trim();
+            var baselineLane = _defaultLaneBaseline; var baselineModel = _defaultModelBaseline;
+            await Task.Run(() => State.Preferences.Update(p =>
+            {
+                if ((p.DefaultLane != baselineLane || p.DefaultModel != baselineModel) && (p.DefaultLane != lane || p.DefaultModel != model))
+                    throw new InvalidOperationException("Defaults changed. Reload defaults before saving; your draft has been preserved.");
+                p.DefaultLane = lane; p.DefaultModel = model;
+            }));
+            _defaultLaneBaseline = lane; _defaultModelBaseline = model;
+            Show("Default model saved for new sessions.", false);
+        }
+        catch (Exception ex) { Show($"Could not save the default model: {ex.Message}", true); }
+    }
+
+    private IEnumerable<SecretEntry> FilteredSecrets() => _secrets.Where(s =>
+        string.IsNullOrWhiteSpace(_credentialSearch) || new[] { s.Name, s.Kind, s.Site, s.UsernameHint }
+            .Any(value => value?.Contains(_credentialSearch.Trim(), StringComparison.OrdinalIgnoreCase) == true));
+
+    private async Task OpenCredentialsAsync()
+    {
+        await RefreshSecretsAsync();
+        await JS.InvokeVoidAsync("swarmcode.openDialog", _credentialsDialog);
+    }
+    private Task CloseCredentialsAsync() => JS.InvokeVoidAsync("swarmcode.closeDialog", _credentialsDialog).AsTask();
+    private void ClearCredentialSearch() => _credentialSearch = "";
+
+    private void OpenChromeSetup()
+    {
+        try { PersonalChromeConnection.OpenSetup(); }
+        catch (Exception ex) { Show($"Could not open Chrome: {ex.Message}", true); }
+    }
+
+    private async Task TestChromeAsync()
+    {
+        if (_connectingChrome) return;
+        _connectingChrome = true;
+        _chromeStatus = "Connecting… check Chrome for its Allow connection prompt.";
+        try
+        {
+            // Same contract as API/native tools, including profile discovery and Chrome's consent prompt.
+            await using var browser = new ChromeComputerSession(Microsoft.Extensions.Options.Options.Create(_computer));
+            var tabs = await browser.ListAsync();
+            _chromeStatus = $"Connected to Chrome ({tabs.Count} open tabs). Save computer settings to use this connection for tasks.";
+        }
+        catch (Exception ex) { _chromeStatus = ex.Message; }
+        finally { _connectingChrome = false; }
+    }
+
+    private void LoadRuntimeSettings()
+    {
+        var limits = SettingsFile.ReadCodingSection<CodingExecutionLimits>("ExecutionLimits");
+        _limitMinutes = limits.Timeout > TimeSpan.Zero ? (int)Math.Ceiling(limits.Timeout.TotalMinutes) : 0;
+        _limitTools = limits.MaxToolCalls;
+        _limitTokens = limits.MaxCumulativeTokens;
+        _limitIterations = limits.MaxIterations;
+        var acceptance = SettingsFile.ReadCodingSection<CodingAcceptanceOptions>("Acceptance");
+        _repairAttempts = acceptance.MaxRepairAttempts;
+        _checks = acceptance.Commands.Select(c => new CheckRow { Name = c.Name, FileName = c.FileName, Arguments = string.Join('\n', c.Arguments), WorkingDirectory = c.WorkingDirectory, TimeoutSeconds = c.TimeoutSeconds, ExpectedExitCode = c.ExpectedExitCode, RequiredOutput = c.RequiredOutput }).ToList();
+        var attachments = SettingsFile.ReadCodingSection<CodingAttachmentOptions>("AttachmentLimits");
+        _attachmentFileMb = attachments.MaxFileBytes / 1048576m;
+        _attachmentTotalMb = attachments.MaxTotalBytes / 1048576m;
+        _attachmentCount = attachments.MaxFiles;
+        _attachmentText = attachments.MaxTextCharacters;
+        _computer = SettingsFile.ReadCodingSection<CodingComputerOptions>("Computer");
+        _fallbackDiscovery = SettingsFile.ReadCodingSection<CodingFallbackDiscoveryOptions>("FallbackDiscovery");
+        _discoveryProviders = string.Join(", ", _fallbackDiscovery.Providers);
+        _discoveryNamespaces = string.Join(", ", _fallbackDiscovery.PreferredModelNamespaces);
+        if (string.IsNullOrWhiteSpace(_computer.BrowserProfileDirectory)) _computer.BrowserProfileDirectory = Path.Combine(State.Paths.RootDirectory, "browser", "chrome");
+        _allowCodexApps = SettingsFile.ReadAllowCodexAppConnectors();
+        _allowClaudeAi = SettingsFile.ReadAllowClaudeAiConnectors();
+        _permissionRules = SettingsFile.ReadPermissionRules();
+    }
+
+    private bool _allowCodexApps;
+    private bool _allowClaudeAi;
+
+    private async Task SetAllowClaudeAiAsync(bool allow)
+    {
+        if (State.AnyTurnRunning) { Show("Stop active work before changing what Claude Code can reach.", true); return; }
+        _busy = true;
+        try
+        {
+            await Task.Run(() => SettingsFile.WriteAllowClaudeAiConnectors(allow));
+            _allowClaudeAi = allow;
+            var ok = State.Workspace is null || await State.ReloadWorkspaceAsync();
+            Show(!ok ? "Saved, but the repository failed to reload."
+                : allow ? "Claude Code can now also use the connectors linked on your claude.ai account." : "claude.ai connectors are off for Claude Code runs.", !ok);
+        }
+        catch (Exception ex) { Show("Could not save the setting: " + ex.Message, true); }
+        finally { _busy = false; }
+    }
+
+    private async Task SetAllowCodexAppsAsync(bool allow)
+    {
+        if (State.AnyTurnRunning) { Show("Stop active work before changing what Codex can reach.", true); return; }
+        _busy = true;
+        try
+        {
+            await Task.Run(() => SettingsFile.WriteAllowCodexAppConnectors(allow));
+            _allowCodexApps = allow;
+            var ok = State.Workspace is null || await State.ReloadWorkspaceAsync();
+            Show(!ok ? "Saved, but the repository failed to reload."
+                : allow ? "Codex can now also use your Codex app connectors. Additional MCP servers from your Codex configuration can still load." : "Codex app connectors are off. Additional MCP servers from your Codex configuration can still load.", !ok);
+        }
+        catch (Exception ex) { Show("Could not save the setting: " + ex.Message, true); }
+        finally { _busy = false; }
+    }
+
+    private async Task SaveAttachmentsAsync()
+    {
+        if (State.AnyTurnRunning) { Show("Finish or stop active work before changing attachment limits.", true); return; }
+        _busy = true;
+        try
+        {
+            var limits = new CodingAttachmentOptions { MaxFileBytes = checked((long)(_attachmentFileMb * 1048576m)), MaxTotalBytes = checked((long)(_attachmentTotalMb * 1048576m)), MaxFiles = _attachmentCount, MaxTextCharacters = _attachmentText };
+            limits.Validate();
+            await Task.Run(() => SettingsFile.WriteCodingSection("AttachmentLimits", limits));
+            var ok = State.Workspace is null || await State.ReloadWorkspaceAsync();
+            Show(ok ? "Attachment settings saved." : "Attachment settings saved, but the repository failed to reload.", !ok);
+        }
+        catch (Exception ex) { Show("Could not save attachment settings: " + ex.Message, true); }
+        finally { _busy = false; }
+    }
+
+    private async Task SaveComputerAsync()
+    {
+        if (State.AnyTurnRunning) { Show("Finish active work before changing computer settings.", true); return; }
+        var draft = System.Text.Json.JsonSerializer.Deserialize<CodingComputerOptions>(System.Text.Json.JsonSerializer.Serialize(_computer))!;
+        if (!string.IsNullOrWhiteSpace(draft.ChromeCdpEndpoint) && (!Uri.TryCreate(draft.ChromeCdpEndpoint, UriKind.Absolute, out var endpoint) || !endpoint.IsLoopback || endpoint.Scheme is not ("http" or "https" or "ws" or "wss"))) { Show("The Chrome connection must be a loopback address.", true); return; }
+        _busy = true;
+        try
+        {
+            await Task.Run(() => SettingsFile.WriteCodingSection("Computer", draft));
+            var ok = State.Workspace is null || await State.ReloadWorkspaceAsync();
+            Show(ok ? "Computer settings saved." : "Saved, but the repository failed to reload.", !ok);
+        }
+        catch (Exception ex) { Show("Could not save computer settings: " + ex.Message, true); }
+        finally { _busy = false; }
+    }
+
+    private async Task SaveRuntimeAsync()
+    {
+        if (State.AnyTurnRunning) { Show("Stop active work before changing runtime settings.", true); return; }
+        if (_limitMinutes < 0 || _limitTools < 0 || _limitTokens < 0 || _repairAttempts is < 0 or > 10) { Show("Limits must be zero or positive; repair attempts must be between zero and ten.", true); return; }
+        if (_checks.Any(c => string.IsNullOrWhiteSpace(c.Name) || string.IsNullOrWhiteSpace(c.FileName))) { Show("Every verification check needs a name and an executable.", true); return; }
+        _busy = true;
+        try
+        {
+            var limits = new CodingExecutionLimits { Timeout = _limitMinutes == 0 ? Timeout.InfiniteTimeSpan : TimeSpan.FromMinutes(_limitMinutes), MaxToolCalls = _limitTools, MaxCumulativeTokens = _limitTokens, MaxIterations = _limitIterations };
+            var acceptance = new CodingAcceptanceOptions { MaxRepairAttempts = _repairAttempts, Commands = _checks.Select(c => new CodingAcceptanceCommand { Name = c.Name.Trim(), FileName = c.FileName.Trim(), Arguments = c.Arguments.Replace("\r", "").Split('\n', StringSplitOptions.RemoveEmptyEntries).ToList(), RequiredOutput = string.IsNullOrEmpty(c.RequiredOutput) ? null : c.RequiredOutput, WorkingDirectory = c.WorkingDirectory, TimeoutSeconds = c.TimeoutSeconds, ExpectedExitCode = c.ExpectedExitCode }).ToList() };
+            await Task.Run(() => SettingsFile.WriteWorkSettings(limits, acceptance));
+            var ok = State.Workspace is null || await State.ReloadWorkspaceAsync();
+            Show(ok ? "Work settings saved." : "Settings saved, but the repository failed to reload.", !ok);
+        }
+        catch (Exception ex) { Show("Could not save runtime settings: " + ex.Message, true); }
+        finally { _busy = false; }
+    }
+
+    private List<SwarmCode.Hosting.Mcp.ExternalMcpServer> _mcpServers = [];
+    private List<string> _mcpProblems = [];
+    private string _mcpTransport = "stdio";
+    private bool _mcpHttp => string.Equals(_mcpTransport, "http", StringComparison.Ordinal);
+    private string _mcpUrl = "";
+    private string _mcpBearer = "";
+    private string _mcpName = "";
+    private string _mcpCommand = "";
+    private string _mcpArguments = "";
+    private string _mcpEnvironment = "";
+    private bool _mcpTrusted;
+    private bool _mcpRequired;
+
+    private SwarmCode.Hosting.Mcp.ExternalMcpServersFile McpFile => new(State.Paths);
+
+    private async Task RefreshMcpServersAsync()
+    {
+        var snapshot = await Task.Run(() => McpFile.Read());
+        _mcpServers = [.. snapshot.Servers];
+        _mcpProblems = [.. snapshot.Problems];
+    }
+
+    private async Task SaveMcpServerAsync()
+    {
+        if (State.AnyTurnRunning) { Show("Stop active work before changing MCP servers.", true); return; }
+        var name = _mcpName.Trim();
+        var useHttp = _mcpHttp;
+        var url = _mcpUrl.Trim();
+        var bearer = string.IsNullOrWhiteSpace(_mcpBearer) ? null : _mcpBearer.Trim();
+        if (!SwarmCode.Hosting.Mcp.ExternalMcpServersFile.IsValidName(name)) { Show("Give the server a name made of letters, digits, '_' and '-'.", true); return; }
+        if (!_mcpHttp && string.IsNullOrWhiteSpace(_mcpCommand)) { Show("Enter the command that starts the server.", true); return; }
+        var environment = new List<KeyValuePair<string, string>>();
+        foreach (var line in (_mcpHttp ? "" : _mcpEnvironment).Replace("\r", "").Split('\n', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))
+        {
+            var equals = line.IndexOf('=');
+            if (equals <= 0) { Show($"Environment lines must look like NAME=value (\"{line}\").", true); return; }
+            environment.Add(new(line[..equals].Trim(), line[(equals + 1)..]));
+        }
+        var arguments = _mcpArguments.Replace("\r", "").Split('\n', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+        _busy = true;
+        try
+        {
+            var launch = _mcpHttp ? null : new SwarmCore.Mcp.ExternalClients.McpServerLaunchEntry(_mcpCommand.Trim(), arguments, environment);
+            var (trusted, required) = (_mcpTrusted, _mcpRequired);
+            var problem = await Task.Run(() => useHttp
+                ? McpFile.UpsertHttp(name, url, bearer, trusted, required)
+                : McpFile.Upsert(name, launch!, trusted, required));
+            if (problem is not null) { Show("Could not save the server: " + problem, true); return; }
+            _mcpName = _mcpCommand = _mcpArguments = _mcpEnvironment = _mcpUrl = _mcpBearer = "";
+            _mcpTrusted = _mcpRequired = false;
+            await RefreshMcpServersAsync();
+            var ok = State.Workspace is null || await State.ReloadWorkspaceAsync();
+            Show(ok ? $"Saved {name}. New sessions and turns can use its tools." : $"Saved {name}, but the repository failed to reload.", !ok);
+        }
+        catch (Exception ex) { Show("Could not save the server: " + ex.Message, true); }
+        finally { _busy = false; }
+    }
+
+    private async Task RemoveMcpServerAsync(string name)
+    {
+        if (State.AnyTurnRunning) { Show("Stop active work before changing MCP servers.", true); return; }
+        _busy = true;
+        try
+        {
+            var problem = await Task.Run(() => McpFile.Remove(name));
+            if (problem is not null) { Show("Could not remove the server: " + problem, true); return; }
+            await RefreshMcpServersAsync();
+            var ok = State.Workspace is null || await State.ReloadWorkspaceAsync();
+            Show(ok ? $"Removed {name}." : $"Removed {name}, but the repository failed to reload.", !ok);
+        }
+        catch (Exception ex) { Show("Could not remove the server: " + ex.Message, true); }
+        finally { _busy = false; }
+    }
+
+    private async Task RefreshReturnDestinationAsync()
+    {
+        var sessionId = Prefs.LastSessionId;
+        var root = State.RepositoryRoot ?? Prefs.LastRepositoryRoot;
+        var session = string.IsNullOrWhiteSpace(sessionId) || string.IsNullOrWhiteSpace(root)
+            ? null
+            : await Task.Run(() => State.Sessions.GetAsync(sessionId));
+        _returnSessionId = session is not null && string.Equals(
+            Path.GetFullPath(session.RepositoryRoot).TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar),
+            Path.GetFullPath(root!).TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar),
+            StringComparison.OrdinalIgnoreCase)
+                ? session.Id
+                : null;
+    }
+
+    private void LoadLanes()
+    {
+        var opts = SettingsFile.ReadLanes();
+        _lanes = opts.Lanes.OrderBy(l => l.Priority)
+            .Select(l => new LaneRow { Name = l.Name, Provider = l.Provider, Model = l.Model, Description = l.Description }).ToList();
+        _laneDefault = opts.DefaultLane ?? "";
+        _maxLanes = opts.MaxLanesPerRequest;
+        _handOff = Prefs.HandOffOnRefusal;
+    }
+
+    private async Task RefreshKeysAsync()
+    {
+        var provider = State.ApiKeys;
+        var status = await Task.Run(async () =>
+        {
+            var d = new Dictionary<string, bool>();
+            foreach (var p in ByokProviders) d[p] = await provider.HasApiKeyAsync(p);
+            return d;
+        });
+        _keyStatus.Clear();
+        foreach (var kv in status) _keyStatus[kv.Key] = kv.Value;
+        _braveConfigured = await Task.Run(() => SwarmCodeWebSearch.IsConfiguredAsync(State.Vault));
+    }
+
+    private async Task SaveBraveKeyAsync()
+    {
+        var value = _braveKeyInput.Trim();
+        if (value.Length == 0) { Show("Paste a Brave Search API key first.", true); return; }
+        try
+        {
+            await Task.Run(() => SwarmCodeWebSearch.SaveKeyAsync(State.Vault, value));
+            _braveKeyInput = string.Empty;
+            _braveConfigured = true;
+            await RefreshSecretsAsync();
+            Show("Saved the Brave Search key. Web search is available in every session.", false);
+        }
+        catch (Exception ex) { Show($"Could not save the key: {ex.Message}", true); }
+    }
+
+    private async Task RemoveBraveKeyAsync()
+    {
+        try
+        {
+            await Task.Run(() => SwarmCodeWebSearch.RemoveKeyAsync(State.Vault));
+            _braveConfigured = false;
+            await RefreshSecretsAsync();
+            Show("Removed the Brave Search key.", false);
+        }
+        catch (Exception ex) { Show($"Could not remove the key: {ex.Message}", true); }
+    }
+
+    private async Task RefreshSecretsAsync()
+    {
+        var all = await Task.Run(() => State.Vault.ListAsync());
+        _secrets = all.Where(s => !s.Name.StartsWith(SecretNames.LlmPrefix, StringComparison.Ordinal)).ToList();
+    }
+
+    private string KeyInput(string name) => _keyInputs.GetValueOrDefault(name, string.Empty);
+
+    private async Task SaveKeyAsync(string provider)
+    {
+        var value = KeyInput(provider).Trim();
+        if (value.Length == 0) { Show($"Paste a key for {provider} first.", true); return; }
+        try
+        {
+            await State.ApiKeys.SetApiKeyAsync(provider, value);
+            _keyInputs[provider] = string.Empty;
+            _keyStatus[provider] = true;
+            // The open workspace built its lanes before this key existed; rebuild it so the new lane appears.
+            if (State.Workspace is not null) await State.ReloadWorkspaceAsync();
+            Show($"Saved the {provider} key to the vault.", false);
+        }
+        catch (Exception ex) { Show($"Could not save the key: {ex.Message}", true); }
+    }
+
+    private async Task ClearKeyAsync(string provider)
+    {
+        try
+        {
+            await State.ApiKeys.ClearApiKeyAsync(provider);
+            await RefreshKeysAsync();
+            if (State.Workspace is not null) await State.ReloadWorkspaceAsync();
+            Show($"Removed the {provider} key.", false);
+        }
+        catch (Exception ex) { Show($"Could not remove the key: {ex.Message}", true); }
+    }
+
+    private async Task SaveSecretAsync()
+    {
+        if (!SecretNames.TryNormalize(_secretName, out var name)) { Show("Give the credential a name (letters, digits, dots, dashes).", true); return; }
+        if (string.IsNullOrEmpty(_secretValue)) { Show("Paste the value to store.", true); return; }
+        _busy = true;
+        try
+        {
+            var kind = string.IsNullOrWhiteSpace(_secretSite) && string.IsNullOrWhiteSpace(_secretUsername) ? null : SecretKinds.Password;
+            await State.SecretIntake.StoreAsync(name, _secretValue, kind,
+                string.IsNullOrWhiteSpace(_secretSite) ? null : _secretSite.Trim(),
+                string.IsNullOrWhiteSpace(_secretUsername) ? null : _secretUsername.Trim());
+            _secretName = _secretValue = _secretSite = _secretUsername = "";
+            await RefreshSecretsAsync();
+            Show($"Saved {name}. The agent can use it as {SecretReference.Placeholder(name)}.", false);
+        }
+        catch (Exception ex) { Show($"Could not save the credential: {ex.Message}", true); }
+        finally { _busy = false; }
+    }
+
+    private async Task DeleteSecretAsync(string name)
+    {
+        try
+        {
+            await State.Vault.DeleteAsync(name);
+            await RefreshSecretsAsync();
+            Show($"Deleted {name}.", false);
+        }
+        catch (Exception ex) { Show($"Could not delete {name}: {ex.Message}", true); }
+    }
+
+    private async Task ImportPasswordsAsync()
+    {
+        _busy = true;
+        try
+        {
+            var picked = await FilePicker.Default.PickAsync(new PickOptions
+            {
+                PickerTitle = "Choose a password export (CSV)",
+                FileTypes = new FilePickerFileType(new Dictionary<DevicePlatform, IEnumerable<string>>
+                {
+                    [DevicePlatform.WinUI] = [".csv"],
+                    [DevicePlatform.MacCatalyst] = ["public.comma-separated-values-text", "csv"],
+                }),
+            });
+            if (picked is null) return;
+            var summary = await State.PasswordImporter.ImportFileAsync(picked.FullPath);
+            await RefreshSecretsAsync();
+            Show(summary.Describe(), !summary.Success);
+        }
+        catch (Exception ex) { Show($"Import failed: {ex.Message}", true); }
+        finally { _busy = false; }
+    }
+
+    private IEnumerable<string> LaneNames()
+    {
+        var names = _lanes.Select(l => l.Name).Where(n => !string.IsNullOrWhiteSpace(n));
+        if (State.Workspace is { } ws) names = names.Concat(ws.Lanes.Select(l => l.Name));
+        return names.Distinct(StringComparer.OrdinalIgnoreCase);
+    }
+
+    private void AddLane() => _lanes.Add(new LaneRow());
+
+    private void Move(int index, int delta)
+    {
+        var to = index + delta;
+        if (to < 0 || to >= _lanes.Count) return;
+        (_lanes[index], _lanes[to]) = (_lanes[to], _lanes[index]);
+    }
+
+    private async Task RefreshModelHistoryAsync()
+    {
+        try
+        {
+            var workspace = State.Workspace;
+            if (workspace?.Services.GetService(typeof(IModelResponseMemory)) is not IModelResponseMemory memory)
+            { _modelHistory = []; _modelHistoryError = null; return; }
+            var scopeId = workspace.CodingOptions.ProfileId.ToString("N");
+            _modelHistory = await Task.Run(async () => ModelResponseLearning.Summarize(await memory.ReadAsync(scopeId)));
+            _modelHistoryError = null;
+        }
+        catch (Exception) { _modelHistoryError = "Response history could not be loaded. Existing evidence has not been replaced."; }
+    }
+
+    private async Task SaveFallbackDiscoveryAsync()
+    {
+        if (State.AnyTurnRunning) { Show("Finish the running request before changing model search.", true); return; }
+        _busy = true;
+        try
+        {
+            var saved = new CodingFallbackDiscoveryOptions
+            {
+                Enabled = _fallbackDiscovery.Enabled,
+                RememberResponses = _fallbackDiscovery.RememberResponses,
+                Providers = _discoveryProviders.Split(',', StringSplitOptions.TrimEntries | StringSplitOptions.RemoveEmptyEntries).Distinct(StringComparer.OrdinalIgnoreCase).ToList(),
+                PreferredModelNamespaces = _discoveryNamespaces.Split(',', StringSplitOptions.TrimEntries | StringSplitOptions.RemoveEmptyEntries).Distinct(StringComparer.OrdinalIgnoreCase).ToList(),
+                MaxCandidates = Math.Clamp(_fallbackDiscovery.MaxCandidates, 1, 10),
+                MaxInputPricePerMillionUsd = Math.Max(0, _fallbackDiscovery.MaxInputPricePerMillionUsd),
+                MaxOutputPricePerMillionUsd = Math.Max(0, _fallbackDiscovery.MaxOutputPricePerMillionUsd),
+            };
+            await Task.Run(() => SettingsFile.WriteCodingSection("FallbackDiscovery", saved));
+            var ok = State.Workspace is null || await State.ReloadWorkspaceAsync();
+            Show(ok ? "Fallback model search saved." : "Model search saved, but the repository failed to reload.", !ok);
+        }
+        catch (Exception ex) { Show("Could not save model search: " + ex.Message, true); }
+        finally { _busy = false; }
+    }
+
+    private async Task SaveLanesAsync()
+    {
+        var error = ValidateLanes();
+        if (error is not null) { Show(error, true); return; }
+        _busy = true;
+        try
+        {
+            var options = new CodingLaneOptions
+            {
+                Lanes = _lanes.Select((r, i) => new CodingLane(r.Name.Trim(), r.Provider.Trim(), r.Model.Trim())
+                {
+                    Description = string.IsNullOrWhiteSpace(r.Description) ? null : r.Description.Trim(),
+                    Priority = i,
+                }).ToList(),
+                DefaultLane = string.IsNullOrWhiteSpace(_laneDefault) ? null : _laneDefault,
+                HandOffOnRefusal = _handOff,
+                MaxLanesPerRequest = Math.Clamp(_maxLanes, 1, 10),
+            };
+            await Task.Run(() => SettingsFile.WriteLanes(options));
+            State.Preferences.Update(p => p.HandOffOnRefusal = _handOff);
+            var ok = await State.ReloadWorkspaceAsync();
+            Show(ok || State.Workspace is null ? "Lanes saved." : "Lanes saved, but the repository failed to reload.", !ok && State.Workspace is not null);
+        }
+        catch (Exception ex) { Show($"Could not save lanes: {ex.Message}", true); }
+        finally { _busy = false; }
+    }
+
+    private string? ValidateLanes()
+    {
+        foreach (var r in _lanes)
+        {
+            if (string.IsNullOrWhiteSpace(r.Name) || string.IsNullOrWhiteSpace(r.Provider) || string.IsNullOrWhiteSpace(r.Model))
+                return "Every lane needs a name, a provider, and a model.";
+        }
+        var dup = _lanes.GroupBy(r => r.Name.Trim(), StringComparer.OrdinalIgnoreCase).FirstOrDefault(g => g.Count() > 1);
+        return dup is null ? null : $"Lane names must be unique ({dup.Key} appears twice).";
+    }
+
+    private async Task ResetLanesAsync()
+    {
+        _busy = true;
+        try
+        {
+            await Task.Run(() => SettingsFile.WriteLanes(new CodingLaneOptions { HandOffOnRefusal = _handOff }));
+            LoadLanes();
+            await State.ReloadWorkspaceAsync();
+            Show("Lanes reset to the ones detected on this computer.", false);
+        }
+        catch (Exception ex) { Show($"Could not reset lanes: {ex.Message}", true); }
+        finally { _busy = false; }
+    }
+
+    private void UpdatePref(Action<AppPreferences> change)
+    {
+        State.Preferences.Update(change);
+        _handOff = Prefs.HandOffOnRefusal;
+    }
+
+    private static double ParseZoom(object? value)
+        => double.TryParse(value?.ToString(), System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out var z)
+            ? Math.Clamp(z, 0.8, 1.4) : 1.0;
+
+    private Task OpenLogFolder()
+    {
+        var log = MauiProgram.LogPath ?? State.Paths.LogPath;
+        return FolderLauncher.OpenAsync(Path.GetDirectoryName(log) ?? State.Paths.LogsDirectory);
+    }
+
+    private void Show(string text, bool isError) { _message = text; _messageIsError = isError; }
+
+    // ---- self-improvement -----------------------------------------------------
+
+    private SwarmCore.Coding.SelfImprovement.SelfImprovementOptions _selfImprovement = new();
+    private int _selfImprovementIdleMinutes = 10;
+    private string? _selfImprovementDetected;
+
+    private void LoadSelfImprovement()
+    {
+        _selfImprovement = SettingsFile.ReadCodingSection<SwarmCore.Coding.SelfImprovement.SelfImprovementOptions>("SelfImprovement");
+        _selfImprovementIdleMinutes = Math.Max(1, (int)Math.Round(_selfImprovement.UserIdleAfter.TotalMinutes));
+        _selfImprovementDetected = SwarmCode.Hosting.Improvement.SwarmCodeSourceRepository.Detect(AppContext.BaseDirectory);
+    }
+
+    private async Task SaveSelfImprovementAsync()
+    {
+        if (_selfImprovementIdleMinutes is < 1 or > 720) { Show("Quiet minutes must be between 1 and 720.", true); return; }
+        if (_selfImprovement.MaxAttemptsPerItem is < 1 or > 10) { Show("Attempts per item must be between 1 and 10.", true); return; }
+        if (_selfImprovement.RepositoryRoot is { } root && !Directory.Exists(root)) { Show("The source repository folder does not exist.", true); return; }
+        if (_selfImprovement.RepositoryRoot is { } configured && !SwarmCode.Hosting.Improvement.SwarmCodeSourceRepository.IsSwarmCodeRepository(configured))
+        { Show("That folder is not a Talavine Code checkout (SwarmCode.Hosting and SwarmCore/SwarmCore.Coding were not found in it).", true); return; }
+        _busy = true;
+        try
+        {
+            _selfImprovement.UserIdleAfter = TimeSpan.FromMinutes(_selfImprovementIdleMinutes);
+            _selfImprovement.Lane = string.IsNullOrWhiteSpace(_selfImprovement.Lane) ? null : _selfImprovement.Lane.Trim();
+            var saved = _selfImprovement;
+            await Task.Run(() => SettingsFile.WriteCodingSection("SelfImprovement", saved));
+            State.SelfImprovement?.Wake();
+            var ok = State.Workspace is null || await State.ReloadWorkspaceAsync();
+            Show(ok ? "Self-improvement settings saved." : "Settings saved, but the repository failed to reload.", !ok);
+        }
+        catch (Exception ex) { Show("Could not save self-improvement settings: " + ex.Message, true); }
+        finally { _busy = false; }
+    }
+
+    public void Dispose() => State.Changed -= OnChanged;
+}

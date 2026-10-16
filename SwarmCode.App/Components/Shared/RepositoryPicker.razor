@@ -1,0 +1,67 @@
+@implements IDisposable
+@inject AppState State
+@inject RepositoryOpener Opener
+@inject NavigationManager Nav
+
+<div class="sc-repo">
+    <div class="sc-repo__current" title="@(State.RepositoryRoot ?? "No repository open")">
+        @if (State.IsOpeningWorkspace)
+        {
+            <span class="sc-spinner" aria-label="Opening repository"></span>
+        }
+        <span class="sc-repo__name @(State.RepositoryRoot is null ? "sc-muted" : "")">
+            @(State.RepositoryRoot is { } root ? AppNavigation.FolderName(root) : "No repository")
+        </span>
+    </div>
+    <div class="sc-repo__actions">
+        <button type="button" class="sc-btn sc-btn--sm sc-grow" @onclick="OpenAsync">Open…</button>
+        <button type="button" class="sc-btn sc-btn--sm" @onclick="ToggleRecentAsync" aria-expanded="@_showRecent">Recent ▾</button>
+    </div>
+    @if (_showRecent)
+    {
+        <div class="sc-popover">
+            @if (_recent.Count == 0)
+            {
+                <div class="sc-muted sc-popover__item">No recent repositories.</div>
+            }
+            @foreach (var path in _recent)
+            {
+                var p = path;
+                <button type="button" class="sc-popover__item" title="@p" @onclick="() => OpenRecentAsync(p)">
+                    <span class="sc-popover__name">@AppNavigation.FolderName(p)</span>
+                    <span class="sc-popover__path">@p</span>
+                </button>
+            }
+        </div>
+    }
+</div>
+
+@code {
+    private bool _showRecent;
+    private List<string> _recent = [];
+
+    protected override void OnInitialized() => State.Changed += OnChanged;
+
+    private void OnChanged() => _ = InvokeAsync(StateHasChanged);
+
+    private async Task OpenAsync()
+    {
+        _showRecent = false;
+        if (await Opener.PickAndOpenAsync()) Nav.NavigateTo("/");
+    }
+
+    private async Task OpenRecentAsync(string path)
+    {
+        _showRecent = false;
+        if (await Opener.OpenAsync(path)) Nav.NavigateTo("/");
+    }
+
+    private async Task ToggleRecentAsync()
+    {
+        _showRecent = !_showRecent;
+        if (!_showRecent) return;
+        _recent = await Task.Run(async () => (await State.Sessions.RecentRepositoriesAsync()).Where(Directory.Exists).ToList());
+    }
+
+    public void Dispose() => State.Changed -= OnChanged;
+}

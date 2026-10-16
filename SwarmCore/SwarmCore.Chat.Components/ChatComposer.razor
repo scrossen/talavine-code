@@ -1,0 +1,202 @@
+<div class="@RootClass">
+    @if (PopupOpen)
+    {
+        <div class="chat-slash" role="listbox" aria-label="Commands">
+            @for (var i = 0; i < _matches.Count; i++)
+            {
+                var index = i;
+                var command = _matches[i];
+                <button type="button" role="option" aria-selected="@(index == _slashIndex ? "true" : "false")"
+                        class="chat-slash__item @(index == _slashIndex ? " chat-slash__item--active" : "")"
+                        @onmousedown:preventDefault="true"
+                        @onclick="() => AcceptSlashAsync(command)">
+                    <span class="chat-slash__name">/@NormalizeName(command.Name)</span>
+                    <span class="chat-slash__desc">@command.Description</span>
+                </button>
+            }
+        </div>
+    }
+    <textarea @ref="_textarea"
+              class="chat-composer__input"
+              rows="1"
+              data-sm-autosize="true"
+              data-sm-enter-submits="true"
+              data-chat-slash-open="@(PopupOpen ? "true" : null)"
+              aria-label="@(Placeholder ?? "Message")"
+              placeholder="@Placeholder"
+              disabled="@Disabled"
+              value="@_value"
+              @oninput="OnInputAsync"
+              @onkeydown="OnKeyDownAsync"></textarea>
+    <div class="chat-composer__bar">
+        <div class="chat-composer__toolbar">@Toolbar</div>
+        @if (IsRunning)
+        {
+            <button type="button" class="chat-composer__send chat-composer__send--stop" title="Stop (Esc)" aria-label="Stop"
+                    @onclick="OnStop"><span class="chat-composer__stop-shape" aria-hidden="true"></span><span>Stop</span></button>
+        }
+        @if (!IsRunning || ShowSendWhileRunning)
+        {
+            <button type="button" class="chat-composer__send" title="@(SendLabel + " (Enter)")" aria-label="@SendLabel"
+                    disabled="@(Disabled || (!HasAttachments && string.IsNullOrWhiteSpace(_value)))"
+                    @onclick="SendAsync"><span>@SendLabel</span><span aria-hidden="true">↑</span></button>
+        }
+    </div>
+    @if (Hint is not null)
+    {
+        <div class="chat-composer__hint">@Hint</div>
+    }
+</div>
+
+@code {
+    [Inject] private IJSRuntime JS { get; set; } = default!;
+
+    [Parameter] public string Value { get; set; } = "";
+    [Parameter] public EventCallback<string> ValueChanged { get; set; }
+    [Parameter] public string? Placeholder { get; set; }
+    [Parameter] public bool IsRunning { get; set; }
+    [Parameter] public bool ShowSendWhileRunning { get; set; }
+    [Parameter] public string SendLabel { get; set; } = "Send";
+    [Parameter] public bool Disabled { get; set; }
+    [Parameter] public bool HasAttachments { get; set; }
+    /// <summary>Invoked with the trimmed text when the user sends. The composer clears itself first.
+    /// Also raised while running (hosts may queue or steer). ShowSendWhileRunning displays a send action alongside Stop.</summary>
+    [Parameter] public EventCallback<string> OnSend { get; set; }
+    [Parameter] public EventCallback OnStop { get; set; }
+    [Parameter] public RenderFragment? Toolbar { get; set; }
+    [Parameter] public RenderFragment? Hint { get; set; }
+    [Parameter] public IReadOnlyList<SlashCommand>? SlashCommands { get; set; }
+
+    private ElementReference _textarea;
+    private string _value = "";
+    private string? _lastParameterValue;
+    private int _slashIndex;
+    private bool _slashDismissed;
+    private IReadOnlyList<SlashCommand> _matches = Array.Empty<SlashCommand>();
+
+    private string RootClass => "chat-composer" + (Disabled ? " chat-composer--disabled" : "") + (IsRunning ? " chat-composer--running" : "");
+
+    private bool PopupOpen => !Disabled && !_slashDismissed && _matches.Count > 0;
+
+    public async Task FocusAsync()
+    {
+        await ChatJs.InvokeVoidAsync(JS, "focus", _textarea);
+    }
+
+    protected override void OnParametersSet()
+    {
+        var incoming = Value ?? "";
+        if (!string.Equals(incoming, _lastParameterValue, StringComparison.Ordinal))
+        {
+            _lastParameterValue = incoming;
+            if (!string.Equals(incoming, _value, StringComparison.Ordinal))
+            {
+                _value = incoming;
+                _slashDismissed = false;
+            }
+        }
+
+        RefreshMatches();
+    }
+
+    private static string NormalizeName(string name) => name.TrimStart('/');
+
+    private void RefreshMatches()
+    {
+        var commands = SlashCommands;
+        if (commands is null || commands.Count == 0 || _value.Length == 0 || _value[0] != '/'
+            || _value.AsSpan(1).IndexOfAny(" \t\r\n") >= 0)
+        {
+            _matches = Array.Empty<SlashCommand>();
+            _slashIndex = 0;
+            return;
+        }
+
+        var prefix = _value[1..];
+        _matches = commands
+            .Where(c => NormalizeName(c.Name).StartsWith(prefix, StringComparison.OrdinalIgnoreCase))
+            .Concat(commands.Where(c => !NormalizeName(c.Name).StartsWith(prefix, StringComparison.OrdinalIgnoreCase)
+                                        && NormalizeName(c.Name).Contains(prefix, StringComparison.OrdinalIgnoreCase)))
+            .ToList();
+        if (_slashIndex >= _matches.Count)
+        {
+            _slashIndex = 0;
+        }
+    }
+
+    private async Task SetValueAsync(string text)
+    {
+        _value = text;
+        _lastParameterValue = text;
+        RefreshMatches();
+        await ValueChanged.InvokeAsync(text);
+    }
+
+    private async Task OnInputAsync(ChangeEventArgs e)
+    {
+        _slashDismissed = false;
+        _slashIndex = 0;
+        await SetValueAsync(e.Value?.ToString() ?? "");
+    }
+
+    private async Task AcceptSlashAsync(SlashCommand command)
+    {
+        _slashDismissed = false;
+        await SetValueAsync("/" + NormalizeName(command.Name) + " ");
+        await FocusAsync();
+    }
+
+    private async Task OnKeyDownAsync(KeyboardEventArgs e)
+    {
+        if (e.IsComposing || e.Key == "Process")
+        {
+            return;
+        }
+
+        if (PopupOpen)
+        {
+            switch (e.Key)
+            {
+                case "ArrowDown":
+                    _slashIndex = (_slashIndex + 1) % _matches.Count;
+                    return;
+                case "ArrowUp":
+                    _slashIndex = (_slashIndex - 1 + _matches.Count) % _matches.Count;
+                    return;
+                case "Tab":
+                    await AcceptSlashAsync(_matches[_slashIndex]);
+                    return;
+                case "Enter" when !e.ShiftKey:
+                    await AcceptSlashAsync(_matches[_slashIndex]);
+                    return;
+                case "Escape":
+                    _slashDismissed = true;
+                    return;
+            }
+        }
+
+        if (e.Key == "Escape" && IsRunning)
+        {
+            await OnStop.InvokeAsync();
+            return;
+        }
+
+        if (e.Key == "Enter" && !e.ShiftKey && !Disabled)
+        {
+            await SendAsync();
+        }
+    }
+
+    private async Task SendAsync()
+    {
+        var text = (_value ?? "").Trim();
+        if ((text.Length == 0 && !HasAttachments) || Disabled)
+        {
+            return;
+        }
+
+        _slashDismissed = false;
+        await SetValueAsync(string.Empty);
+        await OnSend.InvokeAsync(text);
+    }
+}

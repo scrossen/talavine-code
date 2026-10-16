@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="UTF-8" ?>
+<ResourceDictionary xmlns="http://schemas.microsoft.com/dotnet/2021/maui"
+                    xmlns:x="http://schemas.microsoft.com/winfx/2009/xaml">
+    <Color x:Key="PageBackgroundColor">#0b1020</Color>
+    <!-- The native window behind the web content (and the Mac title bar) matches the sc-bg color in app.css for each theme. -->
+    <Color x:Key="PageBackgroundLight">#f6f7f9</Color>
+    <Color x:Key="PageBackgroundDark">#14161a</Color>
+    <Color x:Key="PrimaryColor">#6366f1</Color>
+    <Color x:Key="White">#FFFFFF</Color>
+    <Color x:Key="Black">#000000</Color>
+</ResourceDictionary>

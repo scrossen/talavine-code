@@ -1,0 +1,129 @@
+@implements IAsyncDisposable
+@inject IJSRuntime JS
+@inject AppState App
+@using SwarmCore.Coding.Files
+
+<div @ref="_root" class="sess-attachment-intake @(_busy ? "sess-attachment-intake--busy" : "")">
+    <div class="sess-attachments" aria-label="Attachments">
+        @foreach (var file in Files)
+        {
+            <div class="sess-attachment" @key="file.Id">
+                <button type="button" class="sess-attachment__open" title="Open @file.FileName" aria-label="Open @file.FileName" @onclick="() => OnOpen.InvokeAsync(file.LocalPath)">
+                    @if (_thumbnails.TryGetValue(file.Id, out var thumbnail)) { <img src="@thumbnail" alt="" /> }
+                    <span>@file.FileName <small>@FormatSize(file.Length)</small></span>
+                </button>
+                <button type="button" class="sess-attachment__remove" aria-label="Remove @file.FileName" @onclick="() => RemoveAsync(file.Id)">×</button>
+            </div>
+        }
+    </div>
+    @ChildContent
+    <div class="sess-attachment-actions">
+        <label for="@_inputId" class="sess-btn" tabindex="0" @onkeydown="OnPickerKeyDown">Attach files</label>
+        <InputFile id="@_inputId" class="sess-attachment-input" @ref="_input" OnChange="ImportBrowserFilesAsync" multiple disabled="@_busy" />
+        <span class="sess-muted" role="status">@(_busy ? "Adding attachments…" : "Paste images or files · Drop files here")</span>
+    </div>
+    @if (_error is not null) { <p class="sess-error" role="alert">@_error</p> }
+</div>
+
+@code {
+    [Parameter] public required string SessionId { get; set; }
+    [Parameter] public IReadOnlyList<CodingAttachment> Files { get; set; } = [];
+    [Parameter] public EventCallback<IReadOnlyList<CodingAttachment>> FilesChanged { get; set; }
+    [Parameter] public EventCallback<bool> BusyChanged { get; set; }
+    [Parameter] public EventCallback<string> OnOpen { get; set; }
+    [Parameter] public RenderFragment? ChildContent { get; set; }
+    private readonly string _inputId = "attachments-" + Guid.NewGuid().ToString("N");
+    private readonly Dictionary<string, string> _thumbnails = [];
+    private ElementReference _root;
+    private InputFile? _input;
+    private DotNetObjectReference<AttachmentIntake>? _reference;
+    private bool _busy, _disposed;
+    private string? _error;
+    private CodingAttachmentOptions Limits => App.Workspace?.CodingOptions.AttachmentLimits ?? new();
+
+    protected override async Task OnAfterRenderAsync(bool firstRender)
+    {
+        if (!firstRender) return;
+        _reference = DotNetObjectReference.Create(this);
+        await JS.InvokeVoidAsync("swarmcode.attachFiles", _root, _inputId, _reference);
+    }
+
+    private async Task OnPickerKeyDown(KeyboardEventArgs e)
+    {
+        if (e.Key is "Enter" or " ") await JS.InvokeVoidAsync("swarmcode.pickFiles", _inputId);
+    }
+
+    private async Task ImportBrowserFilesAsync(InputFileChangeEventArgs e)
+    {
+        if (_busy) return;
+        await SetBusyAsync(true);
+        _error = null;
+        var added = Files.ToList();
+        try
+        {
+            var batch = e.GetMultipleFiles(int.MaxValue);
+            Limits.ValidateBatch(added.Count + batch.Count, added.Sum(f => f.Length) + batch.Sum(f => f.Size));
+            var store = new AttachmentStore(App.Paths, Limits);
+            foreach (var source in batch)
+            {
+                try
+                {
+                    Limits.ValidateFile(source.Size);
+                    await using var stream = source.OpenReadStream(Limits.MaxFileBytes > 0 ? Limits.MaxFileBytes : long.MaxValue);
+                    var file = await store.ImportAsync(SessionId, source.Name, stream);
+                    added.Add(file);
+                    if (file.IsImage && file.Length <= 2 * 1024 * 1024)
+                        _thumbnails[file.Id] = "data:" + file.MediaType + ";base64," + Convert.ToBase64String(await System.IO.File.ReadAllBytesAsync(file.LocalPath));
+                }
+                catch (Exception ex) { _error = $"Could not attach '{source.Name}': {ex.Message}"; }
+            }
+            if (!_disposed) await FilesChanged.InvokeAsync(added);
+        }
+        catch (Exception ex) { _error = ex.Message; }
+        finally { await SetBusyAsync(false); }
+    }
+
+    [JSInvokable]
+    public async Task PasteLocalFilesAsync()
+    {
+        if (_busy) return;
+        await SetBusyAsync(true);
+        _error = null;
+        var added = Files.ToList();
+        try
+        {
+#if WINDOWS
+            var items = await Microsoft.Maui.ApplicationModel.MainThread.InvokeOnMainThreadAsync(async () =>
+            {
+                var content = Windows.ApplicationModel.DataTransfer.Clipboard.GetContent();
+                return content.Contains(Windows.ApplicationModel.DataTransfer.StandardDataFormats.StorageItems)
+                    ? await content.GetStorageItemsAsync() : null;
+            });
+            if (items is not null)
+            {
+                var store = new AttachmentStore(App.Paths, Limits);
+                foreach (var source in items.OfType<Windows.Storage.StorageFile>())
+                {
+                    var size = (long)(await source.GetBasicPropertiesAsync()).Size;
+                    Limits.ValidateBatch(added.Count + 1, added.Sum(f => f.Length) + size);
+                    await using var stream = await source.OpenStreamForReadAsync();
+                    added.Add(await store.ImportAsync(SessionId, source.Name, stream));
+                }
+                if (!_disposed) await FilesChanged.InvokeAsync(added);
+            }
+#endif
+        }
+        catch (Exception ex) { _error = "Could not paste files: " + ex.Message; }
+        finally { await SetBusyAsync(false); }
+    }
+
+    private async Task SetBusyAsync(bool value) { _busy = value; if (!_disposed) { await BusyChanged.InvokeAsync(value); StateHasChanged(); } }
+    private Task RemoveAsync(string id) { _thumbnails.Remove(id); return FilesChanged.InvokeAsync(Files.Where(f => f.Id != id).ToArray()); }
+    private static string FormatSize(long size) => size >= 1024 * 1024 ? $"{size / 1048576d:0.#} MB" : $"{Math.Max(1, size / 1024d):0.#} KB";
+    public async ValueTask DisposeAsync()
+    {
+        _disposed = true;
+        try { await JS.InvokeVoidAsync("swarmcode.detachFiles", _root); } catch (JSDisconnectedException) { }
+        _reference?.Dispose();
+    }
+}

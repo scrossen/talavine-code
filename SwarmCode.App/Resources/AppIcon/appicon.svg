@@ -1,0 +1,11 @@
+<svg width="456" height="456" viewBox="0 0 128 128" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <!-- SwarmCode tile: the Talavine tile shape and gradient treatment, in a midnight blue
+       so the sibling reads as "the coding one" next to the sage marshal. -->
+  <defs>
+    <linearGradient id="scd-tile" x1="0" y1="0" x2="0.6" y2="1">
+      <stop offset="0" stop-color="#2A3B5F"/>
+      <stop offset="1" stop-color="#151D30"/>
+    </linearGradient>
+  </defs>
+  <rect x="8" y="8" width="112" height="112" rx="32" fill="url(#scd-tile)"/>
+</svg>

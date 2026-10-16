@@ -1,0 +1,103 @@
+@if (Decision is null)
+{
+    <div class="perm-req" role="group" aria-label="Permission request">
+        <div class="perm-req__head">
+            @ChatGlyphs.Resolve(ChatIcon.Permission, "perm-req__icon", ResolvedIcons)
+            <span>
+                <strong>@Title</strong>
+                @if (!string.IsNullOrWhiteSpace(Target))
+                {
+                    <span> wants to use <code>@Target</code></span>
+                }
+                @if (Permissions.Count > 0)
+                {
+                    <span> — requests: @string.Join(", ", Permissions)</span>
+                }
+            </span>
+        </div>
+        <div class="perm-req__actions">
+            <button type="button" class="perm-req__btn perm-req__btn--approve"
+                    @onclick="() => DecideAsync(PermissionCardDecision.ApproveOnce)">@ApproveOnceLabel</button>
+            @if (CanAlwaysAllow)
+            {
+                <button type="button" class="perm-req__btn perm-req__btn--always"
+                        @onclick="() => DecideAsync(PermissionCardDecision.AlwaysAllow)">@AlwaysAllowLabel</button>
+            }
+            else if (!string.IsNullOrWhiteSpace(FreshApprovalNote))
+            {
+                <span class="perm-req__fresh-note">@FreshApprovalNote</span>
+            }
+            <button type="button" class="perm-req__btn perm-req__btn--deny"
+                    @onclick="() => DecideAsync(PermissionCardDecision.Deny)">@DenyLabel</button>
+        </div>
+    </div>
+}
+else
+{
+    var approved = Decision != PermissionCardDecision.Deny;
+    <div class="perm-req__result @(approved ? "perm-req__result--approved" : "perm-req__result--denied")"
+         role="status"
+         aria-live="polite"
+         data-testid="permission-decision">
+        @ChatGlyphs.Resolve(approved ? ChatIcon.PermissionApproved : ChatIcon.PermissionDenied, "perm-req__icon", ResolvedIcons)
+        <span>You chose <strong>@DecisionLabel</strong> for <code>@ReceiptTarget</code>.</span>
+        @if (CanChange && OnChange.HasDelegate)
+        {
+            <button type="button"
+                    class="perm-req__change"
+                    disabled="@ChangeRequested"
+                    title="Stop this response so you can retry and choose again"
+                    @onclick="OnChange">
+                @(ChangeRequested ? "Stopping…" : "Change")
+            </button>
+        }
+        @ReceiptActions
+    </div>
+}
+
+@code {
+    /// <summary>Who is asking, for example the skill name.</summary>
+    [Parameter, EditorRequired] public string Title { get; set; } = "";
+    /// <summary>What it wants to use, for example the function name. Optional.</summary>
+    [Parameter] public string? Target { get; set; }
+    /// <summary>The permissions being requested.</summary>
+    [Parameter] public IReadOnlyList<string> Permissions { get; set; } = Array.Empty<string>();
+
+    /// <summary>null while pending; otherwise the choice the user made.</summary>
+    [Parameter] public PermissionCardDecision? Decision { get; set; }
+    [Parameter] public EventCallback<PermissionCardDecision> OnDecide { get; set; }
+
+    /// <summary>Offer the persistent choice. Hosts withhold it for high-risk permissions or when they cannot keep a grant.</summary>
+    [Parameter] public bool CanAlwaysAllow { get; set; }
+    /// <summary>Shown in place of the persistent choice when it is withheld. Empty hides it.</summary>
+    [Parameter] public string? FreshApprovalNote { get; set; } = "Requires approval every time";
+    [Parameter] public string ApproveOnceLabel { get; set; } = "Approve once";
+    /// <summary>Label of the persistent choice; name the real scope of the host's grant.</summary>
+    [Parameter] public string AlwaysAllowLabel { get; set; } = "Always allow";
+    [Parameter] public string DenyLabel { get; set; } = "Deny";
+
+    /// <summary>Show the receipt's Change action (typically only while the response is still running).</summary>
+    [Parameter] public bool CanChange { get; set; }
+    /// <summary>Stops the response so the user can retry and choose again.</summary>
+    [Parameter] public EventCallback OnChange { get; set; }
+    /// <summary>True after Change was pressed; the action shows "Stopping…" and is disabled.</summary>
+    [Parameter] public bool ChangeRequested { get; set; }
+    /// <summary>Extra host content at the end of the receipt.</summary>
+    [Parameter] public RenderFragment? ReceiptActions { get; set; }
+
+    [Parameter] public ChatIconSet? Icons { get; set; }
+    [CascadingParameter] public ChatIconSet? CascadingIcons { get; set; }
+
+    private ChatIconSet? ResolvedIcons => Icons ?? CascadingIcons;
+
+    private string DecisionLabel => Decision switch
+    {
+        PermissionCardDecision.Deny => DenyLabel,
+        PermissionCardDecision.AlwaysAllow => AlwaysAllowLabel,
+        _ => ApproveOnceLabel,
+    };
+
+    private string ReceiptTarget => string.IsNullOrWhiteSpace(Target) ? Title : Target;
+
+    private Task DecideAsync(PermissionCardDecision decision) => OnDecide.InvokeAsync(decision);
+}

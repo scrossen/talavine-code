@@ -1,0 +1,37 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover" />
+    <title>Talavine Code</title>
+    <base href="/" />
+    <link href="css/app.css" rel="stylesheet" />
+    <link href="_content/SwarmCore.Chat.Components/chat-components.css" rel="stylesheet" />
+    <link href="css/session.css" rel="stylesheet" />
+    <link href="css/model-picker.css" rel="stylesheet" />
+    <link href="css/ollama-setup.css" rel="stylesheet" />
+</head>
+<body>
+    <div id="app">
+        <div class="boot">
+            <img class="sc-mark" src="brand/swarmcode-mark.svg" alt="" width="56" height="56" />
+            <div class="boot__name">Talavine Code</div>
+            <div class="boot__spin"></div>
+        </div>
+    </div>
+
+    <div id="blazor-error-ui">
+        An unexpected error occurred.
+        <a href="" class="reload">Reload</a>
+        <a class="dismiss">x</a>
+    </div>
+
+    <script src="js/swarmcode.js"></script>
+    <script src="_content/SwarmCore.Chat.Components/chat-components.js"></script>
+    <script src="_framework/blazor.webview.js" autostart="false"></script>
+    <!-- autostart=false: BlazorWebView (Windows and Mac Catalyst) injects its own Blazor.start once its bridge
+         is ready, as Talavine relies on. A second start from this page raced it: after any reload the page's start
+         won, the host's injected start failed with "Blazor has already started", and the app stayed on the
+         boot screen with the error bar (reproduced by reloading on /settings). -->
+</body>
+</html>

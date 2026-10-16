@@ -1,0 +1,50 @@
+<div class="@RootClass">
+    <button type="button" class="reasoning-block__head" aria-expanded="@(IsExpanded ? "true" : "false")" @onclick="ToggleAsync">
+        @ChatGlyphs.Resolve(IsActive ? ChatIcon.ReasoningActive : ChatIcon.Reasoning, "reasoning-block__icon", ResolvedIcons)
+        <span class="reasoning-block__label">@(IsActive ? ActiveLabel : Label)</span>
+        @ChatGlyphs.Resolve(IsExpanded ? ChatIcon.Collapse : ChatIcon.Expand, "reasoning-block__chevron", ResolvedIcons)
+    </button>
+    @if (IsExpanded)
+    {
+        <div class="reasoning-block__body">@Text</div>
+    }
+</div>
+
+@code {
+    [Parameter] public string? Text { get; set; }
+    /// <summary>True while reasoning is still streaming in.</summary>
+    [Parameter] public bool IsActive { get; set; }
+    [Parameter] public string Label { get; set; } = "Thinking";
+    [Parameter] public string ActiveLabel { get; set; } = "Thinking…";
+
+    /// <summary>Owner-controlled open state (for example kept per turn by the transcript). When null the block keeps its own state.</summary>
+    [Parameter] public bool? Expanded { get; set; }
+    /// <summary>Raised with the requested state when the user toggles an owner-controlled block.</summary>
+    [Parameter] public EventCallback<bool> ExpandedChanged { get; set; }
+    /// <summary>Whether a self-controlled block starts open.</summary>
+    [Parameter] public bool InitiallyExpanded { get; set; }
+
+    [Parameter] public ChatIconSet? Icons { get; set; }
+    [CascadingParameter] public ChatIconSet? CascadingIcons { get; set; }
+
+    private bool _expanded;
+
+    private ChatIconSet? ResolvedIcons => Icons ?? CascadingIcons;
+    private bool IsExpanded => Expanded ?? _expanded;
+    private string RootClass => "reasoning-block"
+        + (IsActive ? " reasoning-block--active" : "")
+        + (IsExpanded ? " reasoning-block--expanded" : "");
+
+    protected override void OnInitialized() => _expanded = InitiallyExpanded;
+
+    private async Task ToggleAsync()
+    {
+        if (Expanded is { } current)
+        {
+            await ExpandedChanged.InvokeAsync(!current);
+            return;
+        }
+
+        _expanded = !_expanded;
+    }
+}

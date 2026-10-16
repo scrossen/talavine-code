@@ -1,0 +1,26 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <TargetFramework>net11.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <IsPackable>false</IsPackable>
+    <IsTestProject>true</IsTestProject>
+  </PropertyGroup>
+  <ItemGroup>
+    <ProjectReference Include="..\SwarmCode.Hosting\SwarmCode.Hosting.csproj" />
+    <!-- The console ships beside the tests so the session-open benchmark can run in a fresh process. -->
+    <ProjectReference Include="..\SwarmCode\SwarmCode.csproj" />
+    <PackageReference Include="Microsoft.NET.Test.Sdk" Version="17.13.0" />
+    <PackageReference Include="xunit" Version="2.9.3" />
+    <PackageReference Include="xunit.runner.visualstudio" Version="3.0.2" />
+  </ItemGroup>
+  <ItemGroup><Using Include="Xunit" /></ItemGroup>
+  <ItemGroup>
+    <Compile Remove="AppRuntimeFixture/**/*.cs" />
+    <ProjectReference Include="AppRuntimeFixture/AppRuntimeFixture.csproj" />
+  </ItemGroup>
+  <ItemGroup><Compile Include="../SwarmCore/Testing/TestGit.cs" Link="TestSupport/TestGit.cs" /><Compile Include="../SwarmCore/Testing/TestShell.cs" Link="TestSupport/TestShell.cs" /><Compile Include="../SwarmCore/Testing/PlatformFactAttributes.cs" Link="TestSupport/PlatformFactAttributes.cs" /></ItemGroup>
+  <ItemGroup><Compile Include="../SwarmCore/Testing/PortableGitPoisonedPathTests.cs" Link="TestSupport/PortableGitPoisonedPathTests.cs" /></ItemGroup>
+  <!-- Shared personal-memory recall/benefit eval kit (every host runs the same scenarios). -->
+  <ItemGroup><Compile Include="../SwarmCore/Testing/PersonalMemoryEvals/*.cs" Link="PersonalMemoryEvals/%(Filename)%(Extension)" /></ItemGroup>
+</Project>

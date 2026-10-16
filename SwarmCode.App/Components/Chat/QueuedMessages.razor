@@ -1,0 +1,49 @@
+@if (Items.Count > 0)
+{
+    <div class="sess-queue" role="list" aria-label="Queued messages" @onkeydown:stopPropagation>
+        <span class="sess-queue__label">Queued follow-ups (@Items.Count)</span>
+        @foreach (var item in Items)
+        {
+            <div @key="item.Id" class="sess-queue__item" role="listitem" data-queued-id="@item.Id">
+                @if (_editingId == item.Id)
+                {
+                    <textarea class="sc-input" aria-label="Edit queued prompt" rows="3" @bind="_editText"></textarea>
+                    <div class="sess-queue__actions">
+                        <button type="button" class="sess-btn sess-btn--primary" @onclick="SaveAsync">Save edit</button>
+                        <button type="button" class="sess-btn" @onclick="() => _editingId = null">Cancel edit</button>
+                    </div>
+                }
+                else
+                {
+                    <span class="sess-queue__prompt" title="@item.Text">@item.Text</span>
+                    <div class="sess-queue__actions">
+                        <span class="sess-muted">@item.Lane @(item.ModelOverride is { } model ? $"· {model}" : "")</span>
+                        @if (item.Attachments.Count > 0) { <span class="sess-muted" title="@string.Join(", ", item.Attachments.Select(a => a.FileName))">· @item.Attachments.Count file(s)</span> }
+                        <button type="button" class="sess-btn" @onclick="() => BeginEdit(item)">Edit</button>
+                        <button type="button" class="sess-btn" @onclick="() => OnRemove.InvokeAsync(item.Id)">Delete</button>
+                        @if (IsRunning)
+                        {
+                            <button type="button" class="sess-btn" title="Stop the current turn and continue with this correction, preserving saved work" @onclick="() => OnSteer.InvokeAsync(item.Id)">Steer now</button>
+                        }
+                    </div>
+                }
+            </div>
+        }
+    </div>
+}
+
+@code {
+    [Parameter] public IReadOnlyList<ConversationRunner.QueuedTurn> Items { get; set; } = [];
+    [Parameter] public bool IsRunning { get; set; }
+    [Parameter] public EventCallback<string> OnRemove { get; set; }
+    [Parameter] public EventCallback<string> OnSteer { get; set; }
+    [Parameter] public Func<string, string, Task<bool>>? OnEdit { get; set; }
+    private string? _editingId;
+    private string _editText = "";
+
+    private void BeginEdit(ConversationRunner.QueuedTurn item) { _editingId = item.Id; _editText = item.Text; }
+    private async Task SaveAsync()
+    {
+        if (_editingId is not null && OnEdit is not null && await OnEdit(_editingId, _editText)) _editingId = null;
+    }
+}

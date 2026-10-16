@@ -1,0 +1,8 @@
+.ollama-setup h3 { font-size: 1rem; margin-top: 1.4rem; }
+.ollama-list { display: grid; gap: .6rem; max-height: 26rem; overflow: auto; margin-block: .7rem; }
+.ollama-model { display: grid; gap: .4rem; padding: .75rem; border: 1px solid var(--sc-border); border-radius: var(--sc-radius); overflow-wrap: anywhere; }
+.ollama-model code { white-space: normal; overflow-wrap: anywhere; }
+.ollama-setup .sc-field { flex: 1; min-width: min(24rem, 100%); }
+.ollama-setup .sc-row { flex-wrap: wrap; }
+.ollama-setup .sc-select { width: auto; max-width: 100%; }
+.ollama-setup progress { width: min(24rem, 100%); margin-right: .6rem; accent-color: var(--sc-accent); }

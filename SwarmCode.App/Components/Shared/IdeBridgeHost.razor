@@ -1,0 +1,82 @@
+@using SwarmCore.Coding.Ide
+@implements IAsyncDisposable
+@inject IdeIntegration Ide
+@inject AppState App
+@inject NavigationManager Nav
+@inject IJSRuntime JS
+
+@* App-wide editor plumbing: tells IdeIntegration which session is on screen, brings a routed selection's session
+   up, makes path:line code spans in the transcript open in the editor, and shows the integration's short notices. *@
+@if (_notice is { } notice)
+{
+    <div class="sc-toast @(notice.Ok ? "sc-toast--ok" : "")" role="status">
+        <span class="sc-toast__text">@notice.Text</span>
+        <button type="button" class="sc-btn sc-btn--ghost sc-btn--sm" aria-label="Dismiss" @onclick="() => _notice = null">✕</button>
+    </div>
+}
+
+@code {
+    private sealed record IdeNotice(string Text, bool Ok);
+
+    private DotNetObjectReference<IdeBridgeHost>? _self;
+    private IdeNotice? _notice;
+    private bool _disposed;
+
+    protected override void OnInitialized()
+    {
+        Ide.ActiveSessionId = AppNavigation.SessionIdFrom(Nav.ToBaseRelativePath(Nav.Uri));
+        Nav.LocationChanged += OnLocationChanged;
+        Ide.SelectionRouted += OnSelectionRouted;
+        Ide.Notice += OnNotice;
+    }
+
+    protected override async Task OnAfterRenderAsync(bool firstRender)
+    {
+        if (!firstRender) return;
+        _self = DotNetObjectReference.Create(this);
+        try { await JS.InvokeVoidAsync("swarmcode.registerFileReferences", _self); }
+        catch (Exception ex) when (ex is JSException or InvalidOperationException) { }
+    }
+
+    private void OnLocationChanged(object? sender, Microsoft.AspNetCore.Components.Routing.LocationChangedEventArgs e)
+        => Ide.ActiveSessionId = AppNavigation.SessionIdFrom(Nav.ToBaseRelativePath(e.Location));
+
+    private void OnSelectionRouted(string sessionId) => _ = InvokeAsync(() =>
+    {
+        if (_disposed) return;
+        // The session page takes the parked block when it attaches, or at once when it is already on screen.
+        if (!string.Equals(Ide.ActiveSessionId, sessionId, StringComparison.Ordinal))
+            Nav.NavigateTo(AppNavigation.SessionUrl(sessionId));
+    });
+
+    private void OnNotice(string text, bool ok) => _ = InvokeAsync(async () =>
+    {
+        if (_disposed) return;
+        var notice = new IdeNotice(text, ok);
+        _notice = notice;
+        StateHasChanged();
+        await Task.Delay(6000);
+        if (!_disposed && ReferenceEquals(_notice, notice)) { _notice = null; StateHasChanged(); }
+    });
+
+    /// <summary>A click on a <c>path:line</c> code span in a chat message.</summary>
+    [JSInvokable]
+    public async Task OpenFileReference(string text)
+    {
+        if (!FileReferenceParser.TryParse(text, out var target)) return;
+        var root = App.RepositoryRoot;
+        if (Ide.ActiveSessionId is { } id && await App.Sessions.GetAsync(id) is { } session) root = session.RepositoryRoot;
+        await Ide.OpenAsync(target, root);
+    }
+
+    public async ValueTask DisposeAsync()
+    {
+        _disposed = true;
+        Nav.LocationChanged -= OnLocationChanged;
+        Ide.SelectionRouted -= OnSelectionRouted;
+        Ide.Notice -= OnNotice;
+        try { await JS.InvokeVoidAsync("swarmcode.unregisterFileReferences"); }
+        catch (Exception ex) when (ex is JSException or InvalidOperationException or JSDisconnectedException or TaskCanceledException) { }
+        _self?.Dispose();
+    }
+}

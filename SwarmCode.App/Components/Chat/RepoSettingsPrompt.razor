@@ -1,0 +1,63 @@
+@using SwarmCore.Coding.Permissions
+@* Asks once per settings content before a repository's allow rules may apply. Deny rules always apply and need no answer. Hidden when there is nothing to decide. *@
+
+@if (_inspection is { NeedsApproval: true } inspection && !_dismissed)
+{
+    <div class="sc-notice sc-notice--warn sess-hooks-prompt" role="alert">
+        <div class="sc-grow">
+            <strong>This repository asks to let some tools run without a prompt.</strong>
+            <span>Its settings file lists allow rules; applying them widens what runs unasked in this repository. Deny rules always apply.</span>
+            <ul class="sc-mono sess-hooks-prompt__list">
+                @foreach (var rule in inspection.Allow)
+                {
+                    <li>allow @rule</li>
+                }
+                @foreach (var rule in inspection.Deny)
+                {
+                    <li>deny @rule <span class="sc-muted">(always applied)</span></li>
+                }
+            </ul>
+            @if (_error is not null) { <span>@_error</span> }
+        </div>
+        <button type="button" class="sess-btn sess-btn--primary" disabled="@_busy" @onclick="AllowAsync">Allow</button>
+        <button type="button" class="sess-btn" disabled="@_busy" @onclick="() => _dismissed = true">Not now</button>
+    </div>
+}
+
+@code {
+    [Parameter] public WorkspaceHost? Workspace { get; set; }
+
+    private WorkspaceHost? _inspected;
+    private RepositoryPermissionInspection? _inspection;
+    private bool _dismissed, _busy;
+    private string? _error;
+
+    protected override async Task OnParametersSetAsync()
+    {
+        if (ReferenceEquals(Workspace, _inspected)) return;
+        _inspected = Workspace;
+        _dismissed = false;
+        _error = null;
+        _inspection = null;
+        if (Workspace is null) return;
+        var services = Workspace.Services;
+        var root = Workspace.RepositoryRoot;
+        try { _inspection = await Task.Run(() => SwarmCodePermissions.InspectRepositoryAsync(services, root)); }
+        catch (Exception ex) { MauiProgram.LogToFile($"Could not inspect repository permission rules: {ex.Message}"); }
+    }
+
+    private async Task AllowAsync()
+    {
+        if (_inspection?.Sha256 is not { } sha || Workspace?.Services.GetService<ICodingRepositorySettingsApprovalStore>() is not { } approvals) return;
+        _busy = true;
+        try
+        {
+            var services = Workspace.Services;
+            var root = Workspace.RepositoryRoot;
+            await Task.Run(() => approvals.ApproveAsync(root, sha));
+            _inspection = await Task.Run(() => SwarmCodePermissions.InspectRepositoryAsync(services, root));
+        }
+        catch (Exception ex) { _error = "Could not save the approval: " + ex.Message; }
+        finally { _busy = false; }
+    }
+}

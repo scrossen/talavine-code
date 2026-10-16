@@ -1,0 +1,41 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <TargetFramework>net11.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <RootNamespace>SwarmCore.Abstractions</RootNamespace>
+    <Description>Core abstractions and interfaces for reusable SwarmCore features including LLM routing, data analysis, and email marketing.</Description>
+    <Authors>Scott Crossen</Authors>
+    <NoWarn>$(NoWarn);CS8618</NoWarn>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <!-- Minimal dependencies - only what's needed for interfaces -->
+    <PackageReference Include="Microsoft.Extensions.Logging.Abstractions" Version="11.0.0-rc.2.26504.105" />
+    <PackageReference Include="NCrontab" Version="3.3.3" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- The DI-free fallback registry reads the same reviewed provider-pack
+         bytes as SwarmCore.LlmRouting; this is one source of volatile model IDs. -->
+    <EmbeddedResource Include="../SwarmCore.LlmRouting/ProviderPacks/*.json"
+                      LogicalName="SwarmCore.Abstractions.ProviderPacks.%(Filename)%(Extension)" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- Mozilla Public Suffix List snapshot (MPL 2.0) for PublicSuffixList registrable-domain checks. -->
+    <EmbeddedResource Include="Networking/public_suffix_list.txt"
+                      LogicalName="SwarmCore.Abstractions.Networking.public_suffix_list.txt" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- The {{secret:name}} syntax has one definition; the credential detectors must never match inside it. -->
+    <Compile Include="../SwarmCore.Secrets/SecretReferenceSyntax.cs" Link="Security/SecretReferenceSyntax.cs" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <AssemblyAttribute Include="System.Runtime.CompilerServices.InternalsVisibleTo">
+      <_Parameter1>SwarmCore.Agent.Tests</_Parameter1>
+    </AssemblyAttribute>
+  </ItemGroup>
+</Project>

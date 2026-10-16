@@ -1,0 +1,175 @@
+@page "/history"
+@implements IDisposable
+@inject AppState State
+@inject NavigationManager Nav
+@using SwarmCore.Coding.History
+
+<PageTitle>History - Talavine Code</PageTitle>
+
+<div class="sc-page">
+    <header class="sc-topbar">
+        <div>
+            <h1 class="sc-topbar__title">History</h1>
+            <p class="sc-topbar__copy">Every session across your repositories. Search what you asked (and what was answered), or get a summary of recent work.</p>
+        </div>
+        @if (State.Workspace is not null)
+        {
+            <div class="sc-topbar__actions">
+                <button type="button" class="sc-btn sc-btn--primary" @onclick="NewSessionAsync">New session</button>
+            </div>
+        }
+    </header>
+
+    <section class="sc-card">
+        <h2 class="sc-card__title">Summary of your work</h2>
+        <p class="sc-card__copy">What was asked and done in a period, by project. Also available in a session as <span class="sc-kbd">/summary past week</span>.</p>
+        <div class="sc-history__controls">
+            <select class="sc-select" aria-label="Period" value="@_periodChoice" @onchange="OnPeriodChoiceChanged">
+                @foreach (var preset in PeriodPresets)
+                {
+                    <option value="@preset.Value" selected="@(preset.Value == _periodChoice)">@preset.Label</option>
+                }
+            </select>
+            @if (_periodChoice == CustomPeriod)
+            {
+                <input class="sc-input" aria-label="Custom period" placeholder="e.g. past 10 days, last month, 2026-10-01 2026-10-07" value="@_periodText" @oninput="e => _periodText = e.Value?.ToString() ?? string.Empty" @onkeydown="OnPeriodKeyDown" />
+            }
+            <select class="sc-select" aria-label="Project" value="@_project" @onchange="OnProjectChanged">
+                <option value="">All projects</option>
+                @foreach (var project in Projects)
+                {
+                    <option value="@project.Root" selected="@(project.Root == _project)">@project.Name</option>
+                }
+            </select>
+            <button type="button" class="sc-btn sc-btn--primary" disabled="@_summarizing" @onclick="SummarizeAsync">
+                @if (_summarizing) { <span class="sc-spinner"></span> }
+                Summarize
+            </button>
+            @if (_summarizing) { <span class="sc-muted" role="status">Reading your sessions…</span> }
+        </div>
+        @if (_summaryError is not null)
+        {
+            <div class="sc-notice sc-notice--error" role="alert">@_summaryError</div>
+        }
+        @if (_summary is { } summary)
+        {
+            <div class="sc-history__summary">
+                <div class="sc-history__summary-meta">
+                    <span class="sc-chip sc-chip--accent">@Capitalize(summary.PeriodLabel)</span>
+                    <span title="@($"{AppNavigation.FullTime(summary.SinceUtc)} to {AppNavigation.FullTime(summary.UntilUtc)}")">@summary.SessionCount @(summary.SessionCount == 1 ? "session" : "sessions") · @summary.TurnCount @(summary.TurnCount == 1 ? "turn" : "turns")</span>
+                    @if (summary.Projects.Count > 0) { <span>in @string.Join(", ", summary.Projects)</span> }
+                    @if (summary.ModelWritten) { <span class="sc-chip">written by @summary.Lane</span> }
+                    else if (summary.SessionCount > 0) { <span class="sc-chip">activity digest</span> }
+                </div>
+                @if (!string.IsNullOrWhiteSpace(summary.Message))
+                {
+                    <div class="sc-notice sc-notice--info" role="status">@summary.Message</div>
+                }
+                @if (summary.ModelWritten)
+                {
+                    <MarkdownView Markdown="@summary.Summary" Class="sc-history__summary-body" />
+                }
+                else if (summary.SessionCount > 0)
+                {
+                    <pre class="sc-history__digest">@summary.Summary</pre>
+                }
+                else
+                {
+                    <p class="sc-muted">@summary.Summary</p>
+                }
+            </div>
+        }
+    </section>
+
+    <section class="sc-card">
+        <div class="sc-row sc-row--between">
+            <h2 class="sc-card__title">Sessions</h2>
+            @if (!_loading && _documents.Count > 0)
+            {
+                <span class="sc-muted">@(_results.Count == _documents.Count ? $"{_documents.Count} sessions" : $"{_results.Count} of {_documents.Count} sessions")</span>
+            }
+        </div>
+        <div class="sc-history__controls">
+            <input type="search" class="sc-input" aria-label="Search sessions" placeholder="Search titles and what you asked…" value="@_query" @oninput="OnQueryInput" maxlength="256" />
+            <label class="sc-toggle" title="Also search the assistant's replies">
+                <input type="checkbox" checked="@_includeResponses" @onchange="OnIncludeResponsesChanged" aria-label="Include responses" />
+                <span class="sc-toggle__track"></span><span>Include responses</span>
+            </label>
+            <select class="sc-select" aria-label="Project" value="@_project" @onchange="OnProjectChanged">
+                <option value="">All projects</option>
+                @foreach (var project in Projects)
+                {
+                    <option value="@project.Root" selected="@(project.Root == _project)">@project.Name</option>
+                }
+            </select>
+            <div class="sc-history__segment" role="group" aria-label="Group by">
+                <button type="button" class="sc-btn sc-btn--sm @(_byProject ? "" : "sc-btn--primary")" aria-pressed="@(!_byProject)" @onclick="() => SetGrouping(false)">By date</button>
+                <button type="button" class="sc-btn sc-btn--sm @(_byProject ? "sc-btn--primary" : "")" aria-pressed="@_byProject" @onclick="() => SetGrouping(true)">By project</button>
+            </div>
+        </div>
+
+        @if (_error is not null)
+        {
+            <div class="sc-notice sc-notice--error" role="alert">@_error</div>
+        }
+        else if (_loading && _documents.Count == 0)
+        {
+            <div class="sc-empty" role="status"><span class="sc-spinner"></span> Reading your sessions…</div>
+        }
+        else if (_documents.Count == 0)
+        {
+            <div class="sc-empty">
+                <div class="sc-empty__title">No sessions yet</div>
+                <div>Sessions you start in any repository show here.</div>
+            </div>
+        }
+        else if (_results.Count == 0)
+        {
+            <div class="sc-empty">
+                <div class="sc-empty__title">No sessions match</div>
+                <div>Try a different word or phrase@(_includeResponses ? "" : ", or include responses").</div>
+            </div>
+        }
+        else
+        {
+            <div class="sc-list">
+                @foreach (var group in Groups)
+                {
+                    <div class="sc-history__group">@group.Label</div>
+                    @foreach (var r in group.Items)
+                    {
+                        var result = r;
+                        var session = result.Session;
+                        var running = State.TryGetRunner(session.Id)?.IsRunning == true;
+                        <div class="sc-list__row sc-history__row" @key="session.Id">
+                            <div class="sc-grow">
+                                <a class="sc-history__title" href="@AppNavigation.SessionUrl(session.Id)" title="@session.Title">@session.Title</a>
+                                <div class="sc-history__meta">
+                                    @if (!_byProject) { <span class="sc-chip" title="@session.Project">@session.ProjectName</span> }
+                                    <span title="@($"Last activity {AppNavigation.FullTime(session.LastActivityUtc)} · started {AppNavigation.FullTime(session.CreatedUtc)}")">@AppNavigation.DateAndTime(session.LastActivityUtc)</span>
+                                    <span>@session.Turns.Count @(session.Turns.Count == 1 ? "turn" : "turns")</span>
+                                    @if (!string.IsNullOrEmpty(session.Lane)) { <span class="sc-chip">@session.Lane</span> }
+                                    @if (running) { <span class="sc-spinner" title="Running"></span> }
+                                    @if (result.Field != HistoryMatchField.None)
+                                    {
+                                        <span class="sc-history__field">matched in @FieldLabel(result.Field)@(result.MatchingTurns > 1 ? $", {result.MatchingTurns} turns" : "")</span>
+                                    }
+                                </div>
+                                @if (!string.IsNullOrWhiteSpace(result.Preview))
+                                {
+                                    <div class="sc-history__preview" title="@result.Preview">
+                                        @foreach (var segment in Highlight(result.Preview))
+                                        {
+                                            if (segment.Hit) { <mark>@segment.Text</mark> } else { @segment.Text }
+                                        }
+                                    </div>
+                                }
+                            </div>
+                            <a class="sc-btn sc-btn--sm" href="@AppNavigation.SessionUrl(session.Id)">Open</a>
+                        </div>
+                    }
+                }
+            </div>
+        }
+    </section>
+</div>

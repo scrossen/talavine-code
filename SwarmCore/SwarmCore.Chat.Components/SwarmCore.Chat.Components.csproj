@@ -1,0 +1,21 @@
+<Project Sdk="Microsoft.NET.Sdk.Razor">
+  <PropertyGroup>
+    <TargetFramework>net11.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <RootNamespace>SwarmCore.Chat.Components</RootNamespace>
+    <Description>Presentational chat components shared by Swarm apps: markdown rendering with a strict sanitizer, message bubbles, reasoning and tool-call cards, diff view, permission prompts, notices, composer with slash commands, scroll region, and a conversation history drawer. Host-agnostic: plain parameters only, themed through --chat-* CSS variables.</Description>
+    <Authors>Scott Crossen</Authors>
+    <PackageLicenseExpression>MIT</PackageLicenseExpression>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Microsoft.AspNetCore.Components.Web" Version="11.0.0-rc.2.26504.105" />
+    <PackageReference Include="Markdig" Version="1.1.2" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\SwarmCore.Chat\SwarmCore.Chat.csproj" />
+    <ProjectReference Include="..\SwarmCore.Agent\SwarmCore.Agent.csproj" />
+  </ItemGroup>
+</Project>

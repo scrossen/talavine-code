@@ -1,0 +1,143 @@
+@inject AppState App
+@using SwarmCore.Abstractions.LlmRouting.Decisions
+
+<section class="sc-card">
+    <h2 class="sc-card__title">Automatic model selection</h2>
+    <p class="sc-card__copy">Choose a model for the first prompt and reconsider after a failure. Your own selection determines the starting model and still allows refusal handoff. Use /auto in a session to request a fresh starting choice.</p>
+    <label class="sc-field__label"><input type="checkbox" @bind="_enabled" /> Enable automatic selection</label>
+    <div class="sc-row">
+        <div class="sc-field">
+            <label class="sc-field__label" for="decision-provider">Decision service</label>
+            <select id="decision-provider" class="sc-select" @bind="_provider">
+                <option value="ollama">Local Ollama</option>
+                <option value="system-one">Remote System One API</option>
+            </select>
+        </div>
+        <div class="sc-field">
+            <label class="sc-field__label" for="decision-endpoint">Endpoint</label>
+            <input id="decision-endpoint" class="sc-input" @bind="_endpoint" />
+        </div>
+        <div class="sc-field">
+            <label class="sc-field__label" for="decision-model">Decision model</label>
+            <input id="decision-model" class="sc-input" @bind="_model" />
+        </div>
+    </div>
+    @if (_provider != "ollama")
+    {
+        <p class="sc-muted">Your prompt and choice descriptions are sent to this service. Its usage charges apply. Use the endpoint supplied by your provider.</p>
+        <div class="sc-row">
+            <div class="sc-field"><label class="sc-field__label" for="decision-secret-name">Saved credential name</label><input id="decision-secret-name" class="sc-input" @bind="_credential" /></div>
+            <div class="sc-field"><label class="sc-field__label" for="decision-secret">API key (leave blank to keep saved key)</label><input id="decision-secret" type="password" autocomplete="off" class="sc-input" @bind="_key" /></div>
+        </div>
+    }
+    <p class="sc-muted">Supply the model choices and describe when each fits. For providers that expose thinking variants, choose the corresponding model ID from their catalog. No models are downloaded automatically.</p>
+    @foreach (var row in _rows)
+    {
+        <div class="sc-list__row" @key="row.Id">
+            <select class="sc-select" aria-label="Execution route" value="@row.Route" @onchange="e => ChangeRouteAsync(row, e.Value?.ToString() ?? string.Empty)">
+                <option value="">Choose route</option>
+                @foreach (var lane in CodingLaneSelections.ForPicker(App.Workspace?.Lanes ?? [], row.Route)) { <option value="@lane.Name">@lane.SelectionLabel</option> }
+            </select>
+            <input class="sc-input" aria-label="Execution model and thinking variant" list="@($"decision-models-{row.Id}")" @bind="row.Model" placeholder="Model / thinking variant" />
+            <datalist id="@($"decision-models-{row.Id}")">@foreach (var model in row.Models) { <option value="@model"></option> }</datalist>
+            <input class="sc-input" aria-label="When to choose this model" @bind="row.Description" placeholder="When this model should be chosen" />
+            <button type="button" class="sc-btn sc-btn--sm" @onclick="() => _rows.Remove(row)">Remove</button>
+        </div>
+    }
+    <div class="sc-row">
+        <button type="button" class="sc-btn" @onclick="SuggestAsync">Suggest choices from my models</button>
+        <button type="button" class="sc-btn" @onclick="() => _rows.Add(new Row())">Add model choice</button>
+        <button type="button" class="sc-btn sc-btn--primary" @onclick="SaveAsync">Save automatic selection</button>
+        <button type="button" class="sc-btn" @onclick="LoadAsync">Reload</button>
+    </div>
+    @if (_status is not null) { <p class="sc-muted" role="status">@_status</p> }
+</section>
+
+@code {
+    private DecisionSelectionSettings _loaded = new();
+    private bool _enabled;
+    private string _provider = "ollama", _endpoint = "http://127.0.0.1:11434/v1/systemone", _model = "nimble", _credential = "decision.service", _key = "";
+    private string? _status;
+    private readonly List<Row> _rows = [];
+    private DecisionSettingsStore Store => new(App.Paths);
+    protected override Task OnInitializedAsync() => LoadAsync();
+    private async Task LoadAsync()
+    {
+        try
+        {
+            _loaded = await Store.ReadAsync();
+            _enabled = _loaded.Enabled;
+            _provider = _loaded.Connection.Provider; _endpoint = _loaded.Connection.Endpoint; _model = _loaded.Connection.Model;
+            _credential = _loaded.Connection.CredentialName ?? "decision.service";
+            _rows.Clear();
+            _rows.AddRange(_loaded.Candidates.Select(c => new Row { Id = c.Id, Route = c.Route, Model = c.Model, Description = c.Description }));
+            _status = null;
+        }
+        catch { _status = "Could not load automatic selection settings. Existing settings have been preserved."; }
+    }
+    private async Task ChangeRouteAsync(Row row, string route)
+    {
+        row.Route = route;
+        var host = App.Workspace;
+        var lane = host?.Lanes.FirstOrDefault(l => l.Name == route);
+        if (lane is null) return;
+        row.Model = lane.Model;
+        try { row.Models = await Task.Run(async () =>
+        {
+            using var scope = host!.Services.CreateScope();
+            return await scope.ServiceProvider.GetRequiredService<CodingModelCatalog>().GetModelsAsync(lane);
+        }); }
+        catch { _status = "Could not load the catalog. You can enter a supported model ID."; }
+    }
+    private async Task SaveAsync()
+    {
+        try
+        {
+            if (_provider == "ollama" && (!Uri.TryCreate(_endpoint, UriKind.Absolute, out var uri) || !uri.IsLoopback))
+                throw new InvalidOperationException("Local Ollama requires a loopback endpoint.");
+            if (_provider == "system-one" && (!Uri.TryCreate(_endpoint, UriKind.Absolute, out var remote) || remote.Scheme != "https"))
+                throw new InvalidOperationException("Use an HTTPS endpoint for a remote service.");
+            if (!string.IsNullOrWhiteSpace(_key))
+            {
+                if (string.IsNullOrWhiteSpace(_credential)) throw new InvalidOperationException("Enter a credential name.");
+                await App.Vault.SetAsync(new SwarmCore.Secrets.SecretWriteRequest { Name = _credential.Trim(), Value = _key, Kind = SwarmCore.Secrets.SecretKinds.ApiKey });
+                _key = "";
+            }
+            await Store.SaveAsync(_loaded with { Enabled = _enabled,
+                Connection = new DecisionConnection { Provider = _provider, Endpoint = _endpoint.Trim(), Model = _model.Trim(), CredentialName = _provider == "ollama" ? null : _credential.Trim() },
+                Candidates = _rows.Select(r => new ModelDecisionCandidate(r.Id, r.Route, r.Model.Trim(), r.Description.Trim())).ToArray() });
+            await LoadAsync();
+            _status = "Saved. Applies to the next eligible prompt; no restart needed.";
+        }
+        catch (InvalidOperationException ex) { _status = ex.Message; }
+        catch { _status = "Could not save automatic selection settings."; }
+    }
+    private async Task SuggestAsync()
+    {
+        if (App.Workspace is not { } host) { _status = "Open a repository to discover model choices."; return; }
+        _status = "Reading model catalogs…";
+        try
+        {
+            using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+            var choices = await Task.Run(async () =>
+            {
+                using var scope = host.Services.CreateScope();
+                return await CodingDecisionCandidates.SuggestAsync(host.Lanes,
+                    scope.ServiceProvider.GetRequiredService<CodingModelCatalog>(), scope.ServiceProvider.GetServices<INativeLaneRunner>(), timeout.Token);
+            });
+            if (choices.Count == 0) { _status = "No suggestions are available. Add choices using your provider's model catalog."; return; }
+            _rows.Clear();
+            _rows.AddRange(choices.Select(c => new Row { Id=c.Id, Route=c.Route, Model=c.Model, Description=c.Description }));
+            _status = "Review these descriptions and save. Suggestions use provider metadata; they are not task benchmarks.";
+        }
+        catch { _status = "Catalog discovery did not finish. Existing choices have been preserved."; }
+    }
+    private sealed class Row
+    {
+        public string Id { get; set; } = Guid.NewGuid().ToString("N");
+        public string Route { get; set; } = "";
+        public string Model { get; set; } = "";
+        public string Description { get; set; } = "";
+        public IReadOnlyList<string> Models { get; set; } = [];
+    }
+}

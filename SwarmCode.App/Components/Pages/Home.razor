@@ -1,0 +1,165 @@
+@page "/"
+@implements IDisposable
+@inject AppState State
+@inject RepositoryOpener Opener
+@inject NavigationManager Nav
+
+<PageTitle>Talavine Code</PageTitle>
+
+<div class="sc-page">
+    <header class="sc-topbar">
+        <div>
+            <h1 class="sc-topbar__title">Talavine Code</h1>
+            <p class="sc-topbar__copy">
+                A coding agent that works inside one repository and can hand a task to another model when one gets stuck.
+            </p>
+        </div>
+        @if (State.Workspace is not null)
+        {
+            <div class="sc-topbar__actions">
+                <button type="button" class="sc-btn sc-btn--primary" @onclick="NewSessionAsync">New session</button>
+            </div>
+        }
+    </header>
+
+    @if (State.Workspace is null)
+    {
+        <section class="sc-card">
+            <h2 class="sc-card__title">Open a repository</h2>
+            <p class="sc-card__copy">Pick the folder you want the agent to work in. Sessions and model settings are kept per user, not inside the repository.</p>
+            <div class="sc-row">
+                <button type="button" class="sc-btn sc-btn--primary" @onclick="OpenAsync">
+                    @if (State.IsOpeningWorkspace) { <span class="sc-spinner"></span> }
+                    Open a repository…
+                </button>
+                <span class="sc-muted">or press <span class="sc-kbd">@SwarmCode.App.Services.PlatformText.SettingsShortcut</span> for settings</span>
+            </div>
+        </section>
+
+        @if (_recent.Count > 0)
+        {
+            <section class="sc-card">
+                <h2 class="sc-card__title">Recent repositories</h2>
+                <div class="sc-list">
+                    @foreach (var path in _recent)
+                    {
+                        var p = path;
+                        <div class="sc-list__row">
+                            <div class="sc-grow">
+                                <div><strong>@AppNavigation.FolderName(p)</strong></div>
+                                <div class="sc-muted sc-mono">@p</div>
+                            </div>
+                            <button type="button" class="sc-btn sc-btn--sm" @onclick="() => OpenRecentAsync(p)">Open</button>
+                        </div>
+                    }
+                </div>
+            </section>
+        }
+    }
+    else
+    {
+        <section class="sc-card">
+            <div class="sc-row sc-row--between">
+                <h2 class="sc-card__title">Recent sessions</h2>
+                <a href="/history" title="Search every session across your repositories, or summarize recent work">Search and summarize history</a>
+            </div>
+            <p class="sc-card__copy">Pick up where you left off in <span class="sc-mono">@AppNavigation.FolderName(State.RepositoryRoot!)</span>.</p>
+            @if (_sessions.Count == 0)
+            {
+                <div class="sc-empty">
+                    <div class="sc-empty__title">No sessions yet</div>
+                    <div>Start a session and describe what you want changed.</div>
+                    <button type="button" class="sc-btn sc-btn--primary" @onclick="NewSessionAsync">New session</button>
+                </div>
+            }
+            else
+            {
+                <div class="sc-list">
+                    @foreach (var s in _sessions.Take(6))
+                    {
+                        var session = s;
+                        <div class="sc-list__row">
+                            <a class="sc-grow" href="@AppNavigation.SessionUrl(session.Id)">@session.Title</a>
+                            @if (State.TryGetRunner(session.Id)?.IsRunning == true)
+                            {
+                                <span class="sc-spinner"></span>
+                            }
+                            @if (!string.IsNullOrEmpty(session.LaneName))
+                            {
+                                <span class="sc-chip">@session.LaneName</span>
+                            }
+                            <span class="sc-muted">@AppNavigation.RelativeTime(session.LastActivityUtc)</span>
+                        </div>
+                    }
+                </div>
+            }
+        </section>
+
+        <section class="sc-card">
+            <div class="sc-row sc-row--between">
+                <h2 class="sc-card__title">Lanes</h2>
+                <a href="/settings">Edit in Settings</a>
+            </div>
+            <p class="sc-card__copy">Each lane is a model route. Your selection chooses where to start. When a provider fails or a model declines, enabled handoffs continue the request on another lane, preferring models marked for declines.</p>
+            <div class="sc-list">
+                @foreach (var lane in State.Workspace.Lanes)
+                {
+                    var isDefault = string.Equals(lane.Name, DefaultLaneName, StringComparison.OrdinalIgnoreCase);
+                    <div class="sc-list__row">
+                        <strong>@lane.Name</strong>
+                        <span class="sc-muted sc-mono sc-grow">@lane.Route</span>
+                        @if (isDefault) { <span class="sc-chip sc-chip--accent">default</span> }
+                    </div>
+                }
+            </div>
+        </section>
+    }
+</div>
+
+@code {
+    private List<string> _recent = [];
+    private List<WorkspaceSessionInfo> _sessions = [];
+    private int _loading;
+
+    private string? DefaultLaneName =>
+        State.Preferences.Current.DefaultLane ?? State.Workspace?.LaneOptions.DefaultLane ?? State.Workspace?.Lanes.FirstOrDefault()?.Name;
+
+    protected override async Task OnInitializedAsync()
+    {
+        State.Changed += OnChanged;
+        await LoadAsync();
+    }
+
+    private void OnChanged() => _ = InvokeAsync(LoadAsync);
+
+    private async Task LoadAsync()
+    {
+        if (Interlocked.Exchange(ref _loading, 1) == 1) return;
+        try
+        {
+            var root = State.RepositoryRoot;
+            var (recent, sessions) = await Task.Run(async () =>
+            {
+                var r = (await State.Sessions.RecentRepositoriesAsync()).Where(Directory.Exists).ToList();
+                var s = root is null ? new List<WorkspaceSessionInfo>() : (await State.Sessions.ListAsync(root)).ToList();
+                return (r, s);
+            });
+            _recent = recent;
+            _sessions = sessions;
+            StateHasChanged();
+        }
+        finally { Interlocked.Exchange(ref _loading, 0); }
+    }
+
+    private Task OpenAsync() => Opener.PickAndOpenAsync();
+
+    private Task OpenRecentAsync(string path) => Opener.OpenAsync(path);
+
+    private async Task NewSessionAsync()
+    {
+        var session = await State.NewSessionAsync();
+        Nav.NavigateTo(AppNavigation.SessionUrl(session.Id));
+    }
+
+    public void Dispose() => State.Changed -= OnChanged;
+}

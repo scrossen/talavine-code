@@ -1,0 +1,106 @@
+@inherits LayoutComponentBase
+@implements IDisposable
+@inject AppState State
+@inject NavigationManager Nav
+@inject IJSRuntime JS
+
+<div class="sc-shell">
+    <Sidebar />
+    <main class="sc-main">
+        @Body
+    </main>
+</div>
+
+@if (State.LastError is { Length: > 0 } error)
+{
+    <div class="sc-toast" role="alert">
+        <span class="sc-toast__text">@error</span>
+        <button type="button" class="sc-btn sc-btn--ghost sc-btn--sm" aria-label="Dismiss" @onclick="State.ClearError">✕</button>
+    </div>
+}
+<IdeBridgeHost />
+
+@code {
+    private DotNetObjectReference<MainLayout>? _self;
+    private bool _disposed;
+
+    protected override void OnInitialized()
+    {
+        State.Changed += OnChanged;
+        State.Preferences.Changed += OnPreferencesChanged;
+    }
+
+    private void OnChanged() => _ = InvokeAsync(() => { if (!_disposed) StateHasChanged(); });
+
+    private void OnPreferencesChanged() => _ = InvokeAsync(ApplyAppearanceAsync);
+
+    protected override async Task OnAfterRenderAsync(bool firstRender)
+    {
+        if (!firstRender) return;
+        _self = DotNetObjectReference.Create(this);
+        await ApplyAppearanceAsync();
+        await JS.InvokeVoidAsync("swarmcode.registerShortcuts", _self);
+        // Keys and clicks anywhere in the window restart the self-improvement idle clock (coalesced in the page script).
+        try { await JS.InvokeVoidAsync("swarmcode.registerActivity", _self); } catch (Exception ex) when (ex is JSException or InvalidOperationException) { }
+        await RestoreLastWorkspaceAsync();
+    }
+
+    private async Task ApplyAppearanceAsync()
+    {
+        if (_disposed) return;
+        var prefs = State.Preferences.Current;
+        // The native window and title bar follow the same choice as the web content.
+        if (Application.Current is { } app)
+            app.UserAppTheme = prefs.Theme switch { "light" => AppTheme.Light, "dark" => AppTheme.Dark, _ => AppTheme.Unspecified };
+        try
+        {
+            await JS.InvokeVoidAsync("swarmcode.setTheme", prefs.Theme);
+            await JS.InvokeVoidAsync("swarmcode.zoom", prefs.Zoom);
+        }
+        catch (Exception ex) when (ex is JSException or InvalidOperationException) { }
+    }
+
+    private static string RelativePath(string uri) => uri.Split('?', '#')[0].Trim('/');
+
+    private async Task RestoreLastWorkspaceAsync()
+    {
+        if (State.Workspace is not null || State.IsOpeningWorkspace) return;
+        var prefs = State.Preferences.Current;
+        var last = prefs.LastRepositoryRoot;
+        if (string.IsNullOrWhiteSpace(last) || !Directory.Exists(last)) return;
+
+        var atHome = RelativePath(Nav.ToBaseRelativePath(Nav.Uri)).Length == 0;
+        if (!await State.OpenWorkspaceAsync(last) || !atHome) return;
+
+        var sessionId = prefs.LastSessionId;
+        if (string.IsNullOrEmpty(sessionId)) return;
+        var session = await State.Sessions.GetAsync(sessionId);
+        if (session is not null && string.Equals(session.RepositoryRoot.TrimEnd('\\', '/'), State.RepositoryRoot?.TrimEnd('\\', '/'), StringComparison.OrdinalIgnoreCase))
+            Nav.NavigateTo(AppNavigation.SessionUrl(session.Id));
+    }
+
+    [JSInvokable]
+    public Task OnShortcut(string action) => InvokeAsync(async () =>
+    {
+        if (action == "settings") Nav.NavigateTo("/settings");
+        else if (action == "new-session" && State.Workspace is not null)
+        {
+            var session = await State.NewSessionAsync();
+            Nav.NavigateTo(AppNavigation.SessionUrl(session.Id));
+        }
+    });
+
+    /// <summary>The person typed or clicked somewhere in the window (at most once per few seconds, see swarmcode.js).</summary>
+    [JSInvokable]
+    public void OnUserActivity() => State.ReportUserActivity();
+
+    public void Dispose()
+    {
+        _disposed = true;
+        State.Changed -= OnChanged;
+        State.Preferences.Changed -= OnPreferencesChanged;
+        try { _ = JS.InvokeVoidAsync("swarmcode.unregisterShortcuts"); } catch { }
+        try { _ = JS.InvokeVoidAsync("swarmcode.unregisterActivity"); } catch { }
+        _self?.Dispose();
+    }
+}

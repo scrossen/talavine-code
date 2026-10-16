@@ -1,0 +1,328 @@
+@page "/settings/memory"
+@implements IDisposable
+@inject AppState State
+@using SwarmCore.PersonalMemory
+@using SwarmCore.Coding.Memory
+
+@if (!Embedded)
+{
+    <PageTitle>Memory - Talavine Code</PageTitle>
+}
+
+<div class="@(Embedded ? "sc-settings-memory" : "sc-page")">
+    @if (!Embedded)
+    {
+    <header class="sc-topbar">
+        <div>
+            <h1 class="sc-topbar__title">Memory</h1>
+            <p class="sc-topbar__copy">What Talavine Code remembers about you across sessions, and changes agents proposed to this repository's own memory.</p>
+        </div>
+        <div class="sc-topbar__actions">
+            <a class="sc-btn" href="/settings">Back to settings</a>
+        </div>
+    </header>
+    }
+
+    @if (_message is not null)
+    {
+        <div class="sc-notice @(_messageIsError ? "sc-notice--error" : "sc-notice--info")" role="status">@_message</div>
+    }
+
+    <section class="sc-card">
+        <h2 class="sc-card__title">Remember things about me</h2>
+        <p class="sc-card__copy">
+            When this is on, Talavine Code learns lasting facts from what you type (how you like to work, your preferences, recurring projects)
+            and gives agents a short profile at the start of each turn. It never learns from repository files, tool output or web pages,
+            never stores passwords or keys, and anything an agent only inferred waits for your confirmation below.
+            Turn a session into a temporary one from its header to keep that session out of memory.
+        </p>
+        @if (!State.MemoryOptions.Enabled)
+        {
+            <div class="sc-notice sc-notice--error" role="alert">Memory is turned off for this installation (<span class="sc-mono">PersonalMemory:Enabled</span> in settings.json). What was stored is still listed below and can be deleted.</div>
+        }
+        <label class="sc-toggle">
+            <input type="checkbox" checked="@State.Preferences.Current.PersonalMemoryEnabled" disabled="@_busy" @onchange="ToggleEnabledAsync" aria-label="Remember things about me" />
+            <span class="sc-toggle__track"></span><span>Remember things about me</span>
+        </label>
+        <p class="sc-muted">Stored only on this computer in <span class="sc-mono">@State.Paths.PersonalMemoryPath</span>.</p>
+    </section>
+
+    <section class="sc-card">
+        <div class="sc-row sc-row--between">
+            <h2 class="sc-card__title">What Talavine Code knows about you</h2>
+            <div class="sc-row">
+                <label class="sc-toggle"><input type="checkbox" @bind="_showHistory" /><span class="sc-toggle__track"></span><span>Show history</span></label>
+                <button type="button" class="sc-btn sc-btn--sm" disabled="@_busy" @onclick="RefreshAsync">Refresh</button>
+            </div>
+        </div>
+        @if (_inventory is null)
+        {
+            @if (_loadError is not null) { <p class="sc-notice sc-notice--error">@_loadError</p> } else { <Spinner /> }
+        }
+        else
+        {
+            var visible = _inventory.Items.Where(i => _showHistory || i.State is MemoryItemState.Current or MemoryItemState.Suppressed).ToList();
+            @if (visible.Count == 0)
+            {
+                <p class="sc-muted">Nothing remembered yet. Tell an agent "remember that I ..." or just mention how you like to work.</p>
+            }
+            @foreach (var section in visible.GroupBy(i => i.Section).OrderBy(g => g.Key))
+            {
+                <h3 class="sc-field__label">@MemoryProfileDigestBuilder.UserFacingTitleFor(section.Key)</h3>
+                <div class="sc-list">
+                    @foreach (var item in section)
+                    {
+                        var entry = item;
+                        var fact = entry.Fact;
+                        <div class="sc-list__row sc-memory-row">
+                            @if (_editing == fact.Id)
+                            {
+                                <textarea class="sc-input" aria-label="Edit memory" rows="2" @bind="_editText"></textarea>
+                                <button type="button" class="sc-btn sc-btn--sm sc-btn--primary" disabled="@_busy" @onclick="() => SaveEditAsync(fact)">Save</button>
+                                <button type="button" class="sc-btn sc-btn--sm" @onclick="CancelEdit">Cancel</button>
+                            }
+                            else
+                            {
+                                <span class="sc-list__label">
+                                    @fact.Text
+                                    <span class="sc-muted sc-memory-source">@SourceLabel(fact) · confidence @fact.Confidence.ToString("0.00") · <span class="sc-mono">@fact.Reference</span></span>
+                                </span>
+                                @if (entry.State != MemoryItemState.Current) { <span class="sc-chip @(entry.State == MemoryItemState.Suppressed ? "sc-chip--warn" : "sc-chip--off")">@StateLabel(entry.State)</span> }
+                                @if (entry.InDigest) { <span class="sc-chip sc-chip--accent" title="Included in the profile agents see on every turn">In profile</span> }
+                                @if (fact.Sensitive) { <span class="sc-chip sc-chip--warn" title="Sensitive: kept out of the always-on profile">Sensitive</span> }
+                                @if (entry.State is MemoryItemState.Current or MemoryItemState.Suppressed)
+                                {
+                                    <button type="button" class="sc-btn sc-btn--sm" disabled="@_busy" @onclick="() => StartEdit(fact)">Edit</button>
+                                    <button type="button" class="sc-btn sc-btn--sm" disabled="@_busy" @onclick="() => ToggleSuppressedAsync(fact)">@(fact.Suppressed ? "Bring up again" : "Don't bring this up")</button>
+                                }
+                                @if (_confirmForget == fact.Id)
+                                {
+                                    <button type="button" class="sc-btn sc-btn--sm sc-btn--danger" disabled="@_busy" @onclick="() => ForgetAsync(fact)">Forget permanently</button>
+                                    <button type="button" class="sc-btn sc-btn--sm" @onclick="() => _confirmForget = null">Keep</button>
+                                }
+                                else if (entry.State is not MemoryItemState.Superseded)
+                                {
+                                    <button type="button" class="sc-btn sc-btn--sm sc-btn--danger" title="Delete this memory and its history, and don't learn it again" disabled="@_busy" @onclick="() => _confirmForget = fact.Id">Forget</button>
+                                }
+                            }
+                        </div>
+                    }
+                </div>
+            }
+
+            @if (_inventory.Suggestions.Count > 0)
+            {
+                <h3 class="sc-field__label">Suggestions waiting for you</h3>
+                <p class="sc-muted">An agent inferred these, or they came from a single outside source. Nothing here is used until you confirm it.</p>
+                <div class="sc-list">
+                    @foreach (var claim in _inventory.Suggestions)
+                    {
+                        var suggestion = claim;
+                        <div class="sc-list__row sc-memory-row">
+                            <span class="sc-list__label">@suggestion.Text <span class="sc-muted sc-memory-source">@MemoryTrust.Label(suggestion.Authority) · @suggestion.Evidence.SourceKind · @suggestion.ObservedAt.LocalDateTime.ToString("d")</span></span>
+                            <button type="button" class="sc-btn sc-btn--sm sc-btn--primary" disabled="@_busy" @onclick="() => ConfirmAsync(suggestion)">Confirm</button>
+                            <button type="button" class="sc-btn sc-btn--sm" disabled="@_busy" @onclick="() => DismissAsync(suggestion)">Dismiss</button>
+                        </div>
+                    }
+                </div>
+            }
+
+            @if (!_inventory.Digest.IsEmpty)
+            {
+                <details class="sc-memory-digest">
+                    <summary>Profile agents see on each turn (@_inventory.Digest.Rendered.Length characters)</summary>
+                    <pre class="sc-pre">@_inventory.Digest.Rendered</pre>
+                </details>
+            }
+        }
+    </section>
+
+    <section class="sc-card">
+        <div class="sc-row sc-row--between">
+            <h2 class="sc-card__title">Repository memory proposals</h2>
+            <label class="sc-toggle"><input type="checkbox" @bind="_showClosedProposals" @bind:after="RefreshProposalsAsync" /><span class="sc-toggle__track"></span><span>Show applied and discarded</span></label>
+        </div>
+        <p class="sc-card__copy">
+            Agents read this repository's MEMORY.md index and memory/ topic files, and propose edits when a turn establishes a lasting convention.
+            Nothing is written until you apply it, and applying changes only the working tree: review and commit it yourself.
+        </p>
+        @if (State.RepositoryRoot is null)
+        {
+            <p class="sc-muted">Open a repository to see its proposals.</p>
+        }
+        else if (_proposals.Count == 0)
+        {
+            <p class="sc-muted">No @(_showClosedProposals ? "" : "pending ")proposals for @AppNavigation.FolderName(State.RepositoryRoot).</p>
+        }
+        else
+        {
+            @foreach (var p in _proposals)
+            {
+                var proposal = p;
+                <div class="sc-memory-proposal">
+                    <div class="sc-row sc-row--between">
+                        <span><strong class="sc-mono">@proposal.RelativePath</strong> <span class="sc-chip">@proposal.Kind</span>
+                            @if (proposal.Status != RepoMemoryProposalStatus.Pending) { <span class="sc-chip sc-chip--off">@proposal.Status</span> }
+                            <span class="sc-muted">@proposal.CreatedAt.LocalDateTime.ToString("g")</span></span>
+                        @if (proposal.Status == RepoMemoryProposalStatus.Pending)
+                        {
+                            <span class="sc-row">
+                                <button type="button" class="sc-btn sc-btn--sm sc-btn--primary" disabled="@_busy" @onclick="() => ApplyProposalAsync(proposal)">Apply to working tree</button>
+                                <button type="button" class="sc-btn sc-btn--sm" disabled="@_busy" @onclick="() => DiscardProposalAsync(proposal)">Discard</button>
+                            </span>
+                        }
+                    </div>
+                    <p class="sc-muted">@proposal.Rationale</p>
+                    @if (!string.IsNullOrWhiteSpace(proposal.StatusReason) && proposal.Status != RepoMemoryProposalStatus.Pending) { <p class="sc-muted">@proposal.StatusReason</p> }
+                    <div class="sc-pre sc-diff" role="region" aria-label="Proposed change">@foreach (var line in proposal.Diff.TrimEnd('\n').Split('\n')) { <span class="@DiffClass(line)">@(line.Length == 0 ? " " : line)</span> }</div>
+                </div>
+            }
+        }
+    </section>
+</div>
+
+@code {
+    [Parameter] public bool Embedded { get; set; }
+    private MemoryInventory? _inventory;
+    private string? _loadError;
+    private List<RepoMemoryProposal> _proposals = [];
+    private bool _busy;
+    private bool _showHistory;
+    private bool _showClosedProposals;
+    private Guid? _editing;
+    private string _editText = "";
+    private Guid? _confirmForget;
+    private string? _message;
+    private bool _messageIsError;
+
+    protected override async Task OnInitializedAsync()
+    {
+        State.Changed += OnChanged;
+        await RefreshAsync();
+    }
+
+    private void OnChanged() => _ = InvokeAsync(async () => { await RefreshProposalsAsync(); StateHasChanged(); });
+
+    private async Task RefreshAsync()
+    {
+        try
+        {
+            _loadError = null;
+            // Store reads are file I/O: keep them off the renderer.
+            _inventory = await Task.Run(() => State.Memory.GetInventoryAsync(State.MemoryScope));
+        }
+        catch (Exception ex) { _loadError = "Could not read memory: " + ex.Message; }
+        await RefreshProposalsAsync();
+    }
+
+    private async Task RefreshProposalsAsync()
+    {
+        var root = State.RepositoryRoot;
+        if (root is null) { _proposals = []; return; }
+        try { _proposals = (await Task.Run(() => State.RepoMemoryProposals.ListAsync(root, _showClosedProposals))).ToList(); }
+        catch (Exception ex) { Show("Could not read proposals: " + ex.Message, true); }
+    }
+
+    private async Task ToggleEnabledAsync(ChangeEventArgs e)
+    {
+        var enabled = e.Value is true;
+        await Task.Run(() => State.Preferences.Update(p => p.PersonalMemoryEnabled = enabled));
+        Show(enabled ? "Memory is on." : "Memory is off: nothing new is learned or recalled. Stored memories remain until you forget them.", false);
+        await RefreshAsync();
+    }
+
+    private void StartEdit(MemoryFact fact) { _editing = fact.Id; _editText = fact.Text; _confirmForget = null; }
+    private void CancelEdit() { _editing = null; _editText = ""; }
+
+    private Task SaveEditAsync(MemoryFact fact)
+        => RunAsync(() => State.Memory.EditAsync(State.MemoryScope, fact.Id, fact.Version, _editText), "Saved. The previous wording is kept in history.", () => CancelEdit());
+
+    private Task ToggleSuppressedAsync(MemoryFact fact)
+        => RunAsync(() => State.Memory.SetSuppressedAsync(State.MemoryScope, fact.Id, fact.Version, !fact.Suppressed),
+            fact.Suppressed ? "Agents may bring this up again." : "Agents won't bring this up. It stays listed here.");
+
+    private Task ForgetAsync(MemoryFact fact)
+        => RunAsync(() => State.Memory.ForgetAsync(State.MemoryScope, fact.Id, fact.Version), "Forgotten, with its history. It won't be learned again unless you ask.", () => _confirmForget = null);
+
+    private Task ConfirmAsync(MemoryClaim claim)
+        => RunAsync(() => State.Memory.ConfirmSuggestionAsync(State.MemoryScope, claim.Id, claim.Version), "Confirmed.");
+
+    private Task DismissAsync(MemoryClaim claim)
+        => RunAsync(() => State.Memory.DismissSuggestionAsync(State.MemoryScope, claim.Id, claim.Version), "Dismissed. It won't be suggested again.");
+
+    private async Task RunAsync(Func<Task<MemoryEditResult>> action, string success, Action? after = null)
+    {
+        _busy = true;
+        try
+        {
+            var result = await Task.Run(action);
+            if (result.Succeeded) { Show(success, false); after?.Invoke(); }
+            else Show(result.Outcome switch
+            {
+                MemoryEditOutcome.Conflict => "This memory changed since it was shown; refreshed. " + result.Detail,
+                MemoryEditOutcome.NotFound => "This memory no longer exists; refreshed.",
+                _ => result.Detail ?? "Not changed.",
+            }, true);
+        }
+        catch (Exception ex) { Show("Could not update memory: " + ex.Message, true); }
+        finally { _busy = false; }
+        await RefreshAsync();
+    }
+
+    private async Task ApplyProposalAsync(RepoMemoryProposal proposal)
+    {
+        _busy = true;
+        try
+        {
+            var options = State.Workspace?.CodingOptions.RepoMemory ?? new RepoMemoryOptions();
+            var result = await Task.Run(() => RepoMemoryProposals.ApplyAsync(State.RepoMemoryProposals, proposal.Id, proposal.Version, options));
+            Show(result.Message, !result.Ok);
+        }
+        catch (Exception ex) { Show("Could not apply: " + ex.Message, true); }
+        finally { _busy = false; }
+        await RefreshProposalsAsync();
+    }
+
+    private async Task DiscardProposalAsync(RepoMemoryProposal proposal)
+    {
+        _busy = true;
+        try
+        {
+            var result = await Task.Run(() => RepoMemoryProposals.DiscardAsync(State.RepoMemoryProposals, proposal.Id, proposal.Version));
+            Show(result.Message, !result.Ok);
+        }
+        finally { _busy = false; }
+        await RefreshProposalsAsync();
+    }
+
+    private static string SourceLabel(MemoryFact fact)
+    {
+        var newest = fact.Evidence.OrderByDescending(e => e.ObservedAt).FirstOrDefault();
+        var who = MemoryTrust.Label(fact.Authority);
+        var how = newest?.SourceKind switch
+        {
+            "chat-turn" => "from a Talavine Code chat",
+            "memory-control" => "edited here",
+            null => null,
+            var kind => "from " + kind,
+        };
+        var when = (newest?.ObservedAt ?? fact.UpdatedAt).LocalDateTime.ToString("d");
+        return string.Join(" · ", new[] { who, how, when }.Where(s => !string.IsNullOrWhiteSpace(s)));
+    }
+
+    private static string StateLabel(MemoryItemState state) => state switch
+    {
+        MemoryItemState.Suppressed => "Not brought up",
+        MemoryItemState.Superseded => "Replaced",
+        MemoryItemState.Expired => "Expired",
+        _ => "Current",
+    };
+
+    private static string DiffClass(string line)
+        => line.StartsWith("+++") || line.StartsWith("---") ? "sc-diff__file"
+            : line.StartsWith('+') ? "sc-diff__add" : line.StartsWith('-') ? "sc-diff__del" : line.StartsWith("@@") ? "sc-diff__hunk" : "";
+
+    private void Show(string message, bool error) { _message = message; _messageIsError = error; }
+
+    public void Dispose() => State.Changed -= OnChanged;
+}

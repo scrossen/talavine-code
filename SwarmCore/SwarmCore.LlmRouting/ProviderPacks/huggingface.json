@@ -1,0 +1,34 @@
+{
+  "schemaVersion": 1,
+  "packId": "talavine.huggingface",
+  "version": "2026.08.18.3",
+  "providerName": "HuggingFace",
+  "modelPrefix": "huggingface",
+  "executionDialect": "openai-compatible-chat-v1",
+  "modelDefaults": { "frontier": "meta-llama/Meta-Llama-3.1-70B-Instruct", "balanced": "meta-llama/Meta-Llama-3.1-70B-Instruct", "economy": "Qwen/Qwen2.5-7B-Instruct" },
+  "directApi": {
+    "baseUrl": "https://router.huggingface.co/v1",
+    "executionEndpoints": ["https://router.huggingface.co/v1"],
+    "hasListModelsEndpoint": false,
+    "defaultModel": "meta-llama/Meta-Llama-3.1-70B-Instruct",
+    "defaultModels": [
+      "meta-llama/Meta-Llama-3.1-70B-Instruct",
+      "mistralai/Mistral-7B-Instruct-v0.3",
+      "Qwen/Qwen2.5-7B-Instruct"
+    ],
+    "preferredModels": [
+      "meta-llama/Meta-Llama-3.1-70B-Instruct",
+      "Qwen/Qwen2.5-7B-Instruct",
+      "mistralai/Mistral-7B-Instruct-v0.3"
+    ],
+    "visionModelPatterns": [],
+    "catalogModelPrefixes": [],
+    "modelScoutCandidates": [
+      "meta-llama/Meta-Llama-3.1-70B-Instruct",
+      "Qwen/Qwen2.5-7B-Instruct",
+      "mistralai/Mistral-7B-Instruct-v0.3"
+    ],
+    "modelScoutSuggested": ["Qwen/Qwen2.5-7B-Instruct"],
+    "qualificationPriority": 60
+  }
+}

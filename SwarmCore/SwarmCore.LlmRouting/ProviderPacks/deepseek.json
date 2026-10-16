@@ -1,0 +1,27 @@
+{
+  "schemaVersion": 1,
+  "packId": "talavine.deepseek",
+  "version": "2026.10.08.1",
+  "providerName": "DeepSeek",
+  "modelPrefix": "deepseek",
+  "executionDialect": "openai-compatible-chat-v1",
+  "modelDefaults": { "frontier": "deepseek-v4-pro", "balanced": "deepseek-flash", "economy": "deepseek-flash" },
+  "directApi": {
+    "baseUrl": "https://api.deepseek.com",
+    "executionEndpoints": ["https://api.deepseek.com/v1/chat/completions"],
+    "defaultModel": "deepseek-flash",
+    "defaultModels": ["deepseek-flash", "deepseek-v4-pro"],
+    "modelFacts": {
+      "deepseek-flash": { "displayName": "DeepSeek V4.1 Flash", "supportsChat": true, "supportsVision": true, "maxContextTokens": 1000000, "inputCostPer1K": 0.0003, "outputCostPer1K": 0.0012, "description": "V4.1 Flash; peak-rate pricing ceiling", "recommendedFor": "Cost-sensitive tasks" },
+      "deepseek-v4-pro": { "displayName": "DeepSeek V4 Pro", "supportsChat": true, "supportsVision": false, "maxContextTokens": 1000000, "inputCostPer1K": 0.00132, "outputCostPer1K": 0.00396, "description": "Flagship V4 model", "recommendedFor": "Reasoning and code analysis" }
+    },
+    "pricingAliases": { "deepseek-v4-flash": "deepseek-flash" },
+    "preferredModels": ["deepseek-flash", "deepseek-v4-pro"],
+    "visionModelPatterns": ["deepseek-flash"],
+    "catalogModelPrefixes": ["deepseek-"],
+    "modelScoutCandidates": ["deepseek-flash", "deepseek-v4-pro"],
+    "modelScoutSuggested": ["deepseek-flash"],
+    "automaticMeteredCandidates": ["deepseek-flash"],
+    "qualificationPriority": 50
+  }
+}

@@ -1,0 +1,252 @@
+@implements IDisposable
+
+@* The working tree of a coding conversation: branch and tracking, changed files, and a unified diff per
+   file. Data comes only from the host's IChangesSource, called off the UI dispatcher; the panel never
+   runs git itself. *@
+<aside class="@RootClass" aria-label="@AriaLabel" @attributes="AdditionalAttributes">
+    <div class="chat-changes__head">
+        @if (Collapsible)
+        {
+            <button type="button" class="chat-changes__toggle" aria-expanded="@(IsCollapsed ? "false" : "true")"
+                    aria-label="@(IsCollapsed ? "Expand changes" : "Collapse changes")" @onclick="ToggleCollapsedAsync">
+                <span aria-hidden="true">@(IsCollapsed ? "▸" : "▾")</span>
+            </button>
+        }
+        <div class="chat-changes__branch">
+            @if (_status?.Branch is { } branch)
+            {
+                <span class="chat-changes__branch-name" title="@_status.Upstream">@branch</span>
+                @if (_status.Ahead > 0 || _status.Behind > 0)
+                {
+                    <span class="chat-changes__sync">@(_status.Ahead > 0 ? $"+{_status.Ahead} ahead" : "") @(_status.Behind > 0 ? $"{_status.Behind} behind" : "")</span>
+                }
+            }
+            else
+            {
+                <span class="chat-changes__branch-name">@Title</span>
+            }
+            @if (IsCollapsed && _status is { Error: null } collapsedStatus)
+            {
+                <span class="chat-changes__count">@CountLabel(collapsedStatus.Files.Count)</span>
+            }
+        </div>
+        <button type="button" class="@ButtonClass" disabled="@_loading" @onclick="RefreshAsync">@(_loading ? "Refreshing..." : "Refresh")</button>
+        @if (OnClose.HasDelegate)
+        {
+            <button type="button" class="@ButtonClass" aria-label="Close changes" @onclick="() => OnClose.InvokeAsync()">&times;</button>
+        }
+    </div>
+
+    @if (!IsCollapsed)
+    {
+        @if (_error is not null)
+        {
+            <div class="chat-changes__error" role="alert">@_error</div>
+        }
+        else if (_status is null)
+        {
+            <div class="chat-changes__empty">Loading...</div>
+        }
+        else if (_status.Files.Count == 0)
+        {
+            <div class="chat-changes__empty">Working tree clean.</div>
+        }
+        else
+        {
+            <ul class="chat-changes__list">
+                @foreach (var entry in _status.Files.Take(Math.Max(1, MaxFiles)))
+                {
+                    var e = entry;
+                    <li>
+                        <button type="button" class="chat-changes__file @(e.Path == _selected?.Path ? "is-selected" : "")"
+                                aria-pressed="@(e.Path == _selected?.Path ? "true" : "false")" @onclick="() => SelectAsync(e)">
+                            <span class="chat-changes__code chat-changes__code--@e.Kind">@e.Status.Trim()</span>
+                            <span class="chat-changes__path" title="@e.Path">@e.Path</span>
+                        </button>
+                    </li>
+                }
+            </ul>
+            @if (_status.Files.Count > Math.Max(1, MaxFiles))
+            {
+                <div class="chat-changes__more" data-testid="changes-more">and @(_status.Files.Count - Math.Max(1, MaxFiles)) more</div>
+            }
+        }
+
+        @if (_selected is { } selected)
+        {
+            <div class="chat-changes__diff">
+                <div class="chat-changes__diff-title">@selected.Path</div>
+                @if (FileActions is not null)
+                {
+                    @FileActions(selected)
+                }
+                @if (_diffLoading)
+                {
+                    <div class="chat-changes__empty">Loading diff...</div>
+                }
+                else if (_diffError is not null)
+                {
+                    <div class="chat-changes__error" role="alert">@_diffError</div>
+                }
+                else if (string.IsNullOrWhiteSpace(_diff))
+                {
+                    <div class="chat-changes__empty">No textual diff (untracked or binary file).</div>
+                }
+                else
+                {
+                    <DiffView Diff="@_diff" MaxLines="MaxDiffLines" />
+                    @if (_diffTruncated)
+                    {
+                        <div class="chat-changes__truncated" data-testid="changes-truncated">The diff was cut at its size limit; the rest is not shown.</div>
+                    }
+                }
+            </div>
+        }
+    }
+</aside>
+
+@code {
+    /// <summary>Where status and diffs come from. A different instance resets the panel.</summary>
+    [Parameter, EditorRequired] public IChangesSource? Source { get; set; }
+    /// <summary>Change to request a refresh (for example after a turn changed the workspace).</summary>
+    [Parameter] public int RefreshToken { get; set; }
+    /// <summary>Header text when there is no branch (detached, or not loaded yet).</summary>
+    [Parameter] public string Title { get; set; } = "Changes";
+    [Parameter] public string AriaLabel { get; set; } = "Changes";
+    /// <summary>Shows a close button when set.</summary>
+    [Parameter] public EventCallback OnClose { get; set; }
+    /// <summary>Reports the number of changed files after each refresh.</summary>
+    [Parameter] public EventCallback<int> OnCountChanged { get; set; }
+    /// <summary>Per-file actions (for example "open") shown above the selected file's diff.</summary>
+    [Parameter] public RenderFragment<ChangedFile>? FileActions { get; set; }
+    /// <summary>Shows a collapse toggle; a collapsed panel keeps only its header (with the file count).</summary>
+    [Parameter] public bool Collapsible { get; set; }
+    /// <summary>Collapsed state. Owner-controlled when <see cref="CollapsedChanged"/> is set; otherwise the initial state.</summary>
+    [Parameter] public bool Collapsed { get; set; }
+    [Parameter] public EventCallback<bool> CollapsedChanged { get; set; }
+    [Parameter] public int MaxDiffLines { get; set; } = 400;
+    /// <summary>Most files listed; the rest are summarized as "and N more".</summary>
+    [Parameter] public int MaxFiles { get; set; } = 300;
+    /// <summary>Extra classes on the root (host layout).</summary>
+    [Parameter] public string? Class { get; set; }
+    /// <summary>Class of the header buttons; defaults to the shared button style.</summary>
+    [Parameter] public string ButtonClass { get; set; } = "chat-changes__btn";
+    [Parameter(CaptureUnmatchedValues = true)] public IReadOnlyDictionary<string, object>? AdditionalAttributes { get; set; }
+
+    private ChangesSnapshot? _status;
+    private string? _error;
+    private ChangedFile? _selected;
+    private string? _diff;
+    // One unreadable diff (a lock, a permission) is shown in the diff pane; the file list stays.
+    private string? _diffError;
+    private bool _diffTruncated;
+    private bool _loading;
+    private bool _diffLoading;
+    private bool _collapsedLocal;
+    private bool _collapsedSeeded;
+    private int _lastToken = int.MinValue;
+    private IChangesSource? _lastSource;
+    private int _gen;
+    private int _diffGen;
+    private CancellationTokenSource _cts = new();
+
+    private string RootClass => string.IsNullOrWhiteSpace(Class) ? "chat-changes" : "chat-changes " + Class;
+    private bool IsCollapsed => Collapsible && (CollapsedChanged.HasDelegate ? Collapsed : _collapsedLocal);
+
+    private static string CountLabel(int count) => count switch
+    {
+        0 => "clean",
+        1 => "1 file",
+        _ => $"{count} files",
+    };
+
+    protected override async Task OnParametersSetAsync()
+    {
+        if (!_collapsedSeeded) { _collapsedLocal = Collapsed; _collapsedSeeded = true; }
+        if (!ReferenceEquals(_lastSource, Source) || _lastToken != RefreshToken)
+        {
+            var sourceChanged = !ReferenceEquals(_lastSource, Source);
+            _lastSource = Source;
+            _lastToken = RefreshToken;
+            if (sourceChanged)
+            {
+                // A different source (another conversation or repository): drop its in-flight reads.
+                _cts.Cancel();
+                _cts.Dispose();
+                _cts = new CancellationTokenSource();
+                _status = null; _selected = null; _diff = null; _diffError = null; _diffTruncated = false; _error = null;
+            }
+            await RefreshAsync();
+        }
+    }
+
+    /// <summary>Reloads the status (and the selected file's diff) from the source.</summary>
+    public async Task RefreshAsync()
+    {
+        var source = Source;
+        if (source is null) return;
+        var gen = ++_gen;
+        _loading = true;
+        _error = null;
+        var ct = _cts.Token;
+        try
+        {
+            var result = await Task.Run(() => source.GetStatusAsync(ct), ct);
+            if (gen != _gen) return;
+            if (result is null) { _error = "The working tree status is unavailable."; _status = null; }
+            else if (result.Error is not null) { _error = result.Error; _status = null; }
+            else _status = result;
+            if (_selected is not null && _status is not null)
+            {
+                var current = _status.Files.FirstOrDefault(e => e.Path == _selected.Path);
+                if (current is null) { _selected = null; _diff = null; _diffError = null; }
+                else { _selected = current; await LoadDiffAsync(current); }
+            }
+        }
+        catch (OperationCanceledException) { return; }
+        catch (Exception ex) { if (gen == _gen) { _error = ex.Message; _status = null; } }
+        finally { if (gen == _gen) _loading = false; }
+        if (gen == _gen && _status is not null) await OnCountChanged.InvokeAsync(_status.Files.Count);
+    }
+
+    private async Task SelectAsync(ChangedFile entry)
+    {
+        if (_selected?.Path == entry.Path) { _selected = null; _diff = null; _diffError = null; ++_diffGen; return; }
+        _selected = entry;
+        await LoadDiffAsync(entry);
+    }
+
+    private async Task LoadDiffAsync(ChangedFile entry)
+    {
+        var source = Source;
+        if (source is null) return;
+        var gen = ++_diffGen;
+        _diffLoading = true;
+        _diff = null;
+        _diffError = null;
+        _diffTruncated = false;
+        StateHasChanged();
+        var ct = _cts.Token;
+        try
+        {
+            var result = await Task.Run(() => source.GetDiffAsync(entry, ct), ct);
+            if (gen == _diffGen && _selected?.Path == entry.Path) { _diff = result?.Text; _diffTruncated = result?.Truncated == true; }
+        }
+        catch (OperationCanceledException) { }
+        catch (Exception) { if (gen == _diffGen) { _diff = null; _diffError = "This file's diff could not be read. Refresh to try again."; } }
+        finally { if (gen == _diffGen) _diffLoading = false; }
+    }
+
+    private async Task ToggleCollapsedAsync()
+    {
+        var next = !IsCollapsed;
+        if (CollapsedChanged.HasDelegate) await CollapsedChanged.InvokeAsync(next);
+        else _collapsedLocal = next;
+    }
+
+    public void Dispose()
+    {
+        _cts.Cancel();
+        _cts.Dispose();
+    }
+}

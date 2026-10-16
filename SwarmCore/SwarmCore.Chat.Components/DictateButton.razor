@@ -1,0 +1,97 @@
+@implements IAsyncDisposable
+@*
+    Talk instead of type. Uses the browser's speech recognition when the page has it (the CRM in Chrome or Edge),
+    writing the words into the target field; in a desktop app window it focuses the field and starts the
+    operating system's dictation (IDictationLauncher), which types into it. Hosts place it next to their composer.
+*@
+<button type="button" class="@($"chat-dictate {(_listening ? "chat-dictate--listening " : "")}{Class}")"
+        title="@Title" aria-label="@Title" aria-pressed="@(_listening ? "true" : "false")"
+        disabled="@Disabled" @onclick="ToggleAsync">
+    <svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+        <rect x="9" y="3" width="6" height="11" rx="3"></rect><path d="M5 11a7 7 0 0 0 14 0"></path><line x1="12" y1="18" x2="12" y2="21"></line>
+    </svg>
+    @if (ShowLabel)
+    {
+        <span>@(_listening ? "Listening…" : "Dictate")</span>
+    }
+</button>
+@if (!string.IsNullOrEmpty(_message))
+{
+    <span class="chat-dictate__hint" role="status">@_message</span>
+}
+
+@code {
+    [Inject] private IJSRuntime JS { get; set; } = default!;
+    [Inject] private IServiceProvider Services { get; set; } = default!;
+
+    /// <summary>CSS selector of the text field the words go into.</summary>
+    [Parameter, EditorRequired] public string TargetSelector { get; set; } = "";
+    [Parameter] public string? Class { get; set; }
+    [Parameter] public bool Disabled { get; set; }
+    [Parameter] public bool ShowLabel { get; set; }
+
+    private DotNetObjectReference<DictateButton>? _self;
+    private bool _listening;
+    private string? _message;
+
+    private string Title => _listening ? "Stop dictating" : "Dictate (talk instead of type)";
+
+    private IDictationLauncher? Launcher => Services.GetService(typeof(IDictationLauncher)) as IDictationLauncher;
+
+    private async Task ToggleAsync()
+    {
+        _message = null;
+        _self ??= DotNetObjectReference.Create(this);
+        try
+        {
+            if (_listening)
+            {
+                await JS.InvokeVoidAsync("chatComponents.dictation.stop", TargetSelector);
+                _listening = false;
+                return;
+            }
+            // A desktop window: the OS dictation types into the focused field (WebView2 and WKWebView have no
+            // usable in-page speech recognition).
+            if (Launcher is { IsAvailable: true } launcher)
+            {
+                if (!await JS.InvokeAsync<bool>("chatComponents.dictation.focusTarget", TargetSelector)) return;
+                if (!await launcher.StartAsync()) _message = launcher.ManualHint;
+                return;
+            }
+            if (await JS.InvokeAsync<bool>("chatComponents.dictation.start", TargetSelector, _self))
+            {
+                _listening = true;
+                return;
+            }
+            _message = "Dictation isn't available in this browser. Use your device's dictation, or try Chrome or Edge.";
+        }
+        catch (JSException)
+        {
+            _message = "Dictation could not start here.";
+        }
+    }
+
+    [JSInvokable]
+    public Task OnDictationEnded() => InvokeAsync(() => { _listening = false; StateHasChanged(); });
+
+    [JSInvokable]
+    public Task OnDictationError(string error) => InvokeAsync(() =>
+    {
+        _listening = false;
+        _message = error is "not-allowed" or "service-not-allowed"
+            ? "Allow microphone access for this site to dictate."
+            : error == "no-speech" ? "Didn't hear anything. Try again." : "Dictation stopped (" + error + ").";
+        StateHasChanged();
+    });
+
+    public async ValueTask DisposeAsync()
+    {
+        if (_listening)
+        {
+            try { await JS.InvokeVoidAsync("chatComponents.dictation.stop", TargetSelector); }
+            catch (JSDisconnectedException) { }
+            catch (JSException) { }
+        }
+        _self?.Dispose();
+    }
+}

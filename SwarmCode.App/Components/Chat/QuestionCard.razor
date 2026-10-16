@@ -1,0 +1,123 @@
+@* A question the agent asked the person mid-turn (user.ask). Pending: options, free text, Submit and Skip. Answered: read-only receipt. *@
+
+@if (Entry.IsPending)
+{
+    <div class="sess-question" role="group" aria-label="Question from the agent" data-testid="question-card">
+        <div class="sess-question__head">
+            <strong class="sess-question__text">@Entry.Question</strong>
+            @if (!string.IsNullOrWhiteSpace(Entry.Context))
+            {
+                <p class="sess-question__context">@Entry.Context</p>
+            }
+        </div>
+        @if (Entry.Options.Count > 0)
+        {
+            <div class="sess-question__options">
+                @foreach (var option in Entry.Options)
+                {
+                    var chosen = _selected.Contains(option.Label);
+                    <label class="sess-question__option @(chosen ? "sess-question__option--on" : "")">
+                        <input type="@(Entry.AllowMultiple ? "checkbox" : "radio")"
+                               name="@_group"
+                               checked="@chosen"
+                               disabled="@_busy"
+                               @onchange="() => Toggle(option.Label)" />
+                        <span class="sess-question__label">@option.Label</span>
+                        @if (!string.IsNullOrWhiteSpace(option.Description))
+                        {
+                            <span class="sess-question__description">@option.Description</span>
+                        }
+                    </label>
+                }
+            </div>
+        }
+        @if (Entry.AllowFreeText)
+        {
+            <textarea class="sess-question__input"
+                      rows="2"
+                      placeholder="@(Entry.Options.Count > 0 ? "Or answer in your own words" : "Your answer")"
+                      disabled="@_busy"
+                      @bind="_text"
+                      @bind:event="oninput"></textarea>
+        }
+        <div class="sess-question__actions">
+            <button type="button" class="sess-btn sess-btn--primary" disabled="@(_busy || !CanSubmit)" @onclick="SubmitAsync">Submit</button>
+            <button type="button" class="sess-btn" disabled="@_busy" title="Let the agent decide" @onclick="SkipAsync">Skip</button>
+            <span class="sess-question__hint">@Hint</span>
+        </div>
+    </div>
+}
+else
+{
+    <div class="sess-question sess-question--done" role="status" aria-live="polite" data-testid="question-answer">
+        <div class="sess-question__head">
+            <span class="sess-question__text">@Entry.Question</span>
+        </div>
+        @if (Entry.Answered == true)
+        {
+            @if (Entry.Selected.Count > 0)
+            {
+                <div class="sess-question__chosen">
+                    @foreach (var label in Entry.Selected)
+                    {
+                        <span class="sess-chip sess-chip--lane">@label</span>
+                    }
+                </div>
+            }
+            @if (!string.IsNullOrWhiteSpace(Entry.Answer))
+            {
+                <p class="sess-question__answer">@Entry.Answer</p>
+            }
+        }
+        else
+        {
+            <p class="sess-question__answer sess-muted">Skipped: the agent decided.</p>
+        }
+    </div>
+}
+
+@code {
+    [Parameter, EditorRequired] public QuestionEntry Entry { get; set; } = default!;
+    /// <summary>Called with the free text (null when empty) and the chosen option labels.</summary>
+    [Parameter] public EventCallback<(string? Text, IReadOnlyList<string> Selected)> OnAnswer { get; set; }
+    [Parameter] public EventCallback OnSkip { get; set; }
+
+    private readonly HashSet<string> _selected = new(StringComparer.Ordinal);
+    private readonly string _group = "q-" + Guid.NewGuid().ToString("N");
+    private string _text = "";
+    private bool _busy;
+
+    private bool CanSubmit => _selected.Count > 0 || !string.IsNullOrWhiteSpace(_text);
+
+    private string Hint => Entry.Options.Count == 0 ? "The agent waits for your answer"
+        : Entry.AllowMultiple ? "Choose any that apply" : "Choose one";
+
+    private void Toggle(string label)
+    {
+        if (Entry.AllowMultiple)
+        {
+            if (!_selected.Add(label)) _selected.Remove(label);
+        }
+        else
+        {
+            _selected.Clear();
+            _selected.Add(label);
+        }
+    }
+
+    private async Task SubmitAsync()
+    {
+        if (_busy || !CanSubmit) return;
+        _busy = true;
+        try { await OnAnswer.InvokeAsync((string.IsNullOrWhiteSpace(_text) ? null : _text.Trim(), _selected.ToList())); }
+        finally { _busy = false; }
+    }
+
+    private async Task SkipAsync()
+    {
+        if (_busy) return;
+        _busy = true;
+        try { await OnSkip.InvokeAsync(); }
+        finally { _busy = false; }
+    }
+}

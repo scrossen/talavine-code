@@ -1,0 +1,141 @@
+@inject AppState App
+@using SwarmCore.LlmRouting.Configuration
+@using SwarmCore.LlmRouting.Providers
+
+<section class="sc-card">
+    <h2 class="sc-card__title">Model sources</h2>
+    <p class="sc-card__copy">Use models from OpenRouter, a local server, or another OpenAI-compatible service. Saved sources appear in the session model picker and automatic selection.</p>
+    @foreach (var source in _document.Sources)
+    {
+        <div class="sc-row" @key="source.Id">
+            <strong>@source.Name</strong><span class="sc-mono">@source.Model</span><span class="sc-muted">@source.Kind</span>
+            <button class="sc-btn sc-btn--sm" @onclick="() => EditAsync(source)">Edit</button>
+            <button class="sc-btn sc-btn--sm" @onclick="() => RemoveAsync(source)">Remove source</button>
+        </div>
+    }
+    <div class="sc-row">
+        <div class="sc-field">
+            <label class="sc-field__label" for="sc-source-kind">Connection type</label>
+            <select id="sc-source-kind" class="sc-select" value="@_kind" @onchange="KindChanged">
+                <option value="OpenRouter">OpenRouter</option><option value="Ollama">Ollama (local models)</option>
+                <option value="LMStudio">LM Studio (local models)</option><option value="Compatible">Custom OpenAI-compatible service</option>
+            </select>
+        </div>
+        <div class="sc-field"><label class="sc-field__label" for="sc-source-name">Source name</label><input id="sc-source-name" class="sc-input" @bind="_name" /></div>
+        <div class="sc-field"><label class="sc-field__label" for="sc-source-endpoint">API base URL</label><input id="sc-source-endpoint" class="sc-input sc-input--mono" @bind="_endpoint" /></div>
+    </div>
+    @if (_kind == "Compatible")
+    {
+        <p class="sc-muted">For another compatible host, enter its API base URL and exact model ID. This connection uses /models and /chat/completions.</p>
+        <label class="sc-toggle"><input type="checkbox" @bind="_requiresKey" /><span>Requires an API key</span></label>
+    }
+    @if (_requiresKey)
+    {
+        <div class="sc-field"><label class="sc-field__label" for="sc-source-key-env">API key environment variable (optional)</label><input id="sc-source-key-env" class="sc-input sc-input--mono" placeholder="VENICE_API_KEY" @bind="_apiKeyEnvironmentVariable" /></div>
+        <div class="sc-row"><input type="password" class="sc-input" autocomplete="off" aria-label="Model source API key" placeholder="API key (stored in the protected vault)" @bind="_key" />
+            <button class="sc-btn" @onclick="SaveKeyAsync">Save source key</button><span class="sc-muted">@(!string.IsNullOrWhiteSpace(_apiKeyEnvironmentVariable) ? $"Uses {_apiKeyEnvironmentVariable} from the environment or repository .env" : _hasKey ? "Key available" : "No saved key detected")</span></div>
+    }
+    <div class="sc-row">
+        <ModelPicker @key="_id" @bind-Value="_model" Models="_models" Disabled="_busy" />
+        <button class="sc-btn" @onclick="DiscoverAsync">Discover models</button>
+        <button class="sc-btn sc-btn--primary" @onclick="SaveAsync">Save model source</button>
+        <button class="sc-btn" @onclick="NewAsync">New source</button>
+        <button class="sc-btn" @onclick="ReloadAsync">Reload sources</button>
+    </div>
+    <p class="sc-muted">Use Ollama setup below to start the server and download local models. Coding tools require a model that supports tool calls. Hosted requests use your account and may incur charges.</p>
+    @if (_status is not null) { <p class="sc-muted" role="status">@_status</p> }
+</section>
+
+@code {
+    [Parameter] public EventCallback OnSaved { get; set; }
+    private ModelSourcesStore Store => new(App.Paths);
+    private ModelSourcesDocument _document = new(0, []);
+    private string _id = Guid.NewGuid().ToString("N"), _name = "openrouter", _kind = "OpenRouter", _endpoint = "https://openrouter.ai/api/v1", _model = "", _key = "", _apiKeyEnvironmentVariable = "";
+    private bool _requiresKey = true, _hasKey, _busy;
+    private string? _status;
+    private IReadOnlyList<string> _models = [];
+    private ConfiguredModelSource Draft() => new() { Id = _id, Name = _name.Trim(), Kind = _kind, Endpoint = _endpoint.Trim().TrimEnd('/'), Model = _model.Trim(), RequiresApiKey = _requiresKey, ApiKeyEnvironmentVariable = string.IsNullOrWhiteSpace(_apiKeyEnvironmentVariable) ? null : _apiKeyEnvironmentVariable.Trim() };
+    protected override async Task OnInitializedAsync() => await ReloadAsync();
+    private async Task ReloadAsync()
+    {
+        try { _document = await Task.Run(Store.Read); _hasKey = await App.ApiKeys.HasApiKeyAsync(Draft().Provider); _status = null; }
+        catch { _status = "Could not read model sources. Existing settings have been preserved."; }
+    }
+    private void Edit(ConfiguredModelSource s)
+    {
+        _id=s.Id; _name=s.Name; _kind=s.Kind; _endpoint=s.Endpoint; _model=s.Model; _requiresKey=s.RequiresApiKey; _apiKeyEnvironmentVariable=s.ApiKeyEnvironmentVariable ?? ""; _models=[]; _key=""; _hasKey=false;
+    }
+    private async Task EditAsync(ConfiguredModelSource source)
+    {
+        Edit(source);
+        try { var hasKey=await App.ApiKeys.HasApiKeyAsync(source.Provider); if (_id==source.Id) _hasKey=hasKey; }
+        catch { _status="Could not check the saved key. Its value has not been changed."; }
+    }
+    private async Task NewAsync() { Edit(new()); _name="openrouter"; await ReloadAsync(); }
+    private void KindChanged(ChangeEventArgs e)
+    {
+        _id=Guid.NewGuid().ToString("N"); _kind=e.Value?.ToString() ?? "OpenRouter"; _name=_kind.ToLowerInvariant(); _model=""; _models=[]; _key=""; _apiKeyEnvironmentVariable=""; _hasKey=false;
+        _requiresKey=_kind is "OpenRouter" or "Compatible";
+        _endpoint=_kind switch { "OpenRouter"=>"https://openrouter.ai/api/v1", "Ollama"=>"http://127.0.0.1:11434", "LMStudio"=>"http://127.0.0.1:1234/v1", _=>"" };
+    }
+    private async Task SaveKeyAsync()
+    {
+        try { Draft().Validate(false); if (string.IsNullOrWhiteSpace(_key)) throw new InvalidOperationException("Enter a key to save.");
+            await App.ApiKeys.SetApiKeyAsync(Draft().Provider, _key); _key=""; _hasKey=true; _status="Source key saved in the protected vault."; }
+        catch (InvalidOperationException ex) { _status=ex.Message; }
+        catch { _status="Could not save the source key."; }
+    }
+    private async Task DiscoverAsync()
+    {
+        if (_busy) return;
+        _busy=true; _status="Reading the source's model catalog…";
+        var source=Draft();
+        try {
+            using var services = new ServiceCollection().AddHttpClient().BuildServiceProvider();
+            var keys = App.Workspace?.Services.GetService<ILlmApiKeyProvider>() ?? App.ApiKeys;
+            var models = await Task.Run(() => new ConfiguredModelCatalog(services.GetRequiredService<IHttpClientFactory>(), keys).DiscoverAsync(source));
+            if (Draft() != source) return;
+            _models=models; _status=$"Found {models.Count} models. Choose one from the Model field or enter its exact ID.";
+            if (string.IsNullOrWhiteSpace(_model) && models.Count == 1) _model=models[0];
+        }
+        catch (InvalidOperationException ex) { _status=ex.Message; }
+        catch { _status="Model discovery failed. Check the connection or enter a model ID manually."; }
+        finally { _busy=false; }
+    }
+    private async Task SaveAsync()
+    {
+        if (_busy) return;
+        if (App.AnyTurnRunning) { _status="Finish the running request before changing model sources."; return; }
+        _busy=true;
+        try {
+            var source=Draft(); source.Validate();
+            var conflict=App.Workspace?.Lanes.FirstOrDefault(l => l.Name.Equals(source.Name, StringComparison.OrdinalIgnoreCase) && l.Provider != source.Provider);
+            if (conflict is not null) throw new InvalidOperationException("That name belongs to another model route. Choose a different source name.");
+            if (!string.IsNullOrWhiteSpace(_key)) { await App.ApiKeys.SetApiKeyAsync(source.Provider, _key); _key=""; }
+            await Store.SaveAsync(_document with { Sources = _document.Sources.Where(s=>s.Id!=source.Id).Append(source).ToArray() });
+            await ReloadAsync();
+            var ok=App.Workspace is null || await App.ReloadWorkspaceAsync();
+            await OnSaved.InvokeAsync();
+            _status=ok ? "Model source saved. Select it in a session or as the default below." : "Source saved, but the workspace could not reload.";
+        }
+        catch (InvalidOperationException ex) { _status=ex.Message; }
+        catch { _status="Could not save model sources. Your draft has been preserved."; }
+        finally { _busy=false; }
+    }
+    private async Task RemoveAsync(ConfiguredModelSource source)
+    {
+        if (_busy) return;
+        if (App.AnyTurnRunning) { _status="Finish the running request before changing model sources."; return; }
+        _busy=true;
+        try {
+            await Store.SaveAsync(_document with { Sources=_document.Sources.Where(s=>s.Id!=source.Id).ToArray() });
+            await ReloadAsync();
+            var ok=App.Workspace is null || await App.ReloadWorkspaceAsync();
+            await OnSaved.InvokeAsync();
+            _status=ok ? "Source removed. Its saved key remains in Credentials." : "Source removed, but the workspace could not reload.";
+        }
+        catch (InvalidOperationException ex) { _status=ex.Message; }
+        catch { _status="Could not remove the source."; }
+        finally { _busy=false; }
+    }
+}

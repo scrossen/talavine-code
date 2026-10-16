@@ -1,0 +1,20 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <TargetFramework>net11.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <LangVersion>latest</LangVersion>
+    <Description>SwarmCore Coding - reusable coding-agent harness: repository tools (edit, grep, glob, git), coding profile and prompt, repository-instruction discovery, vault credential references, and multi-model lane routing with refusal hand-off.</Description>
+    <Authors>Scott Crossen</Authors>
+  </PropertyGroup>
+  <ItemGroup>
+    <PackageReference Include="System.Drawing.Common" Version="11.0.0-rc.2.26504.105" />
+    <PackageReference Include="PdfPig" Version="0.1.14" />
+    <ProjectReference Include="..\SwarmCore.Agent\SwarmCore.Agent.csproj" />
+    <ProjectReference Include="..\SwarmCore.Missions\SwarmCore.Missions.csproj" />
+    <ProjectReference Include="..\SwarmCore.Secrets\SwarmCore.Secrets.csproj" />
+  </ItemGroup>
+  <ItemGroup>
+    <InternalsVisibleTo Include="SwarmCore.Coding.Tests" />
+  </ItemGroup>
+</Project>

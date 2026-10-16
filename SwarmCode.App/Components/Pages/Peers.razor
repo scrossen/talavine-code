@@ -1,0 +1,92 @@
+@page "/peers"
+@implements IDisposable
+@inject AppState State
+@using Microsoft.Extensions.DependencyInjection
+@using SwarmCore.Coding.Peers
+
+<PageTitle>Peers - Talavine Code</PageTitle>
+
+<div class="sm-shell sc-page">
+    <header class="sm-topbar sc-topbar">
+        <div>
+            <h1 class="sc-topbar__title">Peers</h1>
+            <p class="sc-topbar__copy">Use your other computers to work on a project together.</p>
+        </div>
+        <button type="button" class="sc-btn" @onclick="RefreshAsync">Refresh devices</button>
+    </header>
+    <section class="sc-card">
+        <h2 class="sc-card__title">Ask for a swarm</h2>
+        <p class="sc-card__copy">For example: “Use my peers to build and test this project. Give Windows checks to a Windows peer and use a local model for the documentation.”</p>
+        <p class="sc-muted">Pair devices in SwarmSpan and enable its agent and MCP bridges. Talavine Code checks each device before assigning work. Results return to your session for review.</p>
+    </section>
+    @if (_busy)
+    {
+        <p class="sc-muted" role="status">Checking devices and available models…</p>
+    }
+    @if (_error is not null)
+    {
+        <div class="sc-notice sc-notice--error" role="alert">@_error</div>
+    }
+    @if (!_busy && _error is null && _peers.Count == 0)
+    {
+        <section class="sc-card"><p class="sc-muted">No paired devices yet. Pair another computer in SwarmSpan, then refresh.</p></section>
+    }
+    @foreach (var candidate in _peers)
+    {
+        <section class="sc-card" @key="candidate.Peer.DeviceId">
+            <h2 class="sc-card__title">@candidate.Peer.DisplayName</h2>
+            @if (candidate.Capabilities is { } caps)
+            {
+                <p class="sc-card__copy">@caps.Platform · @caps.Architecture · @(caps.Hardware?.CpuName ?? "CPU not reported")</p>
+                <p>@(caps.Hardware?.LogicalProcessors?.ToString() ?? "Unknown") logical processors · @Memory(caps.Hardware?.TotalMemoryBytes) RAM</p>
+                @if (caps.Hardware is { Gpus.Count: > 0 } hardware)
+                {
+                    @foreach (var gpu in hardware.Gpus)
+                    {
+                        <p>@gpu.Name · @(gpu.UnifiedMemory ? "uses system memory" : Memory(gpu.DedicatedMemoryBytes) + " dedicated GPU memory")</p>
+                    }
+                }
+                else
+                {
+                    <p class="sc-muted">GPU not reported. Update SwarmSpan on this device to share hardware details.</p>
+                }
+                @foreach (var provider in caps.Providers)
+                {
+                    <p><strong>@provider.DisplayName</strong> · @(provider.Available ? "Ready" : provider.Status) @(provider.LocalInference ? "· local inference" : "")<br />
+                        <span class="sc-muted">@string.Join(", ", provider.Models) · @string.Join(", ", provider.ExecutionModes)</span></p>
+                }
+                @if (caps.Jobs.Any(j => j.Available))
+                {
+                    <p class="sc-muted">Ready jobs: @string.Join(", ", caps.Jobs.Where(j => j.Available).Select(j => j.JobId))</p>
+                }
+            }
+            <p class="sc-muted">@(candidate.Matches ? "Ready for delegation" : candidate.Reason)</p>
+        </section>
+    }
+</div>
+
+@code {
+    private readonly CancellationTokenSource _lifetime = new();
+    private IReadOnlyList<PeerCandidate> _peers = [];
+    private bool _busy;
+    private string? _error;
+
+    protected override Task OnInitializedAsync() => RefreshAsync();
+    private async Task RefreshAsync()
+    {
+        if (_busy) return;
+        _busy = true;
+        _error = null;
+        try
+        {
+            var coordinator = State.Workspace?.Services.GetService<PeerCoordinator>();
+            if (coordinator is null) { _error = "Open a repository to inspect peers. Peer tools can be enabled in Peers:Enabled."; return; }
+            _peers = await Task.Run(() => coordinator.DiscoverAsync(new(), _lifetime.Token), _lifetime.Token);
+        }
+        catch (OperationCanceledException) when (_lifetime.IsCancellationRequested) { }
+        catch (Exception ex) when (ex is InvalidOperationException or HttpRequestException or IOException) { _error = ex.Message; }
+        finally { _busy = false; }
+    }
+    private static string Memory(long? bytes) => bytes is > 0 ? $"{bytes.Value / (1024d * 1024 * 1024):0.#} GiB" : "Unknown";
+    public void Dispose() { _lifetime.Cancel(); _lifetime.Dispose(); }
+}

@@ -1,0 +1,25 @@
+{
+  "schemaVersion": 1,
+  "packId": "talavine.grok",
+  "version": "2026.08.18.4",
+  "providerName": "Grok",
+  "modelPrefix": "grok",
+  "executionDialect": "openai-compatible-chat-v1",
+  "modelDefaults": { "frontier": "grok-4", "balanced": "grok-3", "economy": "grok-3" },
+  "directApi": {
+    "baseUrl": "https://api.x.ai/v1",
+    "executionEndpoints": ["https://api.x.ai/v1/chat/completions"],
+    "defaultModel": "grok-3",
+    "defaultModels": ["grok-4", "grok-3", "grok-3-mini", "grok-2", "grok-2-vision"],
+    "modelFacts": {
+      "grok-3": { "displayName": "Grok 3", "supportsChat": true, "supportsVision": false, "maxContextTokens": 128000, "description": "Current general model", "recommendedFor": "Real-time information" },
+      "grok-2": { "displayName": "Grok 2", "supportsChat": true, "supportsVision": false, "maxContextTokens": 128000, "description": "Previous generation", "recommendedFor": "General tasks" }
+    },
+    "preferredModels": ["grok-3-mini", "grok-3", "grok-4", "grok-2"],
+    "visionModelPatterns": ["grok-4", "grok-2-vision"],
+    "catalogModelPrefixes": ["grok-"],
+    "modelScoutCandidates": ["grok-4", "grok-3-mini"],
+    "modelScoutSuggested": ["grok-3-mini"],
+    "qualificationPriority": 40
+  }
+}

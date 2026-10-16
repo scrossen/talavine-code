@@ -28,6 +28,10 @@ public class SwarmCodeRebuildTests : TempDirTest
         await File.WriteAllTextAsync(Path.Combine(repo, "a.txt"), "a\n");
         await File.WriteAllTextAsync(Path.Combine(repo, "b.txt"), "b\n");
         await Git(repo, "init", "-q", "-b", "main");
+        // MergeVerifiedAsync may create a merge commit; the fixture must not
+        // depend on the developer's global Git identity being configured.
+        await Git(repo, "config", "user.name", "Test");
+        await Git(repo, "config", "user.email", "test@example.com");
         await Git(repo, "add", "-A");
         await Git(repo, "commit", "-q", "-m", "initial");
         return repo;

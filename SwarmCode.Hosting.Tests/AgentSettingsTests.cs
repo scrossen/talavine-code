@@ -22,6 +22,12 @@ public sealed class AgentSettingsTests : TempDirTest
         services.AddSingleton<ICurrentTurnContextAccessor, TestTurns>();
         services.AddSingleton<SwarmCore.Secrets.IOsKeyStore>(new EncryptedTestKeyStore());
         services.AddSwarmCodeHost(new() { RepositoryRoot = Tmp, DataPaths = Paths });
+        // Settings tests need a route, not an installed/authenticated coding CLI.
+        services.PostConfigure<CodingLaneOptions>(options =>
+        {
+            options.Lanes = [new CodingLane("settings-fixture", "OpenAI", "synthetic-settings-model")];
+            options.DefaultLane = "settings-fixture";
+        });
         return services.BuildServiceProvider(new ServiceProviderOptions { ValidateScopes = true });
     }
     private async Task<string> UserAsync(ServiceProvider p, string? parent = null)

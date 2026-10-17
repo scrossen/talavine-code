@@ -13,7 +13,47 @@ public partial class MainPage : ContentPage
     public MainPage()
     {
         InitializeComponent();
+#if WINDOWS
+        // MAUI initializes WinUI with the default environment unless the native
+        // controller already exists. Delay the Blazor host until the bundled
+        // runtime's controller is ready, then apply the host-page mapper.
+        blazorWebView.Loaded += InitializeWindowsBrowser;
+#else
+        blazorWebView.HostPage = "wwwroot/index.html";
+#endif
     }
+
+#if WINDOWS
+    private bool _browserStarted;
+
+    private async void InitializeWindowsBrowser(object? sender, EventArgs e)
+    {
+        if (_browserStarted || blazorWebView.Handler?.PlatformView is not WebView2 win) return;
+        _browserStarted = true;
+        try
+        {
+            var options = new BlazorWebViewInitializingEventArgs();
+            BlazorWebView_BlazorWebViewInitializing(this, options);
+            if (!string.IsNullOrWhiteSpace(options.BrowserExecutableFolder))
+            {
+                var environment = await CoreWebView2Environment.CreateWithOptionsAsync(
+                    options.BrowserExecutableFolder, options.UserDataFolder, options.EnvironmentOptions).AsTask();
+                MauiProgram.LogToFile("Custom browser environment ready");
+                await win.EnsureCoreWebView2Async(environment).AsTask();
+                MauiProgram.LogToFile("Custom browser controller ready");
+            }
+            blazorWebView.HostPage = "wwwroot/index.html";
+            blazorWebView.Handler?.UpdateValue(nameof(BlazorWebView.HostPage));
+            MauiProgram.LogToFile("Blazor host page assigned");
+        }
+        catch (Exception exception)
+        {
+            MauiProgram.LogToFile($"Browser initialization failed: {exception}");
+            Content = new Label { Text = "Talavine Code could not start its browser: " + exception.Message,
+                Margin = new Thickness(24), LineBreakMode = LineBreakMode.WordWrap };
+        }
+    }
+#endif
 
     private void BlazorWebView_BlazorWebViewInitializing(object? sender, BlazorWebViewInitializingEventArgs e)
     {

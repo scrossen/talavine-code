@@ -6,7 +6,6 @@
              BackgroundColor="{AppThemeBinding Light={StaticResource PageBackgroundLight}, Dark={StaticResource PageBackgroundDark}}">
 
     <BlazorWebView x:Name="blazorWebView"
-                   HostPage="wwwroot/index.html"
                    BlazorWebViewInitializing="BlazorWebView_BlazorWebViewInitializing"
                    BlazorWebViewInitialized="BlazorWebView_BlazorWebViewInitialized">
         <BlazorWebView.RootComponents>

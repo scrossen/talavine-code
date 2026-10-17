@@ -31,6 +31,31 @@ public sealed class BackgroundShellTests : IDisposable
 
     private static string Then => OperatingSystem.IsWindows() ? " & " : "; ";
 
+    private string BlockedDescendant(string marker, string release)
+    {
+        var script = Path.Combine(_root, Guid.NewGuid().ToString("N") + (OperatingSystem.IsWindows() ? ".cmd" : ".sh"));
+        var contents = OperatingSystem.IsWindows()
+            ? $"@echo off\r\necho child-ready\r\n:wait\r\nif exist \"{release}\" goto write\r\n{Sleep(1)}\r\ngoto wait\r\n:write\r\necho late>\"{marker}\"\r\n"
+            : $"echo child-ready\nwhile [ ! -f \"{release}\" ]; do sleep 0.05; done\necho late > \"{marker}\"\n";
+        File.WriteAllText(script, contents);
+        return OperatingSystem.IsWindows() ? $"cmd.exe /d /c call \"{script}\"" : $"/bin/sh \"{script}\"";
+    }
+
+    [Fact]
+    public async Task Descendant_fixture_writes_only_after_its_release_signal()
+    {
+        using var manager = Manager();
+        var marker = Path.Combine(_root, "control.txt");
+        var release = Path.Combine(_root, "release-control.txt");
+        var shell = await manager.StartAsync("conv", BlockedDescendant(marker, release), _root);
+        Assert.True((await manager.ReadAsync("conv", shell.Id, "child-ready", 20)).PatternMatched);
+        Assert.False(File.Exists(marker));
+        await File.WriteAllTextAsync(release, "go");
+        var result = await manager.ReadAsync("conv", shell.Id, null, 20);
+        Assert.Equal(BackgroundShellStatus.Exited, result.Shell.Status);
+        Assert.True(File.Exists(marker));
+    }
+
     [Fact]
     public async Task Start_returns_at_once_while_a_long_command_keeps_running()
     {
@@ -103,14 +128,15 @@ public sealed class BackgroundShellTests : IDisposable
     {
         using var manager = Manager();
         var marker = Path.Combine(_root, "marker.txt");
-        // The inner shell is a grandchild: only a tree kill keeps it from writing the marker.
-        var inner = OperatingSystem.IsWindows()
-            ? $"cmd.exe /d /c \"{Sleep(3)} & echo late> \"{marker}\"\""
-            : $"/bin/sh -c '{Sleep(3)}; echo late > \"{marker}\"'";
-        var shell = await manager.StartAsync("conv", "echo up" + Then + inner + Then + "echo after", _root);
-        Assert.True((await manager.ReadAsync("conv", shell.Id, "up", 20)).PatternMatched);
+        var release = Path.Combine(_root, "release-stop.txt");
+        // A signal after Stop prevents a busy test host from spending the old
+        // three-second delay before it even calls Stop. Wait for the descendant,
+        // not the parent, so the assertion actually exercises the whole tree.
+        var shell = await manager.StartAsync("conv", BlockedDescendant(marker, release), _root);
+        Assert.True((await manager.ReadAsync("conv", shell.Id, "child-ready", 20)).PatternMatched);
 
         Assert.Equal(BackgroundShellStatus.Stopped, manager.Stop("conv", shell.Id).Status);
+        await File.WriteAllTextAsync(release, "go");
         await Task.Delay(TimeSpan.FromSeconds(6));
         Assert.False(File.Exists(marker));
         Assert.Equal(BackgroundShellStatus.Stopped, manager.List("conv").Single().Status);
@@ -194,15 +220,14 @@ public sealed class BackgroundShellTests : IDisposable
     {
         var manager = Manager();
         var marker = Path.Combine(_root, "disposed.txt");
-        var inner = OperatingSystem.IsWindows()
-            ? $"cmd.exe /d /c \"{Sleep(3)} & echo late> \"{marker}\"\""
-            : $"/bin/sh -c '{Sleep(3)}; echo late > \"{marker}\"'";
-        var a = await manager.StartAsync("a", "echo ready" + Then + inner + Then + "echo after", _root);
+        var release = Path.Combine(_root, "release-dispose.txt");
+        var a = await manager.StartAsync("a", BlockedDescendant(marker, release), _root);
         await manager.StartAsync("b", Sleep(30), _root);
-        Assert.True((await manager.ReadAsync("a", a.Id, "ready", 20)).PatternMatched);
+        Assert.True((await manager.ReadAsync("a", a.Id, "child-ready", 20)).PatternMatched);
         Assert.Equal(2, manager.RunningCount);
 
         await manager.DisposeAsync();
+        await File.WriteAllTextAsync(release, "go");
         Assert.Equal(0, manager.RunningCount);
         await Assert.ThrowsAsync<ObjectDisposedException>(() => manager.StartAsync("a", "echo no", _root));
         await Task.Delay(TimeSpan.FromSeconds(6));

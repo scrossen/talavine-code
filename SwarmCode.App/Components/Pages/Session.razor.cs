@@ -11,6 +11,7 @@ namespace SwarmCode.App.Components.Pages;
 
 public partial class Session
 {
+    [Inject] private UserBugIntake BugIntake { get; set; } = default!;
 
     /// <summary>True while a turn runs but nothing is streaming or executing yet, so the page shows a working hint.</summary>
     private static bool ShowWorkingIndicator(IReadOnlyList<TranscriptEntry> entries)
@@ -28,6 +29,7 @@ public partial class Session
     internal static readonly IReadOnlyList<SlashCommand> BuiltInSlashCommands =
     [
         new("help", "List the available commands"),
+        new("bug", "Save a local bug report for self-improvement: /bug <description>"),
         new("lane", "Switch lane: /lane <name>"),
         new("lanes", "List configured lanes"),
         new("auto", "Reassess model selection for the next message"),
@@ -347,8 +349,23 @@ public partial class Session
     {
         var runner = _runner;
         var text = (raw ?? "").Trim();
-        if (runner is null || _attachmentsBusy || (text.Length == 0 && _attachments.Count == 0)) return;
+        if (_attachmentsBusy || (text.Length == 0 && _attachments.Count == 0)) return;
         var attachments = _attachments.ToArray();
+        if (UserBugIntake.IsCommand(text))
+        {
+            if (attachments.Length > 0) { AddNote("warn", "Remove attachments before filing a bug. Your draft was kept."); return; }
+            if (string.IsNullOrWhiteSpace(text[4..])) { AddNote("warn", "Use /bug <description>. Your draft was kept."); return; }
+            var admittedDraft = _draft;
+            try
+            {
+                var item = await Task.Run(() => BugIntake.SubmitAsync(App.SelfImprovementReporter, text, SessionId));
+                if (_draft == admittedDraft) _draft = "";
+                AddNote("info", "Bug report saved: " + item.Id, "Current stage: " + item.Stage + ". Saved locally without a coding turn.");
+            }
+            catch (Exception ex) { AddNote("warn", "Bug report was not saved. Your draft was kept.", ex.Message); }
+            return;
+        }
+        if (runner is null) return;
         if (text.Length == 0) text = "Inspect the attached files.";
         _draft = "";
 

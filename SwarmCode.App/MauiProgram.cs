@@ -68,6 +68,9 @@ public static class MauiProgram
         builder.Services.AddSingleton<SwarmCore.LlmRouting.LocalRuntime.OllamaSetupClient>();
         builder.Services.AddSingleton<SwarmCore.LlmRouting.LocalRuntime.OpenModelDiscovery>();
         builder.Services.AddSingleton<AppState>();
+        builder.Services.AddSingleton<UserBugIntake>(_ => new(
+            new SwarmCore.Coding.SelfImprovement.JsonFileSelfImprovementBacklog(paths.SelfImprovementDirectory),
+            () => SwarmCode.Hosting.Improvement.SwarmCodeSelfImprovement.BindOptions(SwarmCodeHostComposer.BuildConfiguration(paths))));
         builder.Services.AddSingleton<RepositoryOpener>();
         builder.Services.AddSingleton<SwarmCode.Hosting.Projects.CodingAppLibraryStore>();
         builder.Services.AddSingleton<SwarmCode.Hosting.Projects.FileAppProcedureStore>();

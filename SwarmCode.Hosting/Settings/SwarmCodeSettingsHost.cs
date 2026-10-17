@@ -54,7 +54,12 @@ public sealed partial class SwarmCodeSettingsHost(SwarmCodeDataPaths paths, AppP
             var schema = Json.GetJsonSchemaAsNode(typeof(AppPreferences)).AsObject();
             foreach (var key in values.Select(p => p.Key).Where(k => !PreferenceKeys.Contains(k)).ToArray()) values.Remove(key);
             if (schema["properties"] is JsonObject props)
+            {
                 foreach (var key in props.Select(p => p.Key).Where(k => !PreferenceKeys.Contains(k)).ToArray()) props.Remove(key);
+                // Publish finite choices to every native settings renderer.
+                props["theme"]!["enum"] = new JsonArray("system", "light", "dark");
+                props["permissionMode"]!["enum"] = new JsonArray(null, "auto", "ask-risky", "ask");
+            }
             result.Add(new("preferences", prefsDescription, prefsRevision, values, schema, "Immediately; defaults apply to new sessions. Model IDs include @reasoning variants when supported."));
         }
         // Capture revision before reading values; a concurrent writer makes a later update fail safely.
@@ -106,6 +111,14 @@ public sealed partial class SwarmCodeSettingsHost(SwarmCodeDataPaths paths, AppP
     public async Task<SettingsChangeResult> UpdateAsync(SettingsUpdateInput input, CancellationToken ct)
     {
         await RequireUserAsync(ct);
+        return await ApplyUserEditAsync(input, ct);
+    }
+
+    /// <summary>Trusted desktop Save-button adapter. The host owns direct user
+    /// interaction; agent tools must use UpdateAsync and its conversation gate.
+    /// Settings can be configured before any repository or session exists.</summary>
+    public async Task<SettingsChangeResult> ApplyUserEditAsync(SettingsUpdateInput input, CancellationToken ct)
+    {
         var snapshot = (await ReadAsync(null, ct)).SingleOrDefault(s => s.Id == input.Document)
             ?? throw new InvalidOperationException("Unknown settings document. Use settings.read.");
         if (snapshot.Revision != input.Revision) throw new InvalidOperationException("Settings changed or were deleted. Read again before saving.");

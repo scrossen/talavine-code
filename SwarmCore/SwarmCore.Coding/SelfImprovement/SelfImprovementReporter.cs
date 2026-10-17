@@ -5,7 +5,8 @@ namespace SwarmCore.Coding.SelfImprovement;
 
 /// <summary>
 /// The one way sightings enter the backlog. Folds repeats by fingerprint, keeps a dismissed item dismissed, never
-/// throws (a failed report is logged), and refuses new items once the open backlog reaches its cap.
+/// throws for automatic sightings (a failed report is logged), and refuses new items once the open backlog reaches
+/// its cap. Explicit submissions fail visibly so hosts can preserve the user's draft.
 /// </summary>
 public sealed class SelfImprovementReporter
 {
@@ -31,11 +32,30 @@ public sealed class SelfImprovementReporter
 
     /// <summary>Files a sighting. Returns the stored item, or null when the loop is off, the report is empty or the backlog is full.</summary>
     public async Task<SelfImprovementItem?> ReportAsync(SelfImprovementReport report, CancellationToken ct = default)
+        => await RecordAsync(report, explicitSubmission: false, ct).ConfigureAwait(false);
+
+    /// <summary>Explicit user feedback remains available when automatic capture/repair is disabled.
+    /// Returns a durable receipt, or throws so the host can retain the draft. Does not start a repair.</summary>
+    public async Task<SelfImprovementItem> SubmitBugAsync(string description, string? conversationId = null, CancellationToken ct = default)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(description);
+        description = description.Trim();
+        if (description.Length > Math.Max(200, _options().MaxDetailCharacters))
+            throw new ArgumentException($"Bug descriptions must be at most {Math.Max(200, _options().MaxDetailCharacters)} characters.", nameof(description));
+        var report = new SelfImprovementReport(SelfImprovementKind.Defect,
+            Bound("Bug: " + FirstLine(description), 200), description,
+            Fingerprint: Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(System.Text.Encoding.UTF8.GetBytes("user-bug-report\n" + description))).ToLowerInvariant(),
+            Source: "user-bug-report", ConversationId: conversationId);
+        return await RecordAsync(report, explicitSubmission: true, ct).ConfigureAwait(false)
+            ?? throw new InvalidOperationException("The bug report could not be saved. The backlog may be full or unavailable. Your draft has been kept.");
+    }
+
+    private async Task<SelfImprovementItem?> RecordAsync(SelfImprovementReport report, bool explicitSubmission, CancellationToken ct)
     {
         var options = _options();
-        if (!options.Enabled) return null;
-        if (report.Kind == SelfImprovementKind.Defect && !options.CaptureDefects) return null;
-        if (report.Kind == SelfImprovementKind.FeatureRequest && !options.CaptureFeatureRequests) return null;
+        if (!explicitSubmission && !options.Enabled) return null;
+        if (!explicitSubmission && report.Kind == SelfImprovementKind.Defect && !options.CaptureDefects) return null;
+        if (!explicitSubmission && report.Kind == SelfImprovementKind.FeatureRequest && !options.CaptureFeatureRequests) return null;
         if (string.IsNullOrWhiteSpace(report.Title) || string.IsNullOrWhiteSpace(report.Details)) return null;
         var title = Bound(report.Title.Trim(), 200);
         var details = Bound(report.Details.Trim(), Math.Max(200, options.MaxDetailCharacters));

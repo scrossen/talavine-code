@@ -31,7 +31,7 @@ public sealed record SelfImprovementItem
     /// <summary>Plain-language detail: expected vs actual with the error, or the request and what was missing.</summary>
     public required string Details { get; init; }
 
-    /// <summary>How it was observed (turn-error, tool-error, unhandled-exception, decline, request_feature, unknown-command).</summary>
+    /// <summary>How it was observed (turn-error, tool-error, unhandled-exception, decline, request_feature, unknown-command, user-bug-report).</summary>
     public string? Source { get; init; }
 
     /// <summary>The conversation in which it was last observed, when there was one.</summary>

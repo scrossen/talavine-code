@@ -1,6 +1,7 @@
 using Microsoft.Data.Sqlite;
 using System.Text.Json;
 using SwarmCore.Coding.Routing;
+using SwarmCore.PersonalMemory;
 
 namespace SwarmCode.Hosting.Memory;
 
@@ -8,8 +9,16 @@ namespace SwarmCode.Hosting.Memory;
 /// No detached aggregate is ever written back. SQLite work runs on a worker thread.</summary>
 public sealed class SqliteModelResponseMemory(SwarmCodeDataPaths paths) : IModelResponseMemory
 {
-    public Task AppendAsync(ModelResponseObservation observation, CancellationToken ct = default)
-        => Task.Run(() =>
+    private static readonly PersonalMemoryWriteGate Writes = new();
+
+    public async Task AppendAsync(ModelResponseObservation observation, CancellationToken ct = default)
+    {
+        // Await contention before scheduling SQLite work. Blocking many worker threads
+        // in SQLite's busy wait can starve the writer that must release its transaction.
+        var path = Path.GetFullPath(paths.ModelResponseMemoryPath);
+        var key = OperatingSystem.IsWindows() || OperatingSystem.IsMacOS() ? path.ToUpperInvariant() : path;
+        using var lease = await Writes.AcquireAsync(key, ct).ConfigureAwait(false);
+        await Task.Run(() =>
         {
             ct.ThrowIfCancellationRequested();
             if (!Valid(observation))
@@ -58,7 +67,8 @@ public sealed class SqliteModelResponseMemory(SwarmCodeDataPaths paths) : IModel
             if (stored != observation) throw new InvalidOperationException("A different model response observation already owns this identity.");
             ct.ThrowIfCancellationRequested();
             transaction.Commit();
-        }, ct);
+        }, ct).ConfigureAwait(false);
+    }
 
     public Task<IReadOnlyList<ModelResponseObservation>> ReadAsync(string scopeId, CancellationToken ct = default)
         => Task.Run<IReadOnlyList<ModelResponseObservation>>(() =>

@@ -203,6 +203,7 @@ public sealed record AgentTurnRequest
     /// <summary>Optional per-request model override (for the "try this with GPT" UX).</summary>
     public string? ProviderOverride { get; init; }
     public string? ModelOverride { get; init; }
+    public string? ReasoningEffort { get; init; }
     /// <summary>Keep the exact route supplied by the host; do not use lower-level provider/model fallbacks.</summary>
     public bool DisableRouteFallback { get; init; }
 

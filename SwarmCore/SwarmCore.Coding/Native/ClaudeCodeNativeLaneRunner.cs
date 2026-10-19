@@ -428,7 +428,9 @@ public sealed class ClaudeCodeNativeLaneRunner(
         if (!string.IsNullOrWhiteSpace(sessionId)) { args.Add("--resume"); args.Add(sessionId); }
         if (turn.ExecutionLimits is { MaxIterations: > 0 } limits)
         { args.Add("--max-turns"); args.Add(limits.MaxIterations.ToString(System.Globalization.CultureInfo.InvariantCulture)); }
-        var model = NormalizeModel(turn.Lane.Model);
+        var selection = ModelReasoningSelection.Split(turn.Lane.Model);
+        var model = NormalizeModel(selection.Model);
+        if (selection.Effort is { } effort) { args.Add("--effort"); args.Add(effort); }
         foreach (var folder in turn.Attachments.Select(a => Path.GetDirectoryName(a.LocalPath)!).Distinct()) { args.Add("--add-dir"); args.Add(folder); }
         if (model is not null) { args.Add("--model"); args.Add(model); }
         if (!string.IsNullOrWhiteSpace(mcpConfigPath)) { args.Add("--mcp-config"); args.Add(mcpConfigPath); }
@@ -453,7 +455,7 @@ public sealed class ClaudeCodeNativeLaneRunner(
     /// <summary>"claude-code:default" means the CLI's own default; "claude-code:opus" pins a model alias.</summary>
     internal static string? NormalizeModel(string model)
     {
-        var value = model;
+        var value = ModelReasoningSelection.Split(model).Model;
         var colon = value.IndexOf(':');
         if (colon >= 0) value = value[(colon + 1)..];
         value = value.Trim();

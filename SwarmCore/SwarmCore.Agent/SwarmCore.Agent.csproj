@@ -20,6 +20,7 @@
     <ProjectReference Include="..\SwarmCore.Abstractions\SwarmCore.Abstractions.csproj" />
     <ProjectReference Include="..\SwarmCore.LlmRouting\SwarmCore.LlmRouting.csproj" />
     <ProjectReference Include="..\SwarmCore.Skills\SwarmCore.Skills.csproj" />
+    <ProjectReference Include="..\SwarmCore.HarnessLearning\SwarmCore.HarnessLearning.csproj" />
   </ItemGroup>
 
   <ItemGroup>

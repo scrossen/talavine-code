@@ -7,4 +7,8 @@
     <PackageReference Include="xunit.runner.visualstudio" Version="3.0.2" />
   </ItemGroup>
   <ItemGroup><Using Include="Xunit" /></ItemGroup>
+  <ItemGroup>
+    <Compile Include="../SwarmCore/Testing/OwnedTestScratch.cs" Link="TestSupport/OwnedTestScratch.cs" />
+    <Compile Include="../TestSupport/TestTempRoot.cs" Link="TestSupport/TestTempRoot.cs" />
+  </ItemGroup>
 </Project>

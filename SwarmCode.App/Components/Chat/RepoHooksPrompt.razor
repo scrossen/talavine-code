@@ -38,7 +38,7 @@
         if (Workspace?.Services.GetService<ICodingHookSource>() is not { } source) return;
         var root = Workspace.RepositoryRoot;
         try { _inspection = await Task.Run(() => source.InspectRepositoryAsync(root)); }
-        catch (Exception ex) { MauiProgram.LogToFile($"Could not inspect repository hooks: {ex.Message}"); }
+        catch (Exception ex) { DesktopHost.LogToFile($"Could not inspect repository hooks: {ex.Message}"); }
     }
 
     private async Task AllowAsync()

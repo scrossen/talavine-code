@@ -86,17 +86,33 @@ public sealed class RepeatedToolCallGuard(IOptions<CodingOptions> options) : ITo
             var failed = result.IsError || LooksLikeError(result.Content);
             if (!failed) { count = 0; previous = null; continue; }
             if (!tool.Equals(toolId, StringComparison.OrdinalIgnoreCase)) continue;
-            var error = result.Content.Trim();
+            var error = FailureIdentity(result.Content);
             count = error == previous ? count + 1 : 1;
             previous = error;
         }
         return count;
     }
 
+    // Structured edit failures include the target path. Changing that path must
+    // not hide an unchanged contract error from the recovery guard.
+    private static string FailureIdentity(string content)
+    {
+        try
+        {
+            if (JsonNode.Parse(content) is JsonObject obj)
+                foreach (var (key, value) in obj)
+                    if (key.Equals("error", StringComparison.OrdinalIgnoreCase) && value is JsonValue scalar
+                        && scalar.TryGetValue<string>(out var error) && !string.IsNullOrWhiteSpace(error)) return error.Trim();
+        }
+        catch (JsonException) { }
+        return content.Trim();
+    }
+
     private static IReadOnlyList<ChatMessage> CurrentTurn(IReadOnlyList<ChatMessage> transcript)
     {
         for (var i = transcript.Count - 1; i >= 0; i--)
-            if (transcript[i].Role == ChatRole.User && transcript[i].Parts.Any(p => p is not ToolResultPart))
+            if (transcript[i].Role == ChatRole.User
+                && transcript[i].Parts.OfType<TextPart>().Any(p => !string.IsNullOrWhiteSpace(p.Text) && !EngineAuthoredNotice.IsEngineAuthored(p.Text)))
                 return transcript.Skip(i).ToArray();
         return transcript;
     }

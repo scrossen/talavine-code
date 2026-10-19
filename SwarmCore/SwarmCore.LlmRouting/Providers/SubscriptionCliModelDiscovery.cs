@@ -1,5 +1,6 @@
 using System.Text;
 using System.Text.Json;
+using SwarmCore.Abstractions.LlmRouting;
 
 namespace SwarmCore.LlmRouting.Providers;
 
@@ -61,8 +62,12 @@ internal static class SubscriptionCliModelDiscovery
     }
 
     internal static List<string> Parse(string output, SubscriptionCliCatalogProtocol protocol, string prefix)
+        => ParseCatalog(output, protocol, prefix).Models.ToList();
+
+    internal static LlmModelCatalog ParseCatalog(string output, SubscriptionCliCatalogProtocol protocol, string prefix)
     {
         var models = new List<string>();
+        var details = new List<LlmCatalogModel>();
         foreach (var line in output.Split('\n', StringSplitOptions.RemoveEmptyEntries))
         {
             using var doc = JsonDocument.Parse(line);
@@ -80,9 +85,59 @@ internal static class SubscriptionCliModelDiscovery
             {
                 // The CLI owns the ids and aliases. Prefix is a routing namespace, never a model name.
                 if (entry.TryGetProperty(protocol == SubscriptionCliCatalogProtocol.CodexAppServer ? "model" : "value", out var value)
-                    && value.GetString() is { Length: > 0 } name) models.Add(prefix + ":" + name);
+                    && value.GetString() is { Length: > 0 } name)
+                {
+                    var id = prefix + ":" + name;
+                    models.Add(id);
+                    if (protocol == SubscriptionCliCatalogProtocol.CodexAppServer
+                        && entry.TryGetProperty("supportedReasoningEfforts", out var efforts))
+                    {
+                        // Only expose levels the installed CLI advertises AND our execution adapter translates.
+                        var supported = ProviderPacks.ProviderPackCatalog.GetRequired(SubscriptionCliCatalog.CodexCliProvider).SubscriptionCli!.ReasoningEfforts;
+                        var levels = efforts.EnumerateArray().Select(e => e.GetProperty("reasoningEffort").GetString())
+                            .OfType<string>().Where(e => supported.Contains(e, StringComparer.Ordinal)).Distinct(StringComparer.Ordinal).ToArray();
+                        details.Add(new(id, null, true, null, null, null) { ReasoningEfforts = levels });
+                    }
+                }
             }
         }
-        return models.Distinct(StringComparer.OrdinalIgnoreCase).ToList();
+        return new(models.Distinct(StringComparer.OrdinalIgnoreCase).ToArray(), "Installed CLI catalog")
+        { Details = details.DistinctBy(d => d.Id, StringComparer.OrdinalIgnoreCase).ToArray() };
+    }
+
+    internal static IReadOnlyDictionary<string, IReadOnlyList<string>> ParseReasoningEfforts(string output,
+        SubscriptionCliCatalogProtocol protocol, string prefix, IReadOnlyList<string> executableEfforts)
+    {
+        var choices = new Dictionary<string, IReadOnlyList<string>>(StringComparer.OrdinalIgnoreCase);
+        foreach (var line in output.Split('\n', StringSplitOptions.RemoveEmptyEntries))
+        {
+            using var doc = JsonDocument.Parse(line);
+            JsonElement entries;
+            if (protocol == SubscriptionCliCatalogProtocol.CodexAppServer)
+            {
+                if (!doc.RootElement.TryGetProperty("result", out var result) || !result.TryGetProperty("data", out entries)) continue;
+            }
+            else if (!doc.RootElement.TryGetProperty("response", out var response) || !response.TryGetProperty("response", out var result)
+                     || !result.TryGetProperty("models", out entries)) continue;
+            foreach (var entry in entries.EnumerateArray())
+            {
+                if (protocol == SubscriptionCliCatalogProtocol.ClaudeInitialize)
+                {
+                    if (entry.TryGetProperty("value", out var id) && id.GetString() is { Length: > 0 } modelId
+                        && entry.TryGetProperty("supportedEffortLevels", out var levels) && levels.ValueKind == JsonValueKind.Array)
+                        choices[prefix + ":" + modelId] = levels.EnumerateArray().Where(e => e.ValueKind == JsonValueKind.String)
+                            .Select(e => e.GetString()!).Where(e => executableEfforts.Contains(e, StringComparer.Ordinal)).Distinct(StringComparer.Ordinal).ToArray();
+                    continue;
+                }
+                if (!entry.TryGetProperty("model", out var model) || model.GetString() is not { Length: > 0 } name
+                    || !entry.TryGetProperty("supportedReasoningEfforts", out var efforts) || efforts.ValueKind != JsonValueKind.Array) continue;
+                choices[prefix + ":" + name] = efforts.EnumerateArray()
+                    .Where(e => e.ValueKind == JsonValueKind.Object && e.TryGetProperty("reasoningEffort", out var effort) && effort.ValueKind == JsonValueKind.String)
+                    .Select(e => e.GetProperty("reasoningEffort").GetString()!)
+                    .Where(e => executableEfforts.Contains(e, StringComparer.Ordinal))
+                    .Distinct(StringComparer.Ordinal).ToArray();
+            }
+        }
+        return choices;
     }
 }

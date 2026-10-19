@@ -1,19 +1,15 @@
 <?xml version="1.0" encoding="utf-8"?>
 <Project Sdk="Microsoft.NET.Sdk.Razor">
   <PropertyGroup>
-    <!-- Desktop heads only: Windows and Mac Catalyst. -->
+    <!-- Native AppKit on macOS; existing Windows head stays independent. -->
     <TargetFrameworks Condition="$([MSBuild]::IsOSPlatform('windows'))">net11.0-windows10.0.19041.0</TargetFrameworks>
-    <TargetFrameworks Condition="$([MSBuild]::IsOSPlatform('osx'))">net11.0-maccatalyst</TargetFrameworks>
-    <!-- Lets a Windows machine with the Mac workload compile-check the Mac Catalyst head
-         (`-p:SwarmCodeBuildMacCatalyst=true -f net11.0-maccatalyst`) without overriding
-         TargetFrameworks on every referenced net11.0 project. Mirrors TalavineBuildMacCatalyst. -->
-    <TargetFrameworks Condition="'$(SwarmCodeBuildMacCatalyst)' == 'true'">net11.0-maccatalyst</TargetFrameworks>
-    <TargetFrameworks Condition="'$(TargetFrameworks)' == ''">net11.0-maccatalyst</TargetFrameworks>
+    <TargetFrameworks Condition="$([MSBuild]::IsOSPlatform('osx'))">net11.0-macos</TargetFrameworks>
+    <TargetFrameworks Condition="'$(TargetFrameworks)' == ''">net11.0-macos</TargetFrameworks>
 
     <OutputType>Exe</OutputType>
     <RootNamespace>SwarmCode.App</RootNamespace>
-    <UseMaui>true</UseMaui>
-    <SingleProject>true</SingleProject>
+    <UseMaui Condition="$([MSBuild]::GetTargetPlatformIdentifier('$(TargetFramework)')) == 'windows'">true</UseMaui>
+    <SingleProject Condition="'$(UseMaui)' == 'true'">true</SingleProject>
     <ImplicitUsings>enable</ImplicitUsings>
     <Nullable>enable</Nullable>
     <LangVersion>latest</LangVersion>
@@ -24,7 +20,7 @@
     <ApplicationDisplayVersion>1.0.0</ApplicationDisplayVersion>
     <ApplicationVersion>10000</ApplicationVersion>
 
-    <SupportedOSPlatformVersion Condition="$([MSBuild]::GetTargetPlatformIdentifier('$(TargetFramework)')) == 'maccatalyst'">17.0</SupportedOSPlatformVersion>
+    <SupportedOSPlatformVersion Condition="$([MSBuild]::GetTargetPlatformIdentifier('$(TargetFramework)')) == 'macos'">14.0</SupportedOSPlatformVersion>
     <SupportedOSPlatformVersion Condition="$([MSBuild]::GetTargetPlatformIdentifier('$(TargetFramework)')) == 'windows'">10.0.17763.0</SupportedOSPlatformVersion>
     <TargetPlatformMinVersion Condition="$([MSBuild]::GetTargetPlatformIdentifier('$(TargetFramework)')) == 'windows'">10.0.17763.0</TargetPlatformMinVersion>
 
@@ -67,32 +63,39 @@
     <Touch Files="$(IntermediateOutputPath)mauiiconfg.stamp" AlwaysCreate="true" />
   </Target>
 
-  <PropertyGroup Condition="'$(TargetFramework)' == 'net11.0-maccatalyst'">
-    <RuntimeIdentifier>maccatalyst-arm64</RuntimeIdentifier>
+  <PropertyGroup Condition="'$(TargetFramework)' == 'net11.0-macos'">
+    <RuntimeIdentifier>osx-arm64</RuntimeIdentifier>
+    <PlaywrightPlatform>osx-arm64</PlaywrightPlatform>
     <ValidateXcodeVersion>false</ValidateXcodeVersion>
     <MdimportPath>/usr/bin/mdimport</MdimportPath>
     <TargetPlatformVersion>27.0</TargetPlatformVersion>
-    <TrimMode Condition="'$(Configuration)' == 'Release'">partial</TrimMode>
-    <MtouchLink Condition="'$(Configuration)' == 'Release'">SdkOnly</MtouchLink>
-    <MtouchLink Condition="'$(Configuration)' != 'Release'">None</MtouchLink>
-    <CodesignEntitlements Condition="'$(Configuration)' == 'Debug'">Platforms/MacCatalyst/Entitlements.Debug.plist</CodesignEntitlements>
-    <CodesignEntitlements Condition="'$(Configuration)' != 'Debug'">Platforms/MacCatalyst/Entitlements.plist</CodesignEntitlements>
+    <!-- Razor routes and host DI are reflection-discovered. Keep their
+         constructors and metadata in Debug and Release alike. -->
+    <LinkMode>None</LinkMode>
+    <AppBundleManifest>Platforms/macOS/Info.plist</AppBundleManifest>
+    <UseHardenedRuntime>true</UseHardenedRuntime>
+    <CodesignEntitlements Condition="'$(Configuration)' == 'Debug'">Platforms/macOS/Entitlements.Debug.plist</CodesignEntitlements>
+    <CodesignEntitlements Condition="'$(Configuration)' != 'Debug'">Platforms/macOS/Entitlements.plist</CodesignEntitlements>
   </PropertyGroup>
 
-  <ItemGroup Condition="'$(TargetFramework)' == 'net11.0-maccatalyst'">
+  <ItemGroup Condition="'$(TargetFramework)' == 'net11.0-macos'">
+    <Compile Remove="App.xaml.cs;MainPage.xaml.cs;Platforms/Windows/**/*.cs" />
+    <BundleResource Include="wwwroot/**/*" LogicalName="wwwroot/%(RecursiveDir)%(Filename)%(Extension)" />
+    <BundleResource Include="appsettings.json" />
+    <BundleResource Include="$(IntermediateOutputPath)appicon.icns" LogicalName="appicon.icns" />
     <FrameworkReference Remove="Microsoft.AspNetCore.App" />
   </ItemGroup>
 
   <!-- The RC2 Apple target records the manifest path but omits the file from
-       its incremental inputs. Track edits so scene settings reach the bundle. -->
+       its incremental inputs. Track edits so native app settings reach the bundle. -->
   <Target Name="TrackMacAppManifestChanges" BeforeTargets="_CompileAppManifest"
-          Condition="'$(TargetFramework)' == 'net11.0-maccatalyst'">
+          Condition="'$(TargetFramework)' == 'net11.0-macos'">
     <ItemGroup>
       <_CompileAppManifestInputFile Include="$(AppBundleManifest)" />
     </ItemGroup>
   </Target>
 
-  <ItemGroup>
+  <ItemGroup Condition="'$(UseMaui)' == 'true'">
     <MauiIcon Include="Resources\AppIcon\appicon.svg" ForegroundFile="Resources\AppIcon\appiconfg.svg" Color="#151D30" />
     <MauiSplashScreen Include="Resources\Splash\splash.svg" Color="#151D30" BaseSize="192,192" />
     <MauiAsset Include="appsettings.json" LogicalName="appsettings.json" />
@@ -100,12 +103,15 @@
 
   <ItemGroup>
     <PackageReference Include="Markdig" Version="1.1.2" />
-    <PackageReference Include="Microsoft.Maui.Controls" Version="$(TalavineMacMauiVersion)" Condition="'$(TargetFramework)' == 'net11.0-maccatalyst'" />
-    <PackageReference Include="Microsoft.Maui.Controls" Version="$(TalavineStableMauiVersion)" Condition="'$(TargetFramework)' != 'net11.0-maccatalyst'" />
-    <PackageReference Include="Microsoft.AspNetCore.Components.WebView.Maui" Version="$(TalavineMacMauiVersion)" Condition="'$(TargetFramework)' == 'net11.0-maccatalyst'" />
-    <PackageReference Include="Microsoft.AspNetCore.Components.WebView.Maui" Version="$(TalavineStableMauiVersion)" Condition="'$(TargetFramework)' != 'net11.0-maccatalyst'" />
+    <PackageReference Include="Microsoft.Maui.Controls" Version="$(TalavineStableMauiVersion)" Condition="'$(UseMaui)' == 'true'" />
+    <PackageReference Include="Microsoft.AspNetCore.Components.WebView.Maui" Version="$(TalavineStableMauiVersion)" Condition="'$(UseMaui)' == 'true'" />
+    <PackageReference Include="Microsoft.AspNetCore.Components.WebView" Version="11.0.0-rc.2.26504.105" Condition="'$(TargetFramework)' == 'net11.0-macos'" />
     <PackageReference Include="Microsoft.Extensions.Logging.Debug" Version="11.0.0-rc.2.26504.105" />
     <PackageReference Include="Microsoft.Extensions.Http" Version="11.0.0-rc.2.26504.105" />
+  </ItemGroup>
+
+  <ItemGroup Condition="'$(UseMaui)' == 'true'">
+    <Compile Remove="Platforms/macOS/**/*.cs" />
   </ItemGroup>
 
   <ItemGroup>
@@ -113,18 +119,35 @@
     <ProjectReference Include="..\SwarmCore\SwarmCore.Chat.Components\SwarmCore.Chat.Components.csproj" />
   </ItemGroup>
 
-  <!--
-    The console doubles as the vault bridge (swarmcode in MCP server mode) for native coding agents.
-    The Windows head is framework-dependent, so referencing the console ships swarmcode.exe beside the app.
-    A Mac Catalyst app is always self-contained and cannot reference a framework-dependent executable
-    (NETSDK1150); that head publishes a separate self-contained console closure into its owned bundle.
-  -->
+  <!-- The bundled console owns the native agents' vault bridge. -->
   <ItemGroup Condition="$([MSBuild]::GetTargetPlatformIdentifier('$(TargetFramework)')) == 'windows'">
     <ProjectReference Include="..\SwarmCode\SwarmCode.csproj" />
   </ItemGroup>
 
+  <Target Name="BuildNativeMacIcon" BeforeTargets="_CollectBundleResources"
+          Inputs="Resources/AppIcon/appiconfg.svg;Installer/macOS/build-icon.sh" Outputs="$(IntermediateOutputPath)appicon.icns"
+          Condition="'$(TargetFramework)' == 'net11.0-macos'">
+    <Exec Command="bash &quot;$(MSBuildProjectDirectory)/Installer/macOS/build-icon.sh&quot; &quot;$(MSBuildProjectDirectory)/Resources/AppIcon/appiconfg.svg&quot; &quot;$(IntermediateOutputPath)appicon.icns&quot;" />
+  </Target>
+
+  <!-- Materialize referenced Razor-library assets inside the signed bundle too.
+       A development static-web-assets manifest can otherwise hide missing files
+       by resolving them from the source checkout. -->
+  <Target Name="BundleNativeMacWebAssets" BeforeTargets="_CodesignAppBundle"
+          DependsOnTargets="ResolveStaticWebAssetsInputs"
+          Condition="'$(TargetFramework)' == 'net11.0-macos' and '$(DesignTimeBuild)' != 'true'">
+    <ComputeStaticWebAssetsForCurrentProject Assets="@(StaticWebAsset)" ProjectMode="$(StaticWebAssetProjectMode)" AssetKind="Publish" Source="$(PackageId)">
+      <Output TaskParameter="StaticWebAssets" ItemName="_NativeWebAssets" />
+    </ComputeStaticWebAssetsForCurrentProject>
+    <ComputeStaticWebAssetsTargetPaths Assets="@(_NativeWebAssets)" PathPrefix="wwwroot">
+      <Output TaskParameter="AssetsWithTargetPath" ItemName="_NativeWebAssetsWithPath" />
+    </ComputeStaticWebAssetsTargetPaths>
+    <Copy SourceFiles="$(MSBuildProjectDirectory)/appsettings.json" DestinationFolder="$(AppBundleDir)/Contents/MonoBundle" SkipUnchangedFiles="true" />
+    <Copy SourceFiles="@(_NativeWebAssetsWithPath)" DestinationFiles="@(_NativeWebAssetsWithPath->'$(AppBundleDir)/Contents/Resources/%(TargetPath)')" SkipUnchangedFiles="true" />
+  </Target>
+
   <Target Name="BundleMacVaultBridge" BeforeTargets="_CodesignAppBundle"
-          Condition="$([MSBuild]::IsOSPlatform('osx')) and $([MSBuild]::GetTargetPlatformIdentifier('$(TargetFramework)')) == 'maccatalyst' and '$(DesignTimeBuild)' != 'true'">
+          Condition="$([MSBuild]::IsOSPlatform('osx')) and $([MSBuild]::GetTargetPlatformIdentifier('$(TargetFramework)')) == 'macos' and '$(DesignTimeBuild)' != 'true'">
     <PropertyGroup>
       <_SwarmCodeBridgePublish>$([System.IO.Path]::GetFullPath('$(IntermediateOutputPath)swarmcode-bridge-publish/'))</_SwarmCodeBridgePublish>
       <_SwarmCodeBridgeBundle>$(AppBundleDir)/Contents/Resources/SwarmCodeBridge</_SwarmCodeBridgeBundle>
@@ -133,7 +156,7 @@
       <_SwarmCodeBridgeSigningKey Condition="'$(_SwarmCodeBridgeSigningKey)' == ''">$(CodesignKey)</_SwarmCodeBridgeSigningKey>
       <_SwarmCodeBridgeSigningKey Condition="'$(_SwarmCodeBridgeSigningKey)' == '' and '$(Configuration)' == 'Debug'">-</_SwarmCodeBridgeSigningKey>
     </PropertyGroup>
-    <Error Condition="'$(AppBundleDir)' == '' or !Exists('$(AppBundleDir)/Contents')" Text="Mac vault bridge requires the actual MAUI AppBundleDir before app signing." />
+    <Error Condition="'$(AppBundleDir)' == '' or !Exists('$(AppBundleDir)/Contents')" Text="Mac vault bridge requires the actual AppBundleDir before app signing." />
     <Error Condition="'$(_SwarmCodeBridgeSigningKey)' == ''" Text="Mac vault bridge requires the parent app's signing identity." />
     <RemoveDir Directories="$(_SwarmCodeBridgePublish)" />
     <MSBuild Projects="$(MSBuildProjectDirectory)/../SwarmCode/SwarmCode.csproj" Targets="Restore;Publish"
@@ -144,6 +167,6 @@
     <RemoveDir Directories="$(AppBundleDir)/Contents/Helpers/SwarmCodeBridge;$(_SwarmCodeBridgeBundle)" />
     <ItemGroup><_SwarmCodeBridgeFile Include="$(_SwarmCodeBridgePublish)/**/*" /></ItemGroup>
     <Copy SourceFiles="@(_SwarmCodeBridgeFile)" DestinationFiles="@(_SwarmCodeBridgeFile->'$(_SwarmCodeBridgeBundle)/%(RecursiveDir)%(Filename)%(Extension)')" />
-    <Exec Command="bash &quot;$(MSBuildProjectDirectory)/../Installer/macOS/sign-swarmcode-bridge.sh&quot; &quot;$(_SwarmCodeBridgeBundle)&quot; &quot;$(_SwarmCodeBridgeSigningKey)&quot; &quot;$(MSBuildProjectDirectory)/Platforms/MacCatalyst/Bridge.entitlements.plist&quot;" />
+    <Exec Command="bash &quot;$(MSBuildProjectDirectory)/../Installer/macOS/sign-swarmcode-bridge.sh&quot; &quot;$(_SwarmCodeBridgeBundle)&quot; &quot;$(_SwarmCodeBridgeSigningKey)&quot; &quot;$(MSBuildProjectDirectory)/Platforms/macOS/Bridge.entitlements.plist&quot;" />
   </Target>
 </Project>

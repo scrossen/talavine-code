@@ -1,0 +1,60 @@
+@page "/new-project"
+@inject AppState State
+@inject IFolderPickerService Picker
+@inject NavigationManager Nav
+@using SwarmCode.Hosting.Projects
+
+<PageTitle>New Project - Talavine Code</PageTitle>
+<div class="sc-page">
+    <header class="sc-topbar"><h1 class="sc-topbar__title">New Project</h1></header>
+    <section class="sc-card">
+        <p class="sc-card__copy">Create an empty folder for a new project, then start a chat to build it.</p>
+        <form @onsubmit="CreateAsync" @onsubmit:preventDefault="true">
+            <label class="sc-field">Project name
+                <input class="sc-input" aria-label="Project name" @bind="_name" disabled="@_busy" autofocus />
+            </label>
+            <label class="sc-field">Location
+                <input class="sc-input" aria-label="Project location" @bind="_location" disabled="@_busy" />
+            </label>
+            <div class="sc-row">
+                <button type="button" class="sc-btn" disabled="@_busy" @onclick="BrowseAsync">Choose Location…</button>
+                <button type="submit" class="sc-btn sc-btn--primary" disabled="@(_busy || string.IsNullOrWhiteSpace(_name) || string.IsNullOrWhiteSpace(_location))">@(_busy ? "Creating…" : "Create Project")</button>
+                <button type="button" class="sc-btn" disabled="@_busy" @onclick='() => Nav.NavigateTo("/")'>Cancel</button>
+            </div>
+            @if (_error is not null) { <p class="sc-notice sc-notice--error" role="alert">@_error</p> }
+        </form>
+    </section>
+</div>
+
+@code {
+    private string _name = "";
+    private string _location = Environment.GetFolderPath(Environment.SpecialFolder.MyDocuments);
+    private string? _createdRoot;
+    private string? _error;
+    private bool _busy;
+
+    private async Task BrowseAsync()
+    {
+        var location = await Picker.PickFolderAsync(new("Choose project location", _location));
+        if (location is not null) _location = location;
+    }
+
+    private async Task CreateAsync()
+    {
+        if (_busy) return;
+        _busy = true;
+        _error = null;
+        try
+        {
+            // Keep a successfully created folder for retry if runtime activation fails.
+            var requestedRoot = Path.Combine(Path.GetFullPath(_location), _name.Trim());
+            if (_createdRoot != requestedRoot)
+                _createdRoot = await Task.Run(() => ProjectFolders.Create(_location, _name));
+            if (!await State.OpenWorkspaceAsync(_createdRoot)) { _error = State.LastError; return; }
+            var session = await State.NewSessionAsync();
+            Nav.NavigateTo(AppNavigation.SessionUrl(session.Id));
+        }
+        catch (Exception ex) { _error = ex.Message; }
+        finally { _busy = false; }
+    }
+}

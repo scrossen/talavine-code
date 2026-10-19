@@ -84,14 +84,14 @@ public static class SwarmCodeTurnPolicy
                 @"^\s*(?:[-*]|\d+[.)])?\s*(?:(?:please|then|also|instead)\s*,?\s*)*"
                 + @"(?:(?:can|could|would|will)\s+you\s+|i\s+(?:want|need|would\s+like)\s+you\s+to\s+)?"
                 + @"(?:please\s+)?(?:go\s+ahead\s+and\s+|(?:do\s+not|don['’]t)\s+(?:forget|hesitate)\s+to\s+)?"
-                + @"(?:do\s+)?(?<verb>implement|apply|edit|modify|refactor|fix|change|make|create|add|write|remove|delete|update)\s+"
+                + @"(?:do\s+)?(?<verb>build|implement|apply|edit|modify|refactor|fix|change|make|create|add|write|remove|delete|update)\s+"
                 + @"(?<object>.+)$", options);
             if (!instruction.Success) continue;
 
             var target = Regex.Replace(instruction.Groups["object"].Value,
                 @"^(?:the|a|an|this|that|these|those|my|our|your)\s+", "", options);
             var kinds = Regex.IsMatch(instruction.Groups["verb"].Value,
-                @"^(implement|apply|edit|modify|refactor|fix|change)$", options)
+                @"^(build|implement|apply|edit|modify|refactor|fix|change|create|make)$", options)
                 ? @"changes?|code|files?|bugs?|features?|tests?|project|repository|repo|app"
                 : @"code|files?|tests?|features?";
             // Look for the object being edited, not code mentioned as an example, tool

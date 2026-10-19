@@ -1,0 +1,31 @@
+<Project Sdk="Microsoft.NET.Sdk.Razor">
+  <PropertyGroup>
+    <TargetFramework>net11.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <IsPackable>false</IsPackable>
+    <IsTestProject>true</IsTestProject>
+  </PropertyGroup>
+  <ItemGroup>
+    <FrameworkReference Include="Microsoft.AspNetCore.App" />
+    <ProjectReference Include="../SwarmCode.Hosting/SwarmCode.Hosting.csproj" />
+    <ProjectReference Include="../SwarmCore/SwarmCore.Chat.Components/SwarmCore.Chat.Components.csproj" />
+    <PackageReference Include="bunit" Version="2.5.3" />
+    <!-- bUnit permits 1.x; pin the patched parser for GHSA-pgww-w46g-26qg. -->
+    <PackageReference Include="AngleSharp" Version="1.5.0" />
+    <PackageReference Include="Microsoft.NET.Test.Sdk" Version="17.13.0" />
+    <PackageReference Include="xunit" Version="2.9.3" />
+    <PackageReference Include="xunit.runner.visualstudio" Version="3.0.2" />
+    <Using Include="Xunit" />
+    <Compile Include="../SwarmCode.App/Services/NativeWebContentPolicy.cs" Link="Services/NativeWebContentPolicy.cs" />
+    <Compile Include="../SwarmCode.App/Services/UserBugIntake.cs" Link="Services/UserBugIntake.cs" />
+    <Compile Include="../SwarmCode.App/Services/AppState.cs" Link="Services/AppState.cs" />
+    <Compile Include="../SwarmCode.App/Services/AppNavigation.cs" Link="Services/AppNavigation.cs" />
+    <Compile Include="../SwarmCode.Hosting.Tests/EncryptedTestKeyStore.cs" Link="EncryptedTestKeyStore.cs" />
+    <Compile Include="../SwarmCore/Testing/OwnedTestScratch.cs" Link="TestSupport/OwnedTestScratch.cs" />
+    <Compile Include="../TestSupport/TestTempRoot.cs" Link="TestSupport/TestTempRoot.cs" />
+    <RazorComponent Include="../SwarmCode.App/Components/Shared/ReasoningPicker.razor" Link="Components/ReasoningPicker.razor" />
+    <RazorComponent Include="../SwarmCode.App/Components/Shared/ProviderPicker.razor" Link="Components/ProviderPicker.razor" />
+    <RazorComponent Include="../SwarmCode.App/Components/Pages/AiOverview.razor" Link="Components/AiOverview.razor" />
+  </ItemGroup>
+</Project>

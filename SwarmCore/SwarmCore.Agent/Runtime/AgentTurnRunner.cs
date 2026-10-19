@@ -1525,6 +1525,7 @@ public sealed class AgentTurnRunner : IAgentTurnRunner
         {
             Provider = request.ProviderOverride ?? profile.Provider,
             Model = request.ModelOverride ?? profile.Model,
+            ReasoningEffort = request.ReasoningEffort ?? profile.ReasoningEffort,
             RouteProvenance = paired
                 ? LlmOverrideProvenance.User
                 : partial

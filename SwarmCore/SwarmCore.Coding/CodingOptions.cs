@@ -46,6 +46,9 @@ public sealed class CodingOptions
     /// <summary>Maximum engine iterations per turn (unattended turns only; user-requested turns are unbounded).</summary>
     public int MaxIterations { get; set; } = 60;
 
+    /// <summary>Repeated inspection results without new evidence before a requested edit hands off. Zero disables this check.</summary>
+    public int NoProgressReadLimit { get; set; } = 8;
+
     /// <summary>Hard wall-clock limit per turn (unattended turns only).</summary>
     public TimeSpan HardTimeout { get; set; } = TimeSpan.FromMinutes(30);
 

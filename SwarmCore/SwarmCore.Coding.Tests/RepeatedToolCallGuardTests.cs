@@ -105,4 +105,34 @@ public sealed class RepeatedToolCallGuardTests
         transcript.Add(new(ChatRole.Tool, [new ToolResultPart("edit", "{\"Succeeded\":true}", false)]));
         Assert.True((await Guard().InspectAsync(Request(transcript))).Allowed);
     }
+
+    [Fact]
+    public async Task Automatic_notices_between_failures_do_not_reset_recovery()
+    {
+        var transcript = TranscriptWith(3);
+        for (var i = 2; i >= 0; i--)
+            transcript.Insert(1 + i * 2, ChatMessage.Text(ChatRole.User,
+                EngineAuthoredNotice.Create("retry notice", "Continue the task.")));
+        transcript.Add(ChatMessage.Text(ChatRole.User, EngineAuthoredNotice.Create("working-context summary", "Current checkpoint.")));
+        Assert.False((await Guard().InspectAsync(Request(transcript))).Allowed);
+        transcript.Add(ChatMessage.Text(ChatRole.User, "I changed the setup; try again."));
+        Assert.True((await Guard().InspectAsync(Request(transcript))).Allowed);
+    }
+
+    [Fact]
+    public async Task Changing_file_paths_does_not_hide_the_same_structured_edit_error()
+    {
+        var transcript = new List<ChatMessage> { ChatMessage.Text(ChatRole.User, "Build a calculator") };
+        foreach (var path in new[] { "main.c", "src/Calculator.cs", "calculator.py" })
+        {
+            transcript.Add(new(ChatRole.Assistant, [new ToolUsePart(path, "code.edit_file", new JsonObject { ["path"] = path, ["newText"] = path })]));
+            transcript.Add(new(ChatRole.Tool, [new ToolResultPart(path,
+                new JsonObject { ["Path"] = path, ["Succeeded"] = false, ["Error"] = "Use fs.write_file to create new files" }.ToJsonString())]));
+        }
+        var decision = await Guard().InspectAsync(new("code.edit_file", ToolSideEffect.WritesLocal,
+            new { path = "another.txt", newText = "text" }, "c", transcript));
+        Assert.False(decision.Allowed);
+        Assert.True(decision.IsRecoveryRedirect);
+        Assert.False(decision.RequiresApproval);
+    }
 }

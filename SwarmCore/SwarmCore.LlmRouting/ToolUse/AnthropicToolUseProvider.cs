@@ -368,6 +368,10 @@ public sealed class AnthropicToolUseProvider : IToolUseProvider
             ["messages"] = messages
         };
 
+        var effort = SwarmCore.LlmRouting.Providers.ClaudeEffortSettings.Resolve(model,
+            request.Options?.GenerationParameters, request.Options?.ExecutionSettings);
+        if (effort is not null) payload["output_config"] = new JsonObject { ["effort"] = effort };
+
         // Prompt caching for the conversation itself: a breakpoint on the final content block
         // makes this request's whole message history cacheable, and the next iteration (which
         // extends it) is served from that prefix. Without it only the system block and the tool

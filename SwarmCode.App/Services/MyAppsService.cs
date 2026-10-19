@@ -3,6 +3,7 @@ using SwarmCode.Hosting.Projects;
 using SwarmCore.Agent.Catalog;
 using SwarmCore.Coding.Permissions;
 using SwarmCore.Coding.Projects;
+using SwarmCore.Coding.Routing;
 
 namespace SwarmCode.App.Services;
 
@@ -12,7 +13,7 @@ public sealed class MyAppsService(AppState state, CodingAppLibraryStore library,
     public CodingAppLibraryStore Library => library;
     public CodingAppRuntime Runtime => runtime;
 
-    public async Task<WorkspaceSessionInfo> WorkAsync(string id, string? request = null, bool newSession = false)
+    public async Task<WorkspaceSessionInfo> WorkAsync(string id, string? request = null, bool newSession = false, CodingModelChoice? selection = null)
     {
         if (state.IsOpeningWorkspace) throw new InvalidOperationException("Wait for the current project to finish opening.");
         var app = await Task.Run(() => library.Get(id));
@@ -25,6 +26,12 @@ public sealed class MyAppsService(AppState state, CodingAppLibraryStore library,
             throw new InvalidOperationException("This app's chat is still working. Open it or wait for it to finish before starting another build or launch setup.");
         var session = newSession ? null : sessions.Where(s => s.ParentSessionId is null).OrderByDescending(s => s.LastActivityUtc).FirstOrDefault();
         session ??= await state.NewSessionAsync();
+        if (selection is not null)
+        {
+            var chosen = selection.Resolve(state.Workspace!.Lanes);
+            await state.Sessions.SetModelAsync(session.Id, chosen.Name, chosen.Model);
+            session = await state.Sessions.GetAsync(session.Id) ?? throw new InvalidOperationException("This chat was removed. Open a new chat to build.");
+        }
         var runner = await state.GetRunnerAsync(session.Id) ?? throw new InvalidOperationException("The app chat could not open.");
         if (request is not null)
         {
@@ -36,11 +43,11 @@ public sealed class MyAppsService(AppState state, CodingAppLibraryStore library,
         return session;
     }
 
-    public async Task<WorkspaceSessionInfo> CreateAsync(string name, string description, string folder)
+    public async Task<WorkspaceSessionInfo> CreateAsync(string name, string description, string folder, CodingModelChoice? selection = null)
     {
         EnsureCanSwitch(CodingAppPaths.Within(folder, CodingAppPaths.FolderName(name)));
         var app = await Task.Run(() => library.Create(name, description, folder));
-        return await WorkAsync(app.Id, CodingAppPrompts.Create(app), newSession: true);
+        return await WorkAsync(app.Id, CodingAppPrompts.Create(app), newSession: true, selection: selection);
     }
 
     private void EnsureCanSwitch(string root)
@@ -84,7 +91,7 @@ public sealed class MyAppsService(AppState state, CodingAppLibraryStore library,
     {
         if (!Uri.TryCreate(url, UriKind.Absolute, out var uri) || !uri.IsLoopback || uri.Scheme is not ("http" or "https"))
             throw new InvalidOperationException("Only a local app preview can open here.");
-        if (!await Browser.Default.OpenAsync(uri, BrowserLaunchMode.External))
+        if (!await DesktopPlatform.OpenUriAsync(uri))
             throw new InvalidOperationException("The app is running, but its preview could not open. Open its local address in your browser.");
     }
 

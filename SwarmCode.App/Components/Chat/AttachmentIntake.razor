@@ -17,10 +17,10 @@
         }
     </div>
     @ChildContent
-    <div class="sess-attachment-actions">
+    <div class="sess-attachment-actions @(Compact ? "sess-attachment-actions--compact" : "")">
         <label for="@_inputId" class="sess-btn" tabindex="0" @onkeydown="OnPickerKeyDown">Attach files</label>
         <InputFile id="@_inputId" class="sess-attachment-input" @ref="_input" OnChange="ImportBrowserFilesAsync" multiple disabled="@_busy" />
-        <span class="sess-muted" role="status">@(_busy ? "Adding attachments…" : "Paste images or files · Drop files here")</span>
+        <span class="sess-muted" role="status">@(_busy ? "Adding attachments…" : Compact ? "" : "Paste images or files · Drop files here")</span>
     </div>
     @if (_error is not null) { <p class="sess-error" role="alert">@_error</p> }
 </div>
@@ -32,7 +32,11 @@
     [Parameter] public EventCallback<bool> BusyChanged { get; set; }
     [Parameter] public EventCallback<string> OnOpen { get; set; }
     [Parameter] public RenderFragment? ChildContent { get; set; }
-    private readonly string _inputId = "attachments-" + Guid.NewGuid().ToString("N");
+    [Parameter] public bool Compact { get; set; }
+    [Parameter] public string? PickerId { get; set; }
+    private readonly string _generatedInputId = "attachments-" + Guid.NewGuid().ToString("N");
+    private string _inputId => PickerId ?? _generatedInputId;
+    public Task PickAsync() => JS.InvokeVoidAsync("swarmcode.pickFiles", _inputId).AsTask();
     private readonly Dictionary<string, string> _thumbnails = [];
     private ElementReference _root;
     private InputFile? _input;

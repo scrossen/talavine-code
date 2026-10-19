@@ -61,6 +61,46 @@ public class ConversationRunnerTests : TempDirTest
     }
 
     [Fact]
+    public async Task Interrupted_work_retains_its_review_requirement_and_does_not_repeat_obtained_opinions()
+    {
+        var catalog = new WorkspaceSessionCatalog(Paths);
+        var session = await catalog.CreateAsync(Tmp);
+        var options = new SwarmCore.Abstractions.Collaboration.TurnAssistanceOptions
+        {
+            GetOpinionsFirst = true, ReviewBeforeFinishing = true, RecommendReviewer = false,
+            Reviewer = new("review", "ReviewProvider", "pinned-review-model", "review")
+        };
+        var jobs = new FileConversationJobStore(Paths);
+        jobs.Save(session.Id, new() { State = "Running", Request = "Original task", Assistance = options, OpinionsObtained = true });
+        using var h = Build(_ => (request, ct) =>
+        {
+            Assert.True(jobs.Load(session.Id)!.Assistance!.ReviewBeforeFinishing);
+            return Yield(new TurnCompleted("t", "Continued safely.", TimeSpan.Zero));
+        }, session.Id, configure: services => services.AddSingleton(catalog));
+        await h.Runner.LoadHistoryAsync();
+        var finish = NextFinish(h.Runner);
+        Assert.True(h.Runner.ContinueInterruptedWork(null, SwarmCore.Coding.Permissions.CodingPermissionMode.Auto, false));
+        await finish;
+        var captured = h.Orchestrator.LastRequest!;
+        Assert.True(captured.Assistance.ReviewBeforeFinishing);
+        Assert.Equal("pinned-review-model", captured.Assistance.Reviewer!.Model);
+        Assert.False(captured.Assistance.GetOpinionsFirst);
+        Assert.False((await catalog.GetAsync(session.Id))!.Assistance.Enabled);
+    }
+
+    [Fact]
+    public async Task Missing_conversation_settings_cannot_silently_skip_required_options_and_start_work()
+    {
+        using var h = Build(_ => (_, _) => Yield(new TurnCompleted("t", "Should not run", TimeSpan.Zero)),
+            configure: services => services.AddSingleton(new WorkspaceSessionCatalog(Paths)));
+        var finish = NextFinish(h.Runner);
+        Assert.True(h.Runner.TrySend("Do some work", null));
+        var result = await finish;
+        Assert.Null(h.Orchestrator.LastRequest);
+        Assert.Contains("settings could not be loaded", result.Error);
+    }
+
+    [Fact]
     public async Task SuccessfulTurn_BuildsTranscript_AndResult()
     {
         using var h = Build(_ => (_, _) => Yield(
@@ -168,6 +208,31 @@ public class ConversationRunnerTests : TempDirTest
         await using var reopened = new ConversationRunner(h.Provider, "conv");
         await reopened.LoadHistoryAsync();
         Assert.Equal(file, Assert.Single(Assert.Single(reopened.Entries.OfType<UserEntry>()).Attachments));
+    }
+
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public async Task Recovery_attempt_owns_final_result_while_prior_errors_stay_in_history(bool recovers)
+    {
+        var next = new CodingLane("codex", "CodexNative", "codex-cli:default");
+        using var h = Build(_ => (_, _) => Yield(
+            new CodingLaneSelected("t1", Lane, 1),
+            new TurnCompleted("t1", "Candidate from the unsuccessful attempt", TimeSpan.Zero),
+            new TurnErrored("t1", "earlier provider failed"),
+            new CodingLaneHandOff("t1", Lane, next, "retrying unfinished work"),
+            new CodingLaneSelected("t2", next, 2),
+            recovers ? new TurnCompleted("t2", "Recovered result", TimeSpan.Zero)
+                : new TurnErrored("t2", "last provider failed")));
+        var finished = NextFinish(h.Runner);
+        Assert.True(h.Runner.TrySend("Build this app", "claude", allowHandOff: true));
+        var result = await finished;
+        Assert.Equal(recovers, result.Completed);
+        Assert.Equal(recovers ? null : "last provider failed", result.Error);
+        Assert.Equal(recovers ? "Recovered result" : null, result.FinalText);
+        Assert.Contains(h.Runner.Entries.OfType<NoticeEntry>(), e => e.Kind == NoticeKind.Error && e.Text == "earlier provider failed");
+        var saved = h.Provider.GetRequiredService<FileConversationJobStore>().Load("conv")!;
+        Assert.Equal(recovers ? "Completed" : "Failed", saved.State);
     }
 
     [Fact]
@@ -437,6 +502,53 @@ public class ConversationRunnerTests : TempDirTest
             else nextStarted.SetResult(request);
             yield return new TurnCompleted("t", "ok", TimeSpan.Zero);
         }
+    }
+
+    [Fact]
+    public async Task Queue_AfterFreshRequest_DoesNotInheritAnEmptyQueuesPause()
+    {
+        var entered = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var release = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var nextStarted = new TaskCompletionSource<CodingTurnRequest>(TaskCreationOptions.RunContinuationsAsynchronously);
+        using var h = Build(_ => (request, _) => Script(request));
+        var journal = h.Provider.GetRequiredService<FileConversationJobStore>();
+        // Stops, failures and steering can leave an empty queue paused, including across restarts.
+        journal.Save("conv", new ConversationJob { State = "Completed", QueuePaused = true });
+        await h.Runner.LoadHistoryAsync();
+        Assert.True(h.Runner.QueuePaused);
+        Assert.True(h.Runner.TrySend("fresh request", "claude"));
+        await entered.Task.WaitAsync(TimeSpan.FromSeconds(10));
+        Assert.True(await h.Runner.EnqueueAsync("follow up", "claude", modelOverride: "chosen-model"));
+        release.SetResult();
+        var next = await nextStarted.Task.WaitAsync(TimeSpan.FromSeconds(10));
+        Assert.Equal("follow up", next.UserMessage);
+        Assert.Equal("chosen-model", next.ModelOverride);
+        Assert.False(h.Runner.QueuePaused);
+        await h.Runner.DisposeAsync();
+        Assert.Empty(journal.Load("conv")!.Queue);
+
+        async IAsyncEnumerable<TurnEvent> Script(CodingTurnRequest request)
+        {
+            if (request.UserMessage == "fresh request") { entered.SetResult(); await release.Task; }
+            else nextStarted.SetResult(request);
+            yield return new TurnCompleted("t", "ok", TimeSpan.Zero);
+        }
+    }
+
+    [Fact]
+    public async Task Queue_FreshRequest_DoesNotResumePreviouslyPausedPrompts()
+    {
+        using var h = Build(_ => (_, _) => Yield(new TurnCompleted("t", "ok", TimeSpan.Zero)));
+        var journal = h.Provider.GetRequiredService<FileConversationJobStore>();
+        journal.Save("conv", new ConversationJob { State = "Stopped", QueuePaused = true, Queue = [new("older task", null, false, null)] });
+        await h.Runner.LoadHistoryAsync();
+        var finished = NextFinish(h.Runner);
+        Assert.True(h.Runner.TrySend("fresh request", "claude"));
+        Assert.True((await finished).Completed);
+        await h.Runner.DisposeAsync();
+        Assert.True(h.Runner.QueuePaused);
+        Assert.Equal("older task", Assert.Single(journal.Load("conv")!.Queue).Text);
+        Assert.Equal("fresh request", h.Orchestrator.LastRequest!.UserMessage);
     }
 
     [Fact]

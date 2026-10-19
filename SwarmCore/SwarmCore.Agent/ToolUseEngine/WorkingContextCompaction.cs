@@ -141,7 +141,10 @@ public sealed partial class SemanticWorkingContextCompactor : IWorkingContextCom
         var snapshot = deterministic;
         var usedFallback = true;
 
-        if (_summarizer is not null)
+        // A model summary of a tiny prefix can be larger than the history it
+        // replaces. Use the deterministic checkpoint without another provider
+        // call when startup pressure is primarily the fixed prompt/tool catalog.
+        if (_summarizer is not null && CountCharacters(olderHistory) > request.MaxSummaryCharacters)
         {
             try
             {

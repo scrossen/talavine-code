@@ -16,7 +16,7 @@ public sealed class EditFileTool
         [Description("File path. Relative paths resolve against the repository root.")]
         public required string Path { get; set; }
 
-        [Description("Exact text to find, including whitespace. Must be unique in the file unless replaceAll is true.")]
+        [Description("Nonempty exact text to find, including whitespace. Must be unique in the file unless replaceAll is true. Use fs.write_file for new files or complete rewrites.")]
         public required string OldText { get; set; }
 
         [Description("Replacement text.")]
@@ -48,18 +48,20 @@ public sealed class EditFileTool
         toolId: ToolId,
         enforcesMissionResourceBoundary: true,
         ownerAgentId: "coding",
-        description: "Edit a file by replacing an exact text snippet (oldText) with newText. Fails if oldText is not found or is ambiguous (include more surrounding context, or set replaceAll). Preserves the file's newline style. Prefer this over rewriting whole files.",
+        description: "Edit an EXISTING file by replacing a nonempty exact text snippet (oldText) with newText. To CREATE a new file, use fs.write_file with path, content and expectedSha256='missing'. Fails if oldText is not found or is ambiguous (include more surrounding context, or set replaceAll). Preserves the file's newline style.",
         cost: ToolCostClass.Cheap,
         sideEffect: ToolSideEffect.WritesLocal,
         keywords: ["edit", "replace", "patch", "modify", "file", "code"],
         invoke: async (input, ct) =>
         {
-            if (string.IsNullOrEmpty(input.OldText)) throw new ArgumentException("OldText must not be empty.", nameof(input));
+            if (string.IsNullOrEmpty(input.OldText)) return Fail(input.Path,
+                "oldText must not be empty: code.edit_file edits existing files only. Use fs.read_file to get an exact snippet to replace. To create a new file, call fs.write_file with path, content (the full new text), and expectedSha256='missing'.");
             if (input.OldText == input.NewText) throw new ArgumentException("OldText and NewText are identical.", nameof(input));
             var abs = _sandbox.Resolve(input.Path, SwarmCore.Agent.Continual.MissionEffect.Modify);
             await MissionPrimitiveFence.ValidateAsync(ct);
             var info = new FileInfo(abs);
-            if (!info.Exists) return Fail(input.Path, "File not found.");
+            if (!info.Exists) return Fail(input.Path,
+                "File not found. To create it, call fs.write_file with path, content (the full new text), and expectedSha256='missing'.");
             if (info.Length > MaxFileBytes) return Fail(input.Path, "File is larger than the 4 MB edit limit.");
 
             AtomicTextFile.Snapshot snapshot;

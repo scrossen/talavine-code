@@ -1,5 +1,11 @@
 # CLI dependency inventory
 
+This baseline predates the portable `SwarmCode.App.Tests` suite. That suite adds
+bUnit and its HTML parser dependencies, including an explicit AngleSharp 1.5.0
+pin. Generate the current exact inventory with `dotnet list TalavineCode.Cli.slnx
+package --include-transitive`; audit with `--vulnerable --include-transitive`.
+The publisher audits the current restored graph before each source publication.
+
 Generated from restored NuGet metadata for `TalavineCode.Cli.slnx` during public-source preparation. Includes its tests. This is package metadata, not a legal clearance or a desktop/native dependency inventory. Third-party terms apply independently of this repository's MIT license.
 
 | Package | Version | License metadata |

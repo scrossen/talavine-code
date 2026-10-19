@@ -124,7 +124,7 @@
         }
         catch (Exception ex)
         {
-            MauiProgram.LogToFile($"Agents refresh failed: {ex.Message}");
+            DesktopHost.LogToFile($"Agents refresh failed: {ex.Message}");
             Interlocked.Exchange(ref _refreshState, 0);
         }
     }

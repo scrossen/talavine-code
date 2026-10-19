@@ -8,6 +8,52 @@ namespace SwarmCore.Coding.Tests;
 
 public sealed class FallbackDiscoveryTests
 {
+    private sealed class FailingRunner(LlmFailureCategory category) : IAgentTurnRunner
+    {
+        public List<AgentTurnRequest> Requests { get; } = [];
+        public async IAsyncEnumerable<TurnEvent> RunAsync(AgentTurnRequest request, [EnumeratorCancellation] CancellationToken ct = default)
+        {
+            Requests.Add(request);
+            await Task.Yield();
+            if (Requests.Count == 1) yield return new TurnErrored("t1", "route failed") { FailureCategory = category };
+            else yield return new TurnCompleted("t2", "Recovered result", TimeSpan.Zero);
+        }
+    }
+
+    [Theory]
+    [InlineData(LlmFailureCategory.MalformedReply, true)]
+    [InlineData(LlmFailureCategory.ContextOverflow, true)]
+    [InlineData(LlmFailureCategory.Timeout, true)]
+    [InlineData(LlmFailureCategory.MalformedReply, false)]
+    public async Task Provider_failures_discover_alternatives_when_handoff_is_enabled(LlmFailureCategory category, bool enabled)
+    {
+        var discovery = new Discovery();
+        var runner = new FailingRunner(category);
+        var services = new ServiceCollection();
+        services.AddSingleton<IAgentTurnRunner>(runner);
+        services.AddSingleton<ICodingFallbackDiscovery>(discovery);
+        var orchestrator = TestOrchestrator.Create(services, new CodingLaneOptions
+        {
+            Lanes = [new("initial", "Initial", "small")], MaxLanesPerRequest = 2,
+        }, new());
+        var events = new List<TurnEvent>();
+        await foreach (var evt in orchestrator.RunAsync(new()
+        {
+            ConversationId = "recovery", UserMessage = "original objective", LaneName = "initial", AllowHandOff = enabled,
+            CommunicationScope = AgentCommunicationScope.UserRequested("test-host"),
+        })) events.Add(evt);
+        Assert.Equal(enabled ? 1 : 0, discovery.Calls);
+        Assert.Equal(enabled ? 2 : 1, runner.Requests.Count);
+        if (enabled)
+        {
+            Assert.Equal("Catalog", runner.Requests[^1].ProviderOverride);
+            Assert.True(runner.Requests[^1].IsContinuation);
+            Assert.Contains("original objective", runner.Requests[^1].UserMessage);
+            Assert.Single(events.OfType<CodingLaneHandOff>());
+            Assert.Empty(events.OfType<CodingLanesExhausted>());
+        }
+    }
+
     private sealed class Discovery : ICodingFallbackDiscovery
     {
         public int Calls;

@@ -10,16 +10,17 @@
     <a class="sc-sidebar__item @(_activePath.StartsWith("apps", StringComparison.Ordinal) ? "sc-sidebar__item--active" : "")" href="/apps">My apps</a>
     <a class="sc-sidebar__item" href="/history">Search session history</a>
     <a class="sc-sidebar__item" href="/peers">Peers</a>
+    <a class="sc-sidebar__item @(_activePath == "overview" ? "sc-sidebar__item--active" : "")" href="/overview">AI overview</a>
 
     <button type="button" class="sc-btn sc-btn--primary sc-btn--block" @onclick="NewSessionAsync" title="Ctrl/Cmd+N">
-        New session
+        New chat
     </button>
 
     <div class="sc-sidebar__section sc-sidebar__section--grow">
         <div class="sc-sidebar__label">Sessions</div>
-        @if (State.Workspace is null)
+        @if (State.Workspace is null && _rows.Count == 0)
         {
-            <div class="sc-muted sc-sidebar__item">Open a repository to see its sessions.</div>
+            <div class="sc-muted sc-sidebar__item">Start a chat or open a project.</div>
         }
         else if (_rows.Count == 0)
         {
@@ -162,8 +163,8 @@
             do
             {
                 Interlocked.Exchange(ref _refreshState, 1);
-                var root = State.RepositoryRoot;
-                var sessions = root is null ? [] : await Task.Run(() => State.Sessions.ListAsync(root));
+                var root = State.SessionListRoot;
+                var sessions = await Task.Run(() => State.Sessions.ListAsync(root));
                 var collapsed = State.Preferences.Current.CollapsedSessionIds.ToHashSet(StringComparer.Ordinal);
                 _rows = SessionTree.Flatten(sessions, collapsed.Contains);
                 _working = sessions.Select(s => s.Id).Where(id => State.TryGetRunner(id)?.IsRunning == true
@@ -177,7 +178,7 @@
         }
         catch (Exception ex)
         {
-            MauiProgram.LogToFile($"Sidebar refresh failed: {ex.Message}");
+            DesktopHost.LogToFile($"Sidebar refresh failed: {ex.Message}");
             Interlocked.Exchange(ref _refreshState, 0);
         }
     }
@@ -194,11 +195,6 @@
 
     private async Task NewSessionAsync()
     {
-        if (State.Workspace is null)
-        {
-            Nav.NavigateTo("/");
-            return;
-        }
         var session = await State.NewSessionAsync();
         Nav.NavigateTo(AppNavigation.SessionUrl(session.Id));
     }

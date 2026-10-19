@@ -685,17 +685,17 @@ internal sealed class PosixSpawnChildProcess : IChildProcess
         ThrowIfPosixError(result, "posix_spawn_file_actions stdio setup");
     }
 
-    private static int[] CreatePipe()
+    internal static int[] CreatePipe()
     {
         var descriptors = new int[2];
-        if (pipe(descriptors) != 0)
+        // The runtime shim sets close-on-exec and cleans up both ends on failure.
+        // Calling variadic fcntl as a fixed-argument P/Invoke on Darwin arm64
+        // passes garbage flags, which can close these descriptors during spawn.
+        if (SystemNativePipe(descriptors, PipeCloseOnExec) != 0)
         {
             throw new InvalidOperationException(
                 $"pipe() failed: {DescribePosixError(Marshal.GetLastPInvokeError())}");
         }
-        // Keep parent ends out of any concurrently-started child.
-        _ = fcntl(descriptors[0], FSetFd, FdCloexec);
-        _ = fcntl(descriptors[1], FSetFd, FdCloexec);
         return descriptors;
     }
 
@@ -793,8 +793,7 @@ internal sealed class PosixSpawnChildProcess : IChildProcess
     private const short PosixSpawnCloexecDefault = 0x4000;
     private const int Sigkill = 9;
     private const int Eintr = 4;
-    private const int FSetFd = 2;
-    private const int FdCloexec = 1;
+    private const int PipeCloseOnExec = 0x0010; // System.Native PAL flag, not the platform O_CLOEXEC.
 
     [DllImport("libc", SetLastError = true)]
     private static extern int posix_spawnp(
@@ -842,14 +841,11 @@ internal sealed class PosixSpawnChildProcess : IChildProcess
     [DllImport("libc")]
     private static extern int posix_spawnattr_setsigmask(ref IntPtr attr, ref uint sigset);
 
-    [DllImport("libc", SetLastError = true)]
-    private static extern int pipe(int[] descriptors);
+    [DllImport("libSystem.Native", EntryPoint = "SystemNative_Pipe", SetLastError = true)]
+    private static extern int SystemNativePipe([Out] int[] descriptors, int flags);
 
     [DllImport("libc")]
     private static extern int close(int fd);
-
-    [DllImport("libc")]
-    private static extern int fcntl(int fd, int command, int argument);
 
     [DllImport("libc")]
     private static extern int kill(int pid, int signal);

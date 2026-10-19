@@ -1,0 +1,91 @@
+@using SwarmCore.Abstractions.Collaboration
+@inject IJSRuntime JS
+<button type="button" class="chat-assistance__open" title="@Description" @onclick="OpenAsync" disabled="@Disabled" aria-label="Opinions and review">
+    <span aria-hidden="true">&#9678;</span> Opinions &amp; review <small>@(Value.Enabled ? Value.Summary : "Off")</small>
+</button>
+<dialog class="chat-assistance" @ref="_dialog" aria-labelledby="@_title" @onkeydown:stopPropagation>
+    <h2 id="@_title">Opinions &amp; review</h2>
+    <p>Optional help for this conversation. Extra models can add time and usage charges.</p>
+    <label class="chat-assistance__toggle"><input type="checkbox" @bind="_opinions" /> Get opinions first</label>
+    <p>Ask models to suggest approaches before work starts. The working agent considers their advice.</p>
+    @if (_opinions)
+    {
+        <label><input type="checkbox" @bind="_recommendOpinions" /> Recommended models</label>
+        @if (_recommendOpinions)
+        {
+            <label>Number of opinions<select aria-label="Number of opinions" @bind="_opinionCount">@for (var i = 1; i <= 4; i++) { <option value="@i">@i</option> }</select></label>
+            <p>Model Scout chooses from available models for your request. Switch this off to choose and pin exact models.</p>
+        }
+        else
+        {
+        <input type="search" aria-label="Search opinion models" placeholder="Search provider or model..." @bind="_search" @bind:event="oninput" />
+        <div class="chat-assistance__models" role="group" aria-label="Opinion models">
+        @foreach (var choice in Matches)
+        {
+            <label><input type="checkbox" checked="@_selected.Contains(choice.Key)" @onchange="e => Toggle(choice.Key, e.Value is true)" /> <span>@choice.Model<small>@(choice.RouteName ?? choice.Provider)</small></span></label>
+        }
+        @if (!Matches.Any()) { <p>No matching models.</p> }
+        </div>
+        <small>@_selected.Count selected / up to 4</small>
+        }
+    }
+    <label class="chat-assistance__toggle"><input type="checkbox" @bind="_review" /> Review before finishing</label>
+    <p>A fresh agent inspects the work read-only. The working agent addresses the review before its final answer.</p>
+    @if (_review)
+    {
+        <label><input type="checkbox" @bind="_recommendReviewer" /> Recommended review agent</label>
+        @if (_recommendReviewer) { <p>Prefer a different model from the working agent. The reviewer gets a fresh, read-only context.</p> }
+        else
+        {
+        <label>Review agent<select aria-label="Review agent" @bind="_reviewer">
+            <option value="">Choose an agent and model...</option>
+            @foreach (var choice in Choices) { <option value="@choice.Key">@(choice.RouteName ?? choice.Provider) / @choice.Model</option> }
+        </select></label>
+        }
+    }
+    @if (_problem is not null) { <p role="alert">@_problem</p> }
+    <div class="chat-assistance__actions"><button type="button" @onclick="CloseAsync">Cancel</button><button type="button" @onclick="ApplyAsync" disabled="@_saving">@(_saving ? "Saving..." : "Apply")</button></div>
+</dialog>
+@code {
+    [Parameter] public TurnAssistanceOptions Value { get; set; } = new();
+    [Parameter] public EventCallback<TurnAssistanceOptions> ValueChanged { get; set; }
+    [Parameter] public IReadOnlyList<AssistanceModelChoice> Choices { get; set; } = [];
+    [Parameter] public long Revision { get; set; }
+    [Parameter] public EventCallback<long> OnEditing { get; set; }
+    [Parameter] public EventCallback OnOpening { get; set; }
+    [Parameter] public bool Disabled { get; set; }
+    private ElementReference _dialog;
+    private readonly string _title = "assistance-" + Guid.NewGuid().ToString("N");
+    private bool _opinions, _review, _saving, _recommendOpinions, _recommendReviewer;
+    private int _opinionCount = 1;
+    private string _reviewer = "", _search = "";
+    private string? _problem;
+    private HashSet<string> _selected = new(StringComparer.Ordinal);
+    private string Description => Value.Enabled ? Value.Summary : "Ask other models for advice or request an independent review";
+    private IEnumerable<AssistanceModelChoice> Matches => Choices.Where(c => c.Model.Contains(_search, StringComparison.OrdinalIgnoreCase) || c.Provider.Contains(_search, StringComparison.OrdinalIgnoreCase)).Take(150);
+    private async Task OpenAsync()
+    {
+        _recommendOpinions = Value.RecommendOpinionModels; _recommendReviewer = Value.RecommendReviewer; _opinionCount = Value.OpinionCount;
+        _opinions = Value.GetOpinionsFirst; _review = Value.ReviewBeforeFinishing;
+        _selected = Value.OpinionModels.Select(c => c.Key).ToHashSet(StringComparer.Ordinal);
+        _reviewer = Value.Reviewer?.Key ?? ""; _search = ""; _problem = null;
+        await OnEditing.InvokeAsync(Revision);
+        await ChatJs.InvokeVoidAsync(JS, "showDialog", _dialog);
+        await OnOpening.InvokeAsync();
+    }
+    private void Toggle(string key, bool enabled) { if (enabled) _selected.Add(key); else _selected.Remove(key); }
+    private Task CloseAsync() => ChatJs.InvokeVoidAsync(JS, "closeDialog", _dialog);
+    private async Task ApplyAsync()
+    {
+        var choices = Choices.ToDictionary(c => c.Key, StringComparer.Ordinal);
+        var next = new TurnAssistanceOptions { RecommendOpinionModels = _recommendOpinions, RecommendReviewer = _recommendReviewer, OpinionCount = _opinionCount, GetOpinionsFirst = _opinions, ReviewBeforeFinishing = _review,
+            OpinionModels = _selected.Select(k => choices.GetValueOrDefault(k) ?? Value.OpinionModels.FirstOrDefault(c => c.Key == k)).Where(c => c is not null).Cast<AssistanceModelChoice>().ToArray(),
+            Reviewer = choices.GetValueOrDefault(_reviewer) ?? (Value.Reviewer?.Key == _reviewer ? Value.Reviewer : null) };
+        _problem = next.Validate(); if (_problem is not null) return;
+        _saving = true;
+        try { await ValueChanged.InvokeAsync(next); await CloseAsync(); }
+        catch (InvalidOperationException ex) { _problem = ex.Message; }
+        catch (Exception) { _problem = "The options could not be saved. Your choices are still here; try again."; }
+        finally { _saving = false; }
+    }
+}

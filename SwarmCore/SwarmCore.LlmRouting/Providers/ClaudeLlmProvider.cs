@@ -21,6 +21,7 @@ public class ClaudeLlmProvider : LlmProviderBase, ILlmModelCatalogProvider
     private readonly ClaudeProviderOptions _options;
     private const string AnthropicApiVersion = "2023-06-01";
     private List<string>? _cachedModels;
+    private IReadOnlyDictionary<string, IReadOnlyList<string>> _catalogEfforts = new Dictionary<string, IReadOnlyList<string>>();
 
     public override string ProviderName => "Claude";
     public override bool SupportsStreaming => true;
@@ -46,7 +47,7 @@ public class ClaudeLlmProvider : LlmProviderBase, ILlmModelCatalogProvider
     public override Task<List<string>> GetAvailableModelsAsync() => DiscoverModelsAsync(false, CancellationToken.None);
 
     public async Task<LlmModelCatalog> GetModelCatalogAsync(CancellationToken cancellationToken = default)
-        => new(await DiscoverModelsAsync(true, cancellationToken).ConfigureAwait(false), "Provider API catalog");
+        => new(await DiscoverModelsAsync(true, cancellationToken).ConfigureAwait(false), "Provider API catalog") { ReasoningEfforts = _catalogEfforts };
 
     private async Task<List<string>> DiscoverModelsAsync(bool strict, CancellationToken ct)
     {
@@ -58,6 +59,7 @@ public class ClaudeLlmProvider : LlmProviderBase, ILlmModelCatalogProvider
             client.DefaultRequestHeaders.Add("anthropic-version", AnthropicApiVersion);
 
             var models = new List<string>();
+            var efforts = new Dictionary<string, IReadOnlyList<string>>(StringComparer.OrdinalIgnoreCase);
             var cursors = new HashSet<string>(StringComparer.Ordinal);
             string? cursor = null;
             do
@@ -67,11 +69,14 @@ public class ClaudeLlmProvider : LlmProviderBase, ILlmModelCatalogProvider
                 var json = await response.Content.ReadAsStringAsync(ct);
                 var page = JsonSerializer.Deserialize<ClaudeModelsResponse>(json, SwarmJsonOptions.ExternalApi);
                 if (page?.Data is null) throw new InvalidDataException("The provider returned an invalid model catalog.");
+                using (var document = JsonDocument.Parse(json))
+                    foreach (var pair in ParseReasoningEfforts(document.RootElement)) efforts[pair.Key] = pair.Value;
                 models.AddRange(page.Data.Select(m => m.Id).OfType<string>().Where(id => !string.IsNullOrWhiteSpace(id)));
                 cursor = page.HasMore ? page.LastId : null;
                 if (page.HasMore && (string.IsNullOrEmpty(cursor) || !cursors.Add(cursor)))
                     throw new InvalidDataException("The provider returned an invalid model catalog cursor.");
             } while (cursor is not null);
+            _catalogEfforts = efforts;
             _cachedModels = models.Distinct(StringComparer.OrdinalIgnoreCase).OrderBy(id => id, StringComparer.OrdinalIgnoreCase).ToList();
             Logger.LogInformation("Claude: fetched {Count} models from API", _cachedModels.Count);
             return _cachedModels;
@@ -84,6 +89,21 @@ public class ClaudeLlmProvider : LlmProviderBase, ILlmModelCatalogProvider
 
         if (strict) throw new InvalidOperationException("The provider model catalog is unavailable. Check the connection and refresh, or enter a custom model ID.");
         return _cachedModels ?? DefaultModels.ToList();
+    }
+
+    internal static IReadOnlyDictionary<string, IReadOnlyList<string>> ParseReasoningEfforts(JsonElement root)
+    {
+        var choices = new Dictionary<string, IReadOnlyList<string>>(StringComparer.OrdinalIgnoreCase);
+        foreach (var model in root.GetProperty("data").EnumerateArray())
+        {
+            if (!model.TryGetProperty("id", out var id) || id.GetString() is not { Length: > 0 } name
+                || !model.TryGetProperty("capabilities", out var capabilities) || capabilities.ValueKind != JsonValueKind.Object
+                || !capabilities.TryGetProperty("effort", out var effort) || effort.ValueKind != JsonValueKind.Object) continue;
+            choices[name] = new[] { "low", "medium", "high", "xhigh", "max" }.Where(level =>
+                effort.TryGetProperty(level, out var entry) && entry.ValueKind == JsonValueKind.Object
+                && entry.TryGetProperty("supported", out var supported) && supported.ValueKind == JsonValueKind.True).ToArray();
+        }
+        return choices;
     }
 
     public override bool SupportsModel(string model)
@@ -532,6 +552,8 @@ public class ClaudeLlmProvider : LlmProviderBase, ILlmModelCatalogProvider
         Dictionary<string, object>? executionSettings)
     {
         if (executionSettings == null) return;
+        var effort = ClaudeEffortSettings.Resolve(request.Model, null, executionSettings);
+        if (effort is not null) request.OutputConfig = new() { ["effort"] = effort };
 
         if (executionSettings.TryGetValue("temperature", out var temp)
             && SupportsTemperature(request.Model))
@@ -716,6 +738,9 @@ public class ClaudeLlmProvider : LlmProviderBase, ILlmModelCatalogProvider
 
 internal class ClaudeCompletionRequest
 {
+    [JsonPropertyName("output_config")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public Dictionary<string, string>? OutputConfig { get; set; }
     [JsonPropertyName("model")]
     public string Model { get; set; } = "";
 

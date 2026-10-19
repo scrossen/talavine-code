@@ -38,17 +38,17 @@ public partial class MainPage : ContentPage
             {
                 var environment = await CoreWebView2Environment.CreateWithOptionsAsync(
                     options.BrowserExecutableFolder, options.UserDataFolder, options.EnvironmentOptions).AsTask();
-                MauiProgram.LogToFile("Custom browser environment ready");
+                DesktopHost.LogToFile("Custom browser environment ready");
                 await win.EnsureCoreWebView2Async(environment).AsTask();
-                MauiProgram.LogToFile("Custom browser controller ready");
+                DesktopHost.LogToFile("Custom browser controller ready");
             }
             blazorWebView.HostPage = "wwwroot/index.html";
             blazorWebView.Handler?.UpdateValue(nameof(BlazorWebView.HostPage));
-            MauiProgram.LogToFile("Blazor host page assigned");
+            DesktopHost.LogToFile("Blazor host page assigned");
         }
         catch (Exception exception)
         {
-            MauiProgram.LogToFile($"Browser initialization failed: {exception}");
+            DesktopHost.LogToFile($"Browser initialization failed: {exception}");
             Content = new Label { Text = "Talavine Code could not start its browser: " + exception.Message,
                 Margin = new Thickness(24), LineBreakMode = LineBreakMode.WordWrap };
         }
@@ -64,14 +64,14 @@ public partial class MainPage : ContentPage
         if (!string.IsNullOrWhiteSpace(browserFolder) && File.Exists(Path.Combine(browserFolder, "msedgewebview2.exe")))
         {
             e.BrowserExecutableFolder = browserFolder;
-            MauiProgram.LogToFile($"Using WebView2 runtime: {browserFolder}");
+            DesktopHost.LogToFile($"Using WebView2 runtime: {browserFolder}");
         }
         var additionalArgs = "--enable-features=msSpellCheck";
         var cdpPort = Environment.GetEnvironmentVariable("SWARMCODE_CDP_PORT");
         if (!string.IsNullOrWhiteSpace(cdpPort))
         {
             additionalArgs += $" --remote-debugging-port={cdpPort} --remote-allow-origins=*";
-            MauiProgram.LogToFile($"CDP debugging enabled on port {cdpPort}");
+            DesktopHost.LogToFile($"CDP debugging enabled on port {cdpPort}");
         }
 
         e.EnvironmentOptions = new CoreWebView2EnvironmentOptions { AdditionalBrowserArguments = additionalArgs };

@@ -57,7 +57,7 @@ public sealed class IdeIntegration : IAsyncDisposable
         catch (Exception ex)
         {
             _logger.LogWarning(ex, "Editor bridge did not start");
-            MauiProgram.LogToFile($"Editor bridge did not start: {ex.Message}");
+            DesktopHost.LogToFile($"Editor bridge did not start: {ex.Message}");
         }
     }
 
@@ -104,7 +104,7 @@ public sealed class IdeIntegration : IAsyncDisposable
         return new IdeDeliveryResult(true, $"Added to {(string.IsNullOrWhiteSpace(title) ? "the session" : $"\"{title}\"")} in Talavine Code.", chosen.Id);
     }
 
-    private static Task BringToFrontAsync() => MainThread.InvokeOnMainThreadAsync(() =>
+    private static Task BringToFrontAsync() => DesktopPlatform.InvokeAsync(() =>
     {
         try
         {
@@ -116,16 +116,18 @@ public sealed class IdeIntegration : IAsyncDisposable
                 if (NativeMethods.IsIconic(handle)) NativeMethods.ShowWindow(handle, 9 /* SW_RESTORE */);
                 NativeMethods.SetForegroundWindow(handle);
             }
+#elif MACOS
+            DesktopPlatform.BringToFront();
 #endif
         }
         catch (Exception ex)
         {
-            MauiProgram.LogToFile($"Bring to front failed: {ex.Message}");
+            DesktopHost.LogToFile($"Bring to front failed: {ex.Message}");
         }
     });
 
     // Windows: the shell resolves the vscode: protocol and file associations (throws when none is registered, so
-    // the launcher moves on). Mac Catalyst: the platform launcher, on the main thread.
+    // the launcher moves on). macOS uses NSWorkspace on the main thread.
 #if WINDOWS
     private static Task<bool> OpenUriAsync(Uri uri) => Task.FromResult(ShellOpen(uri.AbsoluteUri));
 
@@ -138,10 +140,10 @@ public sealed class IdeIntegration : IAsyncDisposable
     }
 #else
     private static Task<bool> OpenUriAsync(Uri uri)
-        => MainThread.InvokeOnMainThreadAsync(() => Launcher.Default.TryOpenAsync(uri));
+        => DesktopPlatform.OpenUriAsync(uri);
 
     private static Task<bool> OpenDefaultAsync(string path)
-        => MainThread.InvokeOnMainThreadAsync(() => Launcher.Default.OpenAsync(new OpenFileRequest(Path.GetFileName(path), new ReadOnlyFile(path))));
+        => DesktopPlatform.OpenFileAsync(path);
 #endif
 
     public async ValueTask DisposeAsync()

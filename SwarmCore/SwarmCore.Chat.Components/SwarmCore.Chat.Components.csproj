@@ -17,5 +17,6 @@
   <ItemGroup>
     <ProjectReference Include="..\SwarmCore.Chat\SwarmCore.Chat.csproj" />
     <ProjectReference Include="..\SwarmCore.Agent\SwarmCore.Agent.csproj" />
+    <ProjectReference Include="..\SwarmCore.HarnessLearning\SwarmCore.HarnessLearning.csproj" />
   </ItemGroup>
 </Project>

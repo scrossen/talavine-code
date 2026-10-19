@@ -58,7 +58,7 @@ public partial class History
 
     private IReadOnlyList<ProjectOption> Projects => _documents
         .GroupBy(d => d.Project, StringComparer.OrdinalIgnoreCase)
-        .Select(g => new ProjectOption(g.Key, g.First().ProjectName))
+        .Select(g => new ProjectOption(g.Key, State.ProjectName(g.Key)))
         .OrderBy(p => p.Name, StringComparer.OrdinalIgnoreCase)
         .ToList();
 
@@ -120,7 +120,7 @@ public partial class History
                 catch (Exception ex)
                 {
                     _error = "Could not read the saved sessions. " + ex.Message;
-                    MauiProgram.LogToFile($"History refresh failed: {ex}");
+                    DesktopHost.LogToFile($"History refresh failed: {ex}");
                 }
                 _loading = false;
                 ApplySearch();
@@ -130,7 +130,7 @@ public partial class History
         }
         catch (Exception ex)
         {
-            MauiProgram.LogToFile($"History refresh failed: {ex.Message}");
+            DesktopHost.LogToFile($"History refresh failed: {ex.Message}");
             Interlocked.Exchange(ref _refreshState, 0);
         }
     }
@@ -179,7 +179,7 @@ public partial class History
                 return _results
                     .GroupBy(r => r.Session.Project, StringComparer.OrdinalIgnoreCase)
                     .OrderByDescending(g => g.Max(r => r.Session.LastActivityUtc))
-                    .Select(g => new Group(g.First().Session.ProjectName, g.OrderByDescending(r => r.Session.LastActivityUtc).ToList()))
+                    .Select(g => new Group(State.ProjectName(g.Key), g.OrderByDescending(r => r.Session.LastActivityUtc).ToList()))
                     .ToList();
             }
             var today = DateTime.Now;
@@ -273,7 +273,7 @@ public partial class History
         catch (Exception ex)
         {
             _summaryError = "The summary could not be produced. " + ex.Message;
-            MauiProgram.LogToFile($"History summary failed: {ex}");
+            DesktopHost.LogToFile($"History summary failed: {ex}");
         }
         finally
         {

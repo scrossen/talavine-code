@@ -54,6 +54,8 @@ public sealed class FileConversationJobStore(SwarmCodeDataPaths paths)
 public sealed record ConversationJob
 {
     public string State { get; init; } = "Idle";
+    public SwarmCore.Abstractions.Collaboration.TurnAssistanceOptions? Assistance { get; init; }
+    public bool OpinionsObtained { get; init; }
     public string? ActiveLane { get; init; }
     public string? ActiveModel { get; init; }
     public DateTime? StartedUtc { get; init; }

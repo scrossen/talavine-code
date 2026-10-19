@@ -1,10 +1,131 @@
 {
   "schemaVersion": 1,
   "packId": "talavine.claude-code",
-  "version": "2026.09.03.1",
+  "version": "2026.10.17.1",
   "providerName": "ClaudeCode",
   "modelPrefix": "claude-code",
   "executionDialect": "claude-code-print-v1",
+  "modelReasoningEfforts": {
+    "claude-opus-4-5": [
+      "low",
+      "medium",
+      "high"
+    ],
+    "claude-opus-4-6": [
+      "low",
+      "medium",
+      "high",
+      "max"
+    ],
+    "claude-opus-4-7": [
+      "low",
+      "medium",
+      "high",
+      "xhigh",
+      "max"
+    ],
+    "claude-opus-4-8": [
+      "low",
+      "medium",
+      "high",
+      "xhigh",
+      "max"
+    ],
+    "claude-opus-5": [
+      "low",
+      "medium",
+      "high",
+      "xhigh",
+      "max"
+    ],
+    "claude-opus-5-5": [
+      "low",
+      "medium",
+      "high",
+      "xhigh",
+      "max"
+    ],
+    "claude-sonnet-4-6": [
+      "low",
+      "medium",
+      "high",
+      "max"
+    ],
+    "claude-sonnet-5": [
+      "low",
+      "medium",
+      "high",
+      "xhigh",
+      "max"
+    ],
+    "claude-sonnet-5-5": [
+      "low",
+      "medium",
+      "high",
+      "xhigh",
+      "max"
+    ],
+    "claude-haiku-5-5": [
+      "low",
+      "medium",
+      "high",
+      "xhigh",
+      "max"
+    ],
+    "claude-fable-5": [
+      "low",
+      "medium",
+      "high",
+      "xhigh",
+      "max"
+    ],
+    "claude-fable-5-1": [
+      "low",
+      "medium",
+      "high",
+      "xhigh",
+      "max"
+    ],
+    "claude-mythos-5": [
+      "low",
+      "medium",
+      "high",
+      "xhigh",
+      "max"
+    ],
+    "claude-mythos-5-1": [
+      "low",
+      "medium",
+      "high",
+      "xhigh",
+      "max"
+    ],
+    "claude-mythos-preview": [
+      "low",
+      "medium",
+      "high",
+      "max"
+    ],
+    "sonnet": [
+      "low",
+      "medium",
+      "high",
+      "max"
+    ],
+    "opus": [
+      "low",
+      "medium",
+      "high",
+      "max"
+    ],
+    "fable": [
+      "low",
+      "medium",
+      "high",
+      "xhigh",
+      "max"
+    ]
+  },
   "modelDefaults": { "frontier": "claude-code:opus", "balanced": "claude-code:default", "economy": "claude-code:haiku" },
   "subscriptionCli": {
     "automaticRoutingEnabled": true,
@@ -37,7 +158,7 @@
       "claude-code:opus": 10,
       "claude-code:claude-fable-5": 25
     },
-    "reasoningEfforts": [],
+    "reasoningEfforts": ["low", "medium", "high", "xhigh", "max"],
     "discoveryReasoningEfforts": [],
     "helpArguments": ["--help"],
     "modelConfigPaths": [],

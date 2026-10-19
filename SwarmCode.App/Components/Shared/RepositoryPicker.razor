@@ -4,18 +4,25 @@
 @inject NavigationManager Nav
 
 <div class="sc-repo">
-    <div class="sc-repo__current" title="@(State.RepositoryRoot ?? "No repository open")">
+    <div class="sc-repo__current" title="@(State.HasProject ? State.RepositoryRoot : "No project selected")">
         @if (State.IsOpeningWorkspace)
         {
             <span class="sc-spinner" aria-label="Opening repository"></span>
         }
-        <span class="sc-repo__name @(State.RepositoryRoot is null ? "sc-muted" : "")">
-            @(State.RepositoryRoot is { } root ? AppNavigation.FolderName(root) : "No repository")
+        <span class="sc-repo__name @(!State.HasProject ? "sc-muted" : "")">
+            @(State.ProjectName(State.RepositoryRoot))
         </span>
     </div>
     <div class="sc-repo__actions">
-        <button type="button" class="sc-btn sc-btn--sm sc-grow" @onclick="OpenAsync">Open…</button>
+        <button type="button" class="sc-btn sc-btn--sm sc-grow" @onclick="OpenAsync" disabled="@State.IsOpeningWorkspace">Open…</button>
         <button type="button" class="sc-btn sc-btn--sm" @onclick="ToggleRecentAsync" aria-expanded="@_showRecent">Recent ▾</button>
+    </div>
+    <div class="sc-repo__actions">
+        <button type="button" class="sc-btn sc-btn--sm sc-grow" disabled="@State.IsOpeningWorkspace" @onclick='() => Nav.NavigateTo("/new-project")'>New Project…</button>
+        @if (State.HasProject)
+        {
+            <button type="button" class="sc-btn sc-btn--sm" disabled="@State.IsOpeningWorkspace" @onclick="CloseAsync">Close Project</button>
+        }
     </div>
     @if (_showRecent)
     {
@@ -43,6 +50,13 @@
     protected override void OnInitialized() => State.Changed += OnChanged;
 
     private void OnChanged() => _ = InvokeAsync(StateHasChanged);
+
+    private async Task CloseAsync()
+    {
+        _showRecent = false;
+        await State.CloseProjectAsync();
+        Nav.NavigateTo("/");
+    }
 
     private async Task OpenAsync()
     {

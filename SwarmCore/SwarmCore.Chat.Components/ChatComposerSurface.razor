@@ -1,0 +1,13 @@
+<div class="chat-composer-surface @Class">
+    <div class="chat-composer-surface__editor">@Editor</div>
+    <div class="chat-composer-surface__bar">
+        <div class="chat-composer-surface__toolbar">@Toolbar</div>
+        <div class="chat-composer-surface__actions">@Actions</div>
+    </div>
+</div>
+@code {
+    [Parameter] public string? Class { get; set; }
+    [Parameter] public RenderFragment? Editor { get; set; }
+    [Parameter] public RenderFragment? Toolbar { get; set; }
+    [Parameter] public RenderFragment? Actions { get; set; }
+}

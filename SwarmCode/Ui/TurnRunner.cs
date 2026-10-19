@@ -47,6 +47,7 @@ public sealed class TurnRunner
 
     /// <summary>True after a plan-mode turn delivered a plan: <c>/approve</c> implements it.</summary>
     public bool PlanAwaitingApproval { get; private set; }
+    public void ClearPlanApproval() => PlanAwaitingApproval = false;
 
     /// <summary>Exact model id for the lane (<c>--model</c>, <c>/model</c>); null uses the lane's configured model.</summary>
     public string? ModelOverride { get; set; }

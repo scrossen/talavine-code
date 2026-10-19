@@ -6,12 +6,12 @@ using SwarmCode.App.Services;
 using SwarmCode.Hosting;
 using SwarmCore.Chat.Components;
 using SwarmCore.Coding.Routing;
+using SwarmCore.Coding.Extensions;
 
 namespace SwarmCode.App.Components.Pages;
 
 public partial class Session
 {
-    [Inject] private UserBugIntake BugIntake { get; set; } = default!;
 
     /// <summary>True while a turn runs but nothing is streaming or executing yet, so the page shows a working hint.</summary>
     private static bool ShowWorkingIndicator(IReadOnlyList<TranscriptEntry> entries)
@@ -29,11 +29,13 @@ public partial class Session
     internal static readonly IReadOnlyList<SlashCommand> BuiltInSlashCommands =
     [
         new("help", "List the available commands"),
-        new("bug", "Save a local bug report for self-improvement: /bug <description>"),
+        new(GreetingCommand.Name, GreetingCommand.Description),
+        new("bug", "Record a Talavine Code defect without sending a model prompt: /bug <description>"),
         new("lane", "Switch lane: /lane <name>"),
         new("lanes", "List configured lanes"),
         new("auto", "Reassess model selection for the next message"),
         new("new", "Start a new session"),
+        new("fork", "Start an independent conversation with this chat's saved history"),
         new("clear", "Clear the visible transcript"),
         new("plan", "Toggle plan first: investigate read-only and propose a plan"),
         new("compare", "Send one prompt to two or more models you pick; they review each other and a judge settles disagreements: /compare [prompt]"),
@@ -77,7 +79,7 @@ public partial class Session
         catch (Exception ex)
         {
             _customCommands = [];
-            MauiProgram.LogToFile($"Could not read custom commands: {ex.Message}");
+            DesktopHost.LogToFile($"Could not read custom commands: {ex.Message}");
         }
         _slashCommands = BuiltInSlashCommands.Concat(_customCommands.Select(c => new SlashCommand(c.Name, c.Description))).ToList();
     }
@@ -111,6 +113,7 @@ public partial class Session
     private bool _attachmentsBusy;
     private string _model = "", _sendMode = "queue";
     private IReadOnlyList<string> _models = [];
+    private IReadOnlyDictionary<string, IReadOnlyList<string>> _catalogEfforts = new Dictionary<string, IReadOnlyList<string>>();
     private bool _modelsLoading, _showArtifacts;
     private string? _modelError, _artifactPath;
     private int _modelGeneration;
@@ -128,6 +131,7 @@ public partial class Session
 
     private ChatScrollRegion? _scroll;
     private ChatComposer? _composer;
+    private Components.Chat.AttachmentIntake? _attachmentIntake;
 
     [Parameter] public string SessionId { get; set; } = "";
 
@@ -147,6 +151,7 @@ public partial class Session
         }
     }
     private IEnumerable<string> ModelChoices => _models.Prepend(_model).Where(m => m.Length > 0).Distinct(StringComparer.Ordinal);
+    private IReadOnlyList<SwarmCore.Abstractions.LlmRouting.LlmCatalogModel> _modelDetails = [];
 
     protected override void OnInitialized()
     {
@@ -179,6 +184,8 @@ public partial class Session
 
             _session = await App.Sessions.GetAsync(SessionId);
             _parentTitle = _session?.ParentSessionId is { } parentId ? (await App.Sessions.GetAsync(parentId))?.Title : null;
+            if (_session is not null && App.Paths.IsChatWorkspace(_session.RepositoryRoot) && !App.HasProject && App.Workspace is null)
+                await App.OpenWorkspaceAsync(_session.RepositoryRoot);
             var workspace = App.Workspace;
             _attachedRoot = workspace?.RepositoryRoot;
             if (generation != _attachGeneration) return;
@@ -351,20 +358,35 @@ public partial class Session
         var text = (raw ?? "").Trim();
         if (_attachmentsBusy || (text.Length == 0 && _attachments.Count == 0)) return;
         var attachments = _attachments.ToArray();
+
+        // /bug is explicit local intake, not a coding turn. It therefore works before a session runner is available.
         if (UserBugIntake.IsCommand(text))
         {
-            if (attachments.Length > 0) { AddNote("warn", "Remove attachments before filing a bug. Your draft was kept."); return; }
-            if (string.IsNullOrWhiteSpace(text[4..])) { AddNote("warn", "Use /bug <description>. Your draft was kept."); return; }
-            var admittedDraft = _draft;
-            try
+            if (attachments.Length > 0)
             {
-                var item = await Task.Run(() => BugIntake.SubmitAsync(App.SelfImprovementReporter, text, SessionId));
-                if (_draft == admittedDraft) _draft = "";
-                AddNote("info", "Bug report saved: " + item.Id, "Current stage: " + item.Stage + ". Saved locally without a coding turn.");
+                AddNote("warn", "Remove attachments before filing a bug report. Your draft was kept.");
+                return;
             }
-            catch (Exception ex) { AddNote("warn", "Bug report was not saved. Your draft was kept.", ex.Message); }
+
+            var draftAtAdmission = _draft;
+            var result = await App.UserBugIntake.SubmitAsync(App.SelfImprovementReporter, text, SessionId);
+            if (result.Outcome == UserBugIntakeOutcome.Saved)
+            {
+                // A user may have started a newer draft while the durable save was in flight.
+                // Keep that newer text, but always acknowledge the report that was successfully saved.
+                if (UserBugIntake.ShouldClearDraft(draftAtAdmission, _draft))
+                    _draft = "";
+
+                AddNote("info", "Bug report saved: " + result.Item!.Id,
+                    "Current stage: " + result.Item.Stage + ". It was saved locally without starting a model turn.");
+            }
+            else if (result.Outcome != UserBugIntakeOutcome.NotHandled)
+            {
+                AddNote("warn", result.Message ?? "Bug report was not saved. Your draft was kept.");
+            }
             return;
         }
+
         if (runner is null) return;
         if (text.Length == 0) text = "Inspect the attached files.";
         _draft = "";
@@ -506,6 +528,7 @@ public partial class Session
             // A path such as /usr/bin/env is a message, not a command.
             if (space < 0 && !command.Contains('/'))
             {
+                _draft = text;
                 AddNote("warn", $"Unknown command /{command}. Type /help for the list.");
                 // A command that does not exist (and is not a typo of one) is something the person wanted SwarmCode to have.
                 SwarmCode.Hosting.Improvement.SelfImprovementCapture.UnknownCommand(App.SelfImprovementReporter, text,
@@ -517,6 +540,9 @@ public partial class Session
 
         switch (command)
         {
+            case GreetingCommand.Name:
+                AddNote("info", GreetingCommand.Message);
+                break;
             case "help":
                 await LoadCustomCommandsAsync(App.Workspace?.RepositoryRoot);
                 AddNote("info", "Commands", string.Join("\n", BuiltInSlashCommands.Select(c => $"/{c.Name} - {c.Description}"))
@@ -543,6 +569,9 @@ public partial class Session
                 break;
             case "new":
                 await NewSessionAsync();
+                break;
+            case "fork":
+                await ForkSessionAsync();
                 break;
             case "clear":
                 _runner?.ClearTranscript();
@@ -751,7 +780,7 @@ public partial class Session
         if (lane is null || host is null) return;
         var generation = ++_modelGeneration;
         _model = _session?.ModelChoices.GetValueOrDefault(lane.Name) ?? lane.Model;
-        _models = [lane.Model]; _modelError = null; _modelSource = null; _modelsLoading = true;
+        _models = [lane.Model]; _modelDetails = []; _catalogEfforts = new Dictionary<string, IReadOnlyList<string>>(); _modelError = null; _modelSource = null; _modelsLoading = true;
         StateHasChanged();
         try
         {
@@ -760,7 +789,7 @@ public partial class Session
                 using var scope = host.Services.CreateScope();
                 return await scope.ServiceProvider.GetRequiredService<CodingModelCatalog>().GetCatalogAsync(lane);
             });
-            if (!_disposed && generation == _modelGeneration) { _models = models.Models; _modelSource = models.Source; }
+            if (!_disposed && generation == _modelGeneration) { _models = models.Models; _catalogEfforts = models.ReasoningEfforts; _modelDetails = models.Details; _modelSource = models.Source; }
         }
         catch (Exception ex) { if (!_disposed && generation == _modelGeneration) _modelError = ex is OperationCanceledException ? "Model lookup timed out. Refresh to retry or enter a custom model ID." : ex.Message; }
         finally { if (!_disposed && generation == _modelGeneration) _modelsLoading = false; }
@@ -791,6 +820,21 @@ public partial class Session
         {
             AddNote("error", "Could not create a session.", ex.Message);
         }
+    }
+
+    private bool _forking;
+    private async Task ForkSessionAsync()
+    {
+        if (_runner is null || _forking) return;
+        _forking = true;
+        try
+        {
+            var fork = await _runner.ForkAsync();
+            App.Preferences.Update(p => p.LastSessionId = fork.Id);
+            Nav.NavigateTo(AppNavigation.SessionUrl(fork.Id));
+        }
+        catch (Exception ex) { AddNote("error", "Could not fork the conversation.", ex.Message); }
+        finally { _forking = false; }
     }
 
     private void ToggleChanges()
@@ -862,6 +906,6 @@ public partial class Session
             await Task.Run(() => App.Sessions.SetTemporaryAsync(SessionId, temporary));
             _session = await App.Sessions.GetAsync(SessionId) ?? _session;
         }
-        catch (Exception ex) { MauiProgram.LogToFile($"Could not change the temporary flag: {ex.Message}"); }
+        catch (Exception ex) { DesktopHost.LogToFile($"Could not change the temporary flag: {ex.Message}"); }
     }
 }

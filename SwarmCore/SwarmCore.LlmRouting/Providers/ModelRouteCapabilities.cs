@@ -19,6 +19,19 @@ public static class ModelRouteCapabilities
 
     public static IReadOnlyList<string> ReasoningEfforts(string provider, string model)
     {
+        var selection = ModelReasoningSelection.Split(model);
+        if (selection.Effort is { } selectedEffort)
+        {
+            var supported = ReasoningEfforts(provider, selection.Model);
+            return supported.Contains(selectedEffort, StringComparer.Ordinal) ? [selectedEffort] : [];
+        }
+        model = selection.Model;
+        if (ProviderPackCatalog.TryGet(provider, out var metadata))
+        {
+            var identity = ModelScoutModelRequests.ModelIdentity(provider, model);
+            var choices = metadata!.ModelReasoningEfforts.FirstOrDefault(p => p.Key.Equals(identity, StringComparison.OrdinalIgnoreCase)).Value;
+            if (choices is not null) return choices;
+        }
         if (OpenAIResponsesContract.IsSelected(provider, model)) return ["low", "medium", "high", "xhigh", "max"];
         if (ProviderPackCatalog.TryGet(provider, out var pack) && pack!.SubscriptionCli is { } cli
             && pack.ExecutionDialect == "codex-cli-exec-v1")

@@ -179,7 +179,8 @@ public sealed class CodingSkillTests : IDisposable
 
 public sealed class CodingHookTests : IDisposable
 {
-    private readonly string _root = Path.Combine(Path.GetTempPath(), "swarmcore-hooks-" + Guid.NewGuid().ToString("N"));
+    private readonly string _root = SwarmCore.Missions.SandboxPathResolver.ResolvePhysicalPath(
+        Path.Combine(Path.GetTempPath(), "swarmcore-hooks-" + Guid.NewGuid().ToString("N")));
     private string Repo => Path.Combine(_root, "repo");
 
     public CodingHookTests() => Directory.CreateDirectory(Repo);
@@ -345,6 +346,33 @@ public sealed class CodingHookTests : IDisposable
     private CodingHooks Hooks(ICodingHookApprovalStore approvals, CodingOptions? options = null)
         => new(new CodingHookSource(Options.Create(options ?? new CodingOptions()), approvals), new CodingHookRunner(),
             new SwarmCore.Missions.SandboxPathResolver(Options.Create(new SwarmCore.Missions.SandboxOptions { Root = Repo })));
+
+    [Fact]
+    public async Task Repository_hook_approval_uses_physical_identity_and_retargeting_needs_new_approval()
+    {
+        WriteRepoHooks(Win ? "exit /b 2" : "exit 2");
+        var alias = Path.Combine(_root, "repo-alias");
+        Directory.CreateSymbolicLink(alias, Repo);
+        var physical = SwarmCore.Missions.SandboxPathResolver.ResolvePhysicalPath(Repo);
+        var approvals = new InMemoryCodingHookApprovalStore();
+        var source = new CodingHookSource(Options.Create(new CodingOptions()), approvals);
+        var inspection = (await source.InspectRepositoryAsync(alias))!;
+
+        await approvals.ApproveAsync(alias, inspection.Sha256!);
+
+        Assert.True((await source.InspectRepositoryAsync(physical))!.Approved);
+        var other = Path.Combine(_root, "other");
+        Directory.CreateDirectory(Path.Combine(other, ".swarmcode"));
+        File.Copy(Path.Combine(Repo, ".swarmcode", "hooks.json"), Path.Combine(other, ".swarmcode", "hooks.json"));
+        Directory.Delete(alias);
+        Directory.CreateSymbolicLink(alias, other);
+
+        var retargeted = (await source.InspectRepositoryAsync(alias))!;
+        Assert.Equal(inspection.Sha256, retargeted.Sha256);
+        Assert.True(retargeted.NeedsApproval);
+        Assert.False(retargeted.Approved);
+        Assert.True((await source.InspectRepositoryAsync(physical))!.Approved);
+    }
 
     [Fact]
     public async Task RepositoryHooks_NeverRunUnapproved_RunAfterApproval_AndNeedReapprovalWhenChanged()

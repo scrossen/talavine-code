@@ -13,7 +13,7 @@ public class BackgroundShellHostingTests : TempDirTest
     [Fact]
     public async Task Workspace_offers_background_shells_to_api_lanes_and_the_native_bridge()
     {
-        var repo = Path.Combine(Tmp, "repo");
+        var repo = SwarmCore.Missions.SandboxPathResolver.ResolvePhysicalPath(Path.Combine(Tmp, "repo"));
         Directory.CreateDirectory(repo);
         // Agents off: the bridge endpoint must still be handed to native lanes because host tools are served.
         var workspace = await Task.Run(() => WorkspaceHost.CreateAsync(new SwarmCodeHostOptions

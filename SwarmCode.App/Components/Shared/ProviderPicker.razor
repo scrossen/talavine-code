@@ -1,0 +1,50 @@
+@using Microsoft.AspNetCore.Components.Web
+@using Microsoft.JSInterop
+
+<div class="provider-picker @(OpenAbove ? "provider-picker--above" : "")" @onkeydown="KeyDown" @onkeydown:stopPropagation>
+    <button type="button" class="sc-select provider-picker__toggle" aria-label="@Label" aria-expanded="@(_open ? "true" : "false")"
+            aria-controls="@_id" @ref="_toggle" @onclick="Toggle">@SelectedLabel <span aria-hidden="true">▾</span></button>
+    @if (_open)
+    {
+        <div class="provider-picker__menu" id="@_id" role="group" aria-label="Providers">
+            @if (IncludeAutomatic)
+            {
+                <button type="button" aria-pressed="@(Value.Length == 0 ? "true" : "false")" @onclick='() => SelectAsync("")'>@AutomaticLabel</button>
+            }
+            @foreach (var lane in CodingLaneSelections.ForPicker(Lanes, Value))
+            {
+                <button type="button" aria-pressed="@(lane.Name == Value ? "true" : "false")" @onclick="() => SelectAsync(lane.Name)">@lane.SelectionLabel</button>
+            }
+        </div>
+    }
+</div>
+
+@code {
+    [Parameter] public string Value { get; set; } = "";
+    [Parameter] public EventCallback<string> ValueChanged { get; set; }
+    [Parameter] public IReadOnlyList<CodingLane> Lanes { get; set; } = [];
+    [Parameter] public string Label { get; set; } = "Provider";
+    [Parameter] public bool IncludeAutomatic { get; set; }
+    [Parameter] public string AutomaticLabel { get; set; } = "Automatic · use my defaults";
+    [Parameter] public bool OpenAbove { get; set; }
+    private readonly string _id = "providers-" + Guid.NewGuid().ToString("N");
+    private bool _open;
+    private ElementReference _toggle;
+    private bool _focusToggle;
+    private string SelectedLabel => Lanes.FirstOrDefault(l => l.Name == Value)?.SelectionLabel
+        ?? (IncludeAutomatic && Value.Length == 0 ? AutomaticLabel : Value.Length > 0 ? Value : "Choose a provider");
+    private void Toggle() { _open = !_open; _focusToggle = true; }
+    private void Close() { _open = false; _focusToggle = true; }
+    private void KeyDown(KeyboardEventArgs e) { if (e.Key == "Escape" && _open) Close(); }
+    private async Task SelectAsync(string value) { Close(); await ValueChanged.InvokeAsync(value); }
+    protected override async Task OnAfterRenderAsync(bool firstRender)
+    {
+        if (!_focusToggle) return;
+        _focusToggle = false;
+        // An accessibility press need not focus an HTML button. Claim focus so
+        // Escape stays in this control, and restore it when a menu item disappears.
+        try { await _toggle.FocusAsync(preventScroll: true); }
+        catch (JSDisconnectedException) { /* the host is navigating or closing */ }
+        catch (TaskCanceledException) { /* renderer shutdown */ }
+    }
+}

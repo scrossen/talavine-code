@@ -1,0 +1,110 @@
+@using SwarmCore.Agent.Learning
+@using SwarmCore.HarnessLearning
+
+<div class="ai-overview" data-testid="ai-overview">
+    @if (Activity is not null)
+    {
+        <section class="ai-overview__section" aria-label="Current activity">@Activity</section>
+    }
+    <section class="ai-overview__section" aria-labelledby="ai-usage-title">
+        <div class="ai-overview__heading"><h2 id="ai-usage-title">Where the tokens go</h2><span>Recorded calls · @Days days · UTC</span></div>
+        <p class="ai-overview__copy">Model usage recorded by this host. Native and subscription sessions may report additional usage in their own sessions; those counters are not added here.</p>
+        @if (UsageError is not null)
+        {
+            <p class="ai-overview__notice" role="alert">@UsageError</p>
+        }
+        else if (Usage is not { } usage)
+        {
+            <p class="ai-overview__copy">Usage history is not connected yet.</p>
+        }
+        else
+        {
+            <div class="ai-overview__metrics">
+                <div class="ai-overview__metric ai-overview__metric--lead"><span>Tracked tokens</span><strong>@usage.Tokens.ToString("N0")</strong><small>@usage.InputTokens.ToString("N0") input / @usage.OutputTokens.ToString("N0") output</small></div>
+                <div class="ai-overview__metric"><span>Recorded calls</span><strong>@usage.Calls.ToString("N0")</strong><small>@usage.FailedCalls.ToString("N0") reported failures</small></div>
+                <div class="ai-overview__metric"><span>Recorded cost</span><strong>@(usage.RecordedCost is { } cost ? $"${cost:N4}" : "Not reported")</strong><small>Actual or estimated USD; excludes unreported charges</small></div>
+            </div>
+            @if (usage.CallsWithoutCost > 0 || usage.AtReadLimit)
+            {
+                <p class="ai-overview__notice">@usage.CallsWithoutCost.ToString("N0") calls have no recorded price. Subscription fees are not inferred.@(usage.AtReadLimit ? " This view reached its 5,000-call read limit and may omit older calls." : "")</p>
+            }
+            @if (usage.Calls == 0)
+            {
+                <p class="ai-overview__empty">No calls were recorded in this period. This does not prove no model work occurred.</p>
+            }
+            else
+            {
+                <div class="ai-overview__columns">
+                    <div class="ai-overview__card">
+                        <h3>Daily token use</h3>
+                        @foreach (var day in usage.Days)
+                        {
+                            <div class="ai-overview__bar-row"><span>@day.Date.ToString("MMM d")</span><progress max="@PeakTokens" value="@day.Tokens" aria-label="@($"{day.Date:MMM d}: {day.Tokens:N0} recorded tokens")"></progress><span>@day.Tokens.ToString("N0")</span></div>
+                        }
+                    </div>
+                    <div class="ai-overview__card">
+                        <h3>By model</h3>
+                        @foreach (var model in usage.Models.Take(12))
+                        {
+                            <div class="ai-overview__model"><div><strong>@model.Model</strong><small>@model.Provider · @model.Calls.ToString("N0") calls</small></div><span>@((model.InputTokens + model.OutputTokens).ToString("N0")) tokens</span></div>
+                        }
+                        @if (usage.Models.Count > 12) { <p class="ai-overview__copy">Showing the 12 models with the most recorded tokens, out of @usage.Models.Count.</p> }
+                    </div>
+                </div>
+            }
+        }
+    </section>
+
+    <section class="ai-overview__section" aria-labelledby="ai-learning-title">
+        <div class="ai-overview__heading"><h2 id="ai-learning-title">Harness learning / RSI</h2><span>Retained experiment evidence</span></div>
+        <p class="ai-overview__copy">Compare harness changes against a baseline using independent checks. Automatic learning above records its own progress and retained preparation strategy. Other experiment recommendations do not establish production activation.</p>
+        @if (ReportsError is not null)
+        {
+            <p class="ai-overview__notice" role="alert">@ReportsError</p>
+        }
+        else if (Experiments.Count == 0)
+        {
+            <div class="ai-overview__empty"><strong>No experiment evidence in this profile yet.</strong><p>Import a saved harness report to inspect its checks, token use and selection decision. Importing evidence does not change how the agent runs.</p></div>
+        }
+        else
+        {
+            <div class="ai-overview__metrics">
+                <div class="ai-overview__metric"><span>Saved experiments</span><strong>@Experiments.Count</strong><small>@Experiments.Sum(e => e.Trials).ToString("N0") recorded trials</small></div>
+                <div class="ai-overview__metric"><span>Experiment tokens</span><strong>@Experiments.Sum(e => e.ReportedTokens).ToString("N0")</strong><small>@Experiments.Sum(e => e.UnknownUsageTrials) trials with unknown usage; separate from host totals</small></div>
+                <div class="ai-overview__metric"><span>Recommendations</span><strong>@Experiments.Count(e => e.HasRecommendation)</strong><small>Activation is not established by a recommendation</small></div>
+            </div>
+            <label class="ai-overview__filter">Workload <select @bind="_workload"><option value="">All workloads</option>@foreach (var workload in Experiments.Select(e => e.Workload).Distinct().Order()) { <option value="@workload">@workload</option> }</select></label>
+            @foreach (var experiment in Experiments.Where(e => _workload.Length == 0 || e.Workload == _workload))
+            {
+                <details class="ai-overview__experiment" @key="experiment.Id">
+                    <summary><span><strong>@experiment.Workload</strong><small>@experiment.StartedAt.ToLocalTime().ToString("g")</small></span><span class="ai-overview__badge">@experiment.Status</span><span>@experiment.ReportedTokens.ToString("N0") tokens</span></summary>
+                    <div class="ai-overview__experiment-body">
+                        <p class="ai-overview__decision">@experiment.Decision</p>
+                        <div class="ai-overview__table-wrap"><table><caption>Verified scores and reported usage by revision</caption><thead><tr><th>Revision</th><th>Trials</th><th>Mean score</th><th>Tokens</th></tr></thead><tbody>
+                            @foreach (var revision in experiment.Revisions)
+                            {
+                                <tr><th>@revision.RevisionId</th><td>@revision.Trials</td><td>@(revision.Trials == 0 ? "Not evaluated" : revision.Score.ToString("P1"))</td><td>@revision.ReportedTokens.ToString("N0") @(revision.UnknownUsageTrials > 0 ? $"+ {revision.UnknownUsageTrials} unknown" : "")</td></tr>
+                            }
+                        </tbody></table></div>
+                        @foreach (var comparison in experiment.Comparisons)
+                        {
+                            <p class="ai-overview__copy">@comparison.RevisionId: @HarnessExperimentOverview.Explain(comparison.Reason) Development gain @comparison.DevelopmentGain.ToString("P1") (floor @comparison.DevelopmentNoiseFloor.ToString("P1")); held-out gain @comparison.HeldOutGain.ToString("P1") (floor @comparison.HeldOutNoiseFloor.ToString("P1")).</p>
+                        }
+                        <small class="ai-overview__copy">Report @experiment.Id.ToString("N")</small>
+                    </div>
+                </details>
+            }
+        }
+    </section>
+</div>
+
+@code {
+    [Parameter] public AiUsageOverview? Usage { get; set; }
+    [Parameter] public IReadOnlyList<HarnessExperimentOverview> Experiments { get; set; } = [];
+    [Parameter] public string? UsageError { get; set; }
+    [Parameter] public string? ReportsError { get; set; }
+    [Parameter] public RenderFragment? Activity { get; set; }
+    [Parameter] public int Days { get; set; } = 7;
+    private string _workload = "";
+    private long PeakTokens => Math.Max(1, Usage?.Days.Select(d => d.Tokens).DefaultIfEmpty(1).Max() ?? 1);
+}

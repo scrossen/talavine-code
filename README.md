@@ -93,6 +93,7 @@ have different enforcement boundaries; see [security](SECURITY.md).
 ```sh
 dotnet test SwarmCode.Tests/SwarmCode.Tests.csproj --no-restore
 dotnet test SwarmCode.Hosting.Tests/SwarmCode.Hosting.Tests.csproj --no-restore
+dotnet test SwarmCode.App.Tests/SwarmCode.App.Tests.csproj --no-restore
 dotnet test SwarmCore/SwarmCore.Coding.Tests/SwarmCore.Coding.Tests.csproj --no-restore
 ```
 
@@ -104,8 +105,9 @@ are opt-in or platform-specific. A source build is not desktop installation proo
 The full solution is `TalavineCode.slnx`. Windows needs Visual Studio with
 MSBuild, the Windows SDK, and the matching .NET MAUI Windows workload. Use
 Visual Studio MSBuild for Windows XAML compilation. macOS needs Apple Silicon,
-the matching MAUI/Catalyst workload, Xcode 27, and an appropriate signing identity
-and provisioning profile for Keychain access. Do not use someone else's signing
+the matching .NET macOS workload, Xcode 27, and an appropriate signing identity
+and provisioning profile for Keychain access. The Mac host uses native AppKit
+and WKWebView with the same Blazor pages; Windows uses MAUI. Do not use someone else's signing
 credentials. See [building](docs/building.md).
 
 ## Scope

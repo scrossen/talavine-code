@@ -962,10 +962,15 @@ public abstract class SubscriptionCliLlmProviderBase : ILlmProvider, ILlmModelCa
             ProviderName: ProviderName, Operation: SubscriptionCliProcessOperation.ModelDiscovery, Priority: SubscriptionCliProcessPriority.Foreground, CatalogProtocol: protocol);
         var result = await _runner.RunAsync(request, cancellationToken).ConfigureAwait(false);
         if (result.OutputWasTruncated) throw new InvalidDataException("The CLI model catalog was incomplete.");
-        var models = SubscriptionCliModelDiscovery.Parse(result.StandardOutput, protocol,
+        var catalog = SubscriptionCliModelDiscovery.ParseCatalog(result.StandardOutput, protocol,
             protocol == SubscriptionCliCatalogProtocol.CodexAppServer ? "codex-cli" : "claude-code");
-        if (models.Count == 0) throw new InvalidOperationException("The installed CLI did not return a model catalog. Update it or enter a custom model ID.");
-        return new(models, "Installed CLI catalog");
+        if (catalog.Models.Count == 0) throw new InvalidOperationException("The installed CLI did not return a model catalog. Update it or enter a custom model ID.");
+        return catalog with
+        {
+            ReasoningEfforts = SubscriptionCliModelDiscovery.ParseReasoningEfforts(result.StandardOutput, protocol,
+                protocol == SubscriptionCliCatalogProtocol.CodexAppServer ? "codex-cli" : "claude-code",
+                ProviderPackCatalog.GetRequired(ProviderName).SubscriptionCli!.ReasoningEfforts)
+        };
     }
 
     public Task<(bool IsHealthy, string Message)> TestConnectivityAsync() =>
@@ -1500,9 +1505,20 @@ public abstract class SubscriptionCliLlmProviderBase : ILlmProvider, ILlmModelCa
             ResponseTimeMs = (int)stopwatch.ElapsedMilliseconds,
             WasSuccessful = true
         };
+        if (ReadReportedUsage(result) is { } usage)
+        {
+            response.InputTokens = usage.InputTokens;
+            response.OutputTokens = usage.OutputTokens;
+            response.TotalTokens = checked(usage.InputTokens + usage.OutputTokens);
+            response.CacheReadInputTokens = usage.CachedInputTokens;
+            response.UsageMeasurementComplete = true;
+        }
         AddUsageRemainingDiagnostic(response, result);
         return response;
     }
+
+    /// <summary>Only structured CLI-owned usage qualifies; character estimates never become measured receipts.</summary>
+    protected virtual ChatUsage? ReadReportedUsage(SubscriptionCliProcessResult result) => null;
 
     private LlmResponse FailedResponse(string model, Stopwatch stopwatch, string message)
         => new()
@@ -1992,6 +2008,15 @@ public sealed class ClaudeCodeLlmProvider : SubscriptionCliLlmProviderBase
             .Select(argument => argument == "{maxTurns}" ? maxTurns : argument)
             .ToList();
 
+        var selection = ModelReasoningSelection.Split(normalizedCliModel ?? "");
+        normalizedCliModel = selection.Model;
+        var effort = executionSettings?.GetValueOrDefault("reasoning_effort")?.ToString() ?? selection.Effort;
+        if (!string.IsNullOrWhiteSpace(effort))
+        {
+            if (!CliPack.ReasoningEfforts.Contains(effort, StringComparer.Ordinal))
+                throw new NotSupportedException("The selected Claude Code effort is not supported by this adapter.");
+            args.Add("--effort"); args.Add(effort);
+        }
         if (!string.IsNullOrWhiteSpace(normalizedCliModel))
         {
             args.Add(CliPack.ModelArgument);
@@ -2044,6 +2069,9 @@ public sealed class CodexCliLlmProvider : SubscriptionCliLlmProviderBase
         var (exact, _) = SplitModelAndEffort(normalized);
         return exact is "gpt-6-astra" or "gpt-5.6-sol" or "gpt-5.6-terra" or "gpt-5.6-luna";
     }
+
+    protected override ChatUsage? ReadReportedUsage(SubscriptionCliProcessResult result)
+        => CodexCliReportedUsage.Read(result.StandardOutput);
 
     protected override string CommandName => CliPack.Command;
     protected override SubscriptionCliExecutableOptions ExecutableOptions => _options.Value.CodexCli;
@@ -2127,6 +2155,8 @@ public sealed class CodexCliLlmProvider : SubscriptionCliLlmProviderBase
         if (requested is "none" or "disabled" or "false") return pinned;
         if (requested is null || !ModelRouteCapabilities.ReasoningEfforts(SubscriptionCliProviders.CodexCli, model).Contains(requested, StringComparer.Ordinal))
             throw new NotSupportedException("The selected Codex CLI route does not support the requested reasoning effort.");
+        if (pinned is not null && requested != pinned)
+            throw new NotSupportedException("The requested reasoning effort conflicts with the selected Codex CLI model tier.");
         return requested;
     }
 

@@ -1020,7 +1020,7 @@ public sealed class ToolUseAgentEngine : IToolUseAgentEngine
                         ModelRequest = session.ModelRequest?.Snapshot(),
                         RoutingUserText = routingUserRequest,
                         RequestCancellationToken = ct,
-                        GenerationParameters = adaptive?.OriginalRequestEffort is { } requestedEffort && Enum.TryParse<LlmReasoningMode>(requestedEffort, true, out var reasoningMode)
+                        GenerationParameters = (session.Profile.ReasoningEffort ?? adaptive?.OriginalRequestEffort) is { } requestedEffort && Enum.TryParse<LlmReasoningMode>(requestedEffort, true, out var reasoningMode)
                             ? new LlmGenerationParameters { Reasoning = reasoningMode } : null,
                         MinimumCapabilityScore = adaptive?.Pending is { Decision.Action: AdaptiveAction.RequestStrongerRoute, After.CapabilityScore: { } increasedFloor }
                             ? Math.Max(increasedFloor, adaptive!.Pending!.After!.MinimumCapabilityScore ?? 0)
@@ -4226,6 +4226,7 @@ public sealed class ToolUseAgentEngine : IToolUseAgentEngine
         // runs in the project, not in its scratch folder, so it never takes that folder for the repository.
         if (!string.IsNullOrWhiteSpace(workspaceRoot))
             settings[LlmReservedExecutionSettings.SubscriptionCliWorkingDirectory] = workspaceRoot;
+        if (!string.IsNullOrWhiteSpace(profile.ReasoningEffort)) settings["reasoning_effort"] = profile.ReasoningEffort;
         return settings;
     }
 

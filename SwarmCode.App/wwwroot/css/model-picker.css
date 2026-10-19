@@ -9,3 +9,28 @@
 .model-picker__empty { padding: .6rem; color: var(--sc-muted); }
 
 .model-picker--above .model-picker__menu { top: auto; bottom: calc(100% + .25rem); }
+
+/* Model controls are visible before the first build and beside every chat composer. */
+.build-model-picker, .session-model-controls { display: flex; align-items: end; flex-wrap: wrap; gap: .75rem; }
+.build-model-picker { padding: 1rem; border: 1px solid var(--sc-border); border-radius: var(--sc-radius); background: var(--sc-sunken); }
+.build-model-picker > .sc-muted { flex-basis: 100%; margin: 0; }
+.session-model-controls { padding-bottom: .75rem; }
+.session-model-controls .sc-field, .build-model-picker .sc-field { min-width: 0; margin: 0; }
+.session-model-controls .model-picker { width: min(22rem, 100%); }
+.thinking-picker { width: min(22rem, 100%); padding: .65rem .85rem; border: 1px solid var(--sc-border); border-radius: var(--sc-radius); background: var(--sc-panel); }
+.thinking-picker__heading { display: flex; align-items: center; gap: .65rem; font-size: .8rem; }
+.thinking-picker__heading strong { color: var(--sc-accent); margin-left: auto; }
+.thinking-picker__reset { border: 0; background: transparent; color: var(--sc-muted); cursor: pointer; font-size: 1.2rem; padding: 0; }
+.thinking-picker__range { width: 100%; accent-color: var(--sc-accent); cursor: pointer; margin: .7rem 0 .3rem; }
+.thinking-picker__scale { display: flex; justify-content: space-between; color: var(--sc-muted); font-size: .7rem; }
+.thinking-picker__note { display: block; color: var(--sc-muted); font-size: .75rem; line-height: 1.4; margin-top: .4rem; }
+@media (max-width: 700px) {
+    .session-model-controls > .sc-field, .build-model-picker > .sc-field, .thinking-picker { width: 100%; }
+    .session-model-controls .model-picker, .build-model-picker .model-picker { width: 100%; }
+}
+.provider-picker { position: relative; min-width: 12rem; max-width: 100%; }
+.provider-picker__toggle { display: flex; align-items: center; justify-content: space-between; gap: .75rem; width: 100%; cursor: pointer; }
+.provider-picker__menu { position: absolute; left: 0; top: calc(100% + .25rem); z-index: 110; min-width: 100%; max-height: 18rem; overflow: auto; padding: .25rem; background: var(--sc-panel); border: 1px solid var(--sc-border); border-radius: var(--sc-radius); box-shadow: var(--sc-shadow); }
+.provider-picker--above .provider-picker__menu { top: auto; bottom: calc(100% + .25rem); }
+.provider-picker__menu button { display: block; width: 100%; border: 0; padding: .55rem .75rem; text-align: left; background: transparent; color: var(--sc-text); white-space: nowrap; cursor: pointer; }
+.provider-picker__menu button:hover, .provider-picker__menu button:focus-visible, .provider-picker__menu button[aria-pressed=true] { background: var(--sc-accent-soft); }

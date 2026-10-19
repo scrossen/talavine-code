@@ -33,7 +33,7 @@ public sealed class MyAppsTests : TempDirTest
         var folder = Folder();
         var app = Store.Create("Garden planner", "Track planting dates", folder);
         Assert.True(Directory.Exists(app.Root));
-        Assert.Equal(Path.Combine(folder, app.Name), app.Root);
+        Assert.Equal(CodingAppPaths.Normalize(Path.Combine(folder, app.Name)), app.Root);
         var outside = Path.Combine(Tmp, "existing"); Directory.CreateDirectory(outside);
         File.WriteAllText(Path.Combine(outside, "notes.txt"), "Keep me");
         var added = Store.Add(outside);
@@ -46,6 +46,34 @@ public sealed class MyAppsTests : TempDirTest
         Assert.Equal("Keep me", File.ReadAllText(Path.Combine(outside, "notes.txt")));
         Assert.Throws<InvalidOperationException>(() => Store.Get(added.Id));
         Assert.Single(Store.Read().Apps);
+    }
+
+    [Fact]
+    public void Folder_baselines_accept_aliases_but_reject_retargeted_or_stale_folders()
+    {
+        var folder = Folder();
+        var alias = Path.Combine(Tmp, "apps-alias");
+        Directory.CreateSymbolicLink(alias, folder);
+        var store = Store;
+        var app = store.Create("Alias app", "Same physical folder", alias);
+        Assert.Equal(CodingAppPaths.Normalize(Path.Combine(folder, app.Name)), app.Root);
+
+        var other = Path.Combine(Tmp, "Other apps");
+        Directory.CreateDirectory(other);
+        Directory.Delete(alias);
+        Directory.CreateSymbolicLink(alias, other);
+        Assert.Throws<InvalidOperationException>(() => store.Create("Retargeted", "Must conflict", alias));
+        Assert.Throws<InvalidOperationException>(() => store.SetFolder(other, alias));
+
+        Directory.Delete(alias);
+        Directory.CreateSymbolicLink(alias, folder);
+        var independent = Store;
+        independent.SetFolder(other, alias);
+        Assert.Throws<InvalidOperationException>(() => store.SetFolder(folder, alias));
+        Assert.Throws<InvalidOperationException>(() => store.Create("Stale", "Must conflict", alias));
+        Assert.Single(store.Read().Apps);
+        Assert.False(Directory.Exists(Path.Combine(other, "Retargeted")));
+        Assert.False(Directory.Exists(Path.Combine(folder, "Stale")));
     }
 
     [Fact]

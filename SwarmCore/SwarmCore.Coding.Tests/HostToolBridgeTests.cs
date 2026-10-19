@@ -5,6 +5,9 @@ using SwarmCore.Agent.Catalog;
 using SwarmCore.Agent.Runtime;
 using SwarmCore.Coding.Native;
 using SwarmCore.Coding.Planning;
+using SwarmCore.Coding.Computer;
+using SwarmCore.Coding.SelfImprovement;
+using Talavine.TestSupport;
 using Xunit;
 
 namespace SwarmCore.Coding.Tests;
@@ -159,6 +162,27 @@ public class HostToolBridgeTests
         var generic = await proxy.CallAsync("apps_leaky", Args(new { }), default);
         Assert.True(generic.IsError);
         Assert.Equal("InvalidOperationException: no such app", generic.Text);
+    }
+
+    [Fact]
+    public async Task Chrome_setup_reaches_the_native_client_without_becoming_a_product_defect()
+    {
+        using var root = TestTempDirectory.Reserve("chrome-bridge");
+        var services = new ServiceCollection();
+        services.AddCodingComputer(o => o.PersonalChromeUserDataDirectory = root.Path);
+        await using var provider = services.BuildServiceProvider();
+        var host = new FakeHost(provider.GetRequiredService<CodingComputerTools>().Descriptors);
+        host.Running["root"] = HostToolProfile.Full;
+        await using var broker = new HostToolBridgeBroker(host);
+        var proxy = new HostToolBridgeProxy(broker.GetEndpoint(), "root");
+
+        var result = await proxy.CallAsync("browser_tabs", Args(new { }), default);
+
+        Assert.True(result.IsError);
+        Assert.Contains(PersonalChromeConnection.SetupUrl, result.Text);
+        Assert.Contains("allow Chrome's connection prompt", result.Text);
+        Assert.Null(DefectClassifier.FromErrorText(result.Text));
+        Assert.False(root.Exists);
     }
 
     [Fact]

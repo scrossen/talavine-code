@@ -86,6 +86,18 @@ public sealed class AgentSettingsTests : TempDirTest
     }
 
     [Fact]
+    public async Task Preference_schema_exposes_finite_theme_and_permission_choices()
+    {
+        await using var p = Provider(); await UserAsync(p);
+        var preferences = await Read(p.GetRequiredService<IAgentSettingsHost>(), "preferences");
+        var properties = preferences.Schema["properties"]!.AsObject();
+        Assert.Equal(["system", "light", "dark"], properties["theme"]!["enum"]!.AsArray().Select(value => value!.GetValue<string>()));
+        var modes = properties["permissionMode"]!["enum"]!.AsArray();
+        Assert.Contains(modes, value => value is null);
+        Assert.Equal(["auto", "ask-risky", "ask"], modes.Skip(1).Select(value => value!.GetValue<string>()));
+    }
+
+    [Fact]
     public async Task Competing_UI_writer_stale_revision_and_delete_then_save_do_not_overwrite()
     {
         await using var p = Provider(); await UserAsync(p); var host = p.GetRequiredService<IAgentSettingsHost>();

@@ -26,7 +26,8 @@ public static class CodingLaneRequestFactory
                         CommunicationScope = scopeAuthority,
                         ProfileIdOverride = profileId,
                         ProviderOverride = lane.Provider,
-                        ModelOverride = lane.Model,
+                        ModelOverride = SwarmCore.Abstractions.LlmRouting.ModelReasoningSelection.Split(lane.Model).Model,
+                        ReasoningEffort = SwarmCore.Abstractions.LlmRouting.ModelReasoningSelection.Split(lane.Model).Effort,
                         // SwarmCode owns visible retries and terminal refusals. An inner router
                         // must not switch models behind those host-level rules.
                         DisableRouteFallback = request.SelectionPinned || request.StopOnRefusal || request.DisableRouteFallback,

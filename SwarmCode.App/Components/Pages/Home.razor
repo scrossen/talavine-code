@@ -11,13 +11,13 @@
         <div>
             <h1 class="sc-topbar__title">Talavine Code</h1>
             <p class="sc-topbar__copy">
-                A coding agent that works inside one repository and can hand a task to another model when one gets stuck.
+                Start a chat, create a project, or open a folder to work on.
             </p>
         </div>
-        @if (State.Workspace is not null)
+        @if (!State.IsOpeningWorkspace)
         {
             <div class="sc-topbar__actions">
-                <button type="button" class="sc-btn sc-btn--primary" @onclick="NewSessionAsync">New session</button>
+                <button type="button" class="sc-btn sc-btn--primary" @onclick="NewSessionAsync">New chat</button>
             </div>
         }
     </header>
@@ -25,13 +25,14 @@
     @if (State.Workspace is null)
     {
         <section class="sc-card">
-            <h2 class="sc-card__title">Open a repository</h2>
-            <p class="sc-card__copy">Pick the folder you want the agent to work in. Sessions and model settings are kept per user, not inside the repository.</p>
+            <h2 class="sc-card__title">Start here</h2>
+            <p class="sc-card__copy">Chat without choosing a project, or pick a folder for your code. Your chats are saved.</p>
             <div class="sc-row">
                 <button type="button" class="sc-btn sc-btn--primary" @onclick="OpenAsync">
                     @if (State.IsOpeningWorkspace) { <span class="sc-spinner"></span> }
-                    Open a repository…
+                    Open Project…
                 </button>
+                <a class="sc-btn" href="/new-project">New Project…</a>
                 <span class="sc-muted">or press <span class="sc-kbd">@SwarmCode.App.Services.PlatformText.SettingsShortcut</span> for settings</span>
             </div>
         </section>
@@ -63,13 +64,13 @@
                 <h2 class="sc-card__title">Recent sessions</h2>
                 <a href="/history" title="Search every session across your repositories, or summarize recent work">Search and summarize history</a>
             </div>
-            <p class="sc-card__copy">Pick up where you left off in <span class="sc-mono">@AppNavigation.FolderName(State.RepositoryRoot!)</span>.</p>
+            <p class="sc-card__copy">@(State.HasProject ? $"Pick up where you left off in {State.ProjectName(State.RepositoryRoot)}." : "Your chats without a project.")</p>
             @if (_sessions.Count == 0)
             {
                 <div class="sc-empty">
                     <div class="sc-empty__title">No sessions yet</div>
                     <div>Start a session and describe what you want changed.</div>
-                    <button type="button" class="sc-btn sc-btn--primary" @onclick="NewSessionAsync">New session</button>
+                    <button type="button" class="sc-btn sc-btn--primary" @onclick="NewSessionAsync">New chat</button>
                 </div>
             }
             else
@@ -137,11 +138,11 @@
         if (Interlocked.Exchange(ref _loading, 1) == 1) return;
         try
         {
-            var root = State.RepositoryRoot;
+            var root = State.SessionListRoot;
             var (recent, sessions) = await Task.Run(async () =>
             {
                 var r = (await State.Sessions.RecentRepositoriesAsync()).Where(Directory.Exists).ToList();
-                var s = root is null ? new List<WorkspaceSessionInfo>() : (await State.Sessions.ListAsync(root)).ToList();
+                var s = (await State.Sessions.ListAsync(root)).ToList();
                 return (r, s);
             });
             _recent = recent;

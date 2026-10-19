@@ -1,0 +1,30 @@
+@using SwarmCore.Abstractions.LlmRouting
+@using SwarmCore.LlmRouting.Providers
+<ChatModelControl Model="@BaseModel" ProviderLabel="@(Lane?.SelectionLabel ?? "Provider")" Effort="@Effort" Efforts="Efforts" EffortChanged="ChangedAsync" Disabled="Disabled" AssistanceSummary="@AssistanceSummary" AssistanceControls="AssistanceControls">
+    @ChildContent
+</ChatModelControl>
+@code {
+    [Parameter] public string Model { get; set; } = "";
+    [Parameter] public EventCallback<string> ModelChanged { get; set; }
+    [Parameter] public CodingLane? Lane { get; set; }
+    [Parameter] public WorkspaceHost? Workspace { get; set; }
+    [Parameter] public bool Disabled { get; set; }
+    [Parameter] public string? AssistanceSummary { get; set; }
+    [Parameter] public RenderFragment? AssistanceControls { get; set; }
+    [Parameter] public RenderFragment? ChildContent { get; set; }
+    [Parameter] public IReadOnlyDictionary<string, IReadOnlyList<string>>? CatalogEfforts { get; set; }
+    private string BaseModel => ModelReasoningSelection.Split(Model).Model;
+    private string? Effort => ModelReasoningSelection.Split(Model).Effort;
+    private string Provider
+    {
+        get
+        {
+            if (Lane is not { IsNative: true } || Workspace is null) return Lane?.Provider ?? "";
+            using var scope = Workspace.Services.CreateScope();
+            return scope.ServiceProvider.GetServices<INativeLaneRunner>().FirstOrDefault(r => r.Supports(Lane))?.ModelCatalogProvider ?? "";
+        }
+    }
+    private IReadOnlyList<string> Efforts => CatalogEfforts?.TryGetValue(BaseModel, out var efforts) == true
+        ? efforts : ModelRouteCapabilities.ReasoningEfforts(Provider, BaseModel);
+    private Task ChangedAsync(string? effort) => ModelChanged.InvokeAsync(ModelReasoningSelection.Combine(BaseModel, effort));
+}

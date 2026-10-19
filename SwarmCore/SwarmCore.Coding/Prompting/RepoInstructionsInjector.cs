@@ -3,6 +3,7 @@ using System.Text;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Options;
 using SwarmCore.Agent.Runtime;
+using SwarmCore.Missions;
 
 namespace SwarmCore.Coding.Prompting;
 
@@ -19,7 +20,8 @@ public sealed class RepoInstructionsInjector(
     IServiceScopeFactory? scopes = null,
     ActiveCodingWorkspaces? activeWorkspaces = null,
     TimeProvider? time = null,
-    CodingCredentialIntakeContext? credentialIntake = null) : IContextInjector
+    CodingCredentialIntakeContext? credentialIntake = null,
+    IOptions<SandboxOptions>? sandboxOptions = null) : IContextInjector
 {
     public const string InjectorName = "repoInstructions";
 
@@ -37,6 +39,17 @@ public sealed class RepoInstructionsInjector(
         sb.Append("- Root: ").Append(root).Append('\n');
         sb.Append("- Paths: use paths relative to this root; the file and git tools resolve them here. ")
           .Append("Any other directory you may see reported as your working directory (for example a model CLI's temporary folder) is not the project; never read or write project files there.\n");
+        sb.Append("- Local file access (current host policy): ");
+        if (request.ToolsWithheldByUser == true)
+            sb.Append("The user withheld tools for this turn. Answer without inspecting local files.\n");
+        else if (request.MissionObjectiveId is not null)
+            sb.Append("This mission is limited to its current resource grants and effects; user-initiated authority does not grant access to every local path.\n");
+        else if (sandboxOptions is null)
+            sb.Append("No outside-workspace path policy was supplied here. Use the available tools and their actual results to establish access; do not assume unrestricted access or a repository-only sandbox.\n");
+        else if (request.CommunicationScopeUserInitiated && sandboxOptions.Value.AllowAbsolutePathsOutsideTurnWorkspace)
+            sb.Append("For this user-authorized turn, explicit absolute paths outside the workspace are allowed. Relative paths remain inside the workspace. Use available file tools or shell.exec to inspect task-relevant local paths on demand, including disk usage when requested. Current tool permissions and OS access controls still apply; do not claim a repository-only sandbox.\n");
+        else
+            sb.Append("File tools are limited to this workspace for this turn. Do not use shell or another tool to bypass that boundary.\n");
         sb.Append("- Date: ").Append((time ?? TimeProvider.System).GetLocalNow().ToString("yyyy-MM-dd")).Append('\n');
         var branch = await TryGitBranchAsync(root, ct).ConfigureAwait(false);
         if (branch is not null) sb.Append("- Git branch: ").Append(branch).Append('\n');

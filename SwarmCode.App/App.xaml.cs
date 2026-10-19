@@ -20,7 +20,7 @@ public partial class App : Application
         };
         window.Destroying += async (_, _) =>
         {
-            if (MauiProgram.GetServiceProvider()?.GetService(typeof(Services.MyAppsService)) is Services.MyAppsService apps)
+            if (DesktopHost.GetServiceProvider()?.GetService(typeof(Services.MyAppsService)) is Services.MyAppsService apps)
                 await apps.Runtime.DisposeAsync();
         };
         return window;

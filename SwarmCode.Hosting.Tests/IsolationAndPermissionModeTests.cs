@@ -222,7 +222,8 @@ public sealed class IsolationAndPermissionModeTests : TempDirTest
         var native = new List<NativeLaneTurn>();
         var decisions = new List<ToolGuardDecision>();
         using var provider = Services(engine, native, new CodingPermissionRules { Deny = ["git.push"] }, decisions);
-        await using var runner = new ConversationRunner(provider, "conv");
+        var session = await provider.GetRequiredService<WorkspaceSessionCatalog>().CreateAsync(Path.Combine(Tmp, "repo"));
+        await using var runner = new ConversationRunner(provider, session.Id);
 
         var result = await Send(runner, "claude", CodingPermissionMode.AskRisky);
 
@@ -235,7 +236,7 @@ public sealed class IsolationAndPermissionModeTests : TempDirTest
             edit => Assert.True(edit.Allowed && !edit.RequiresApproval),     // runs
             push => Assert.False(push.Allowed));                              // denied, whatever the mode
         // After the turn the policy no longer applies to the conversation.
-        Assert.True((await provider.GetRequiredService<IToolInvocationGuard>().InspectAsync(new ToolInvocationRequest("shell.exec", ToolSideEffect.Exec, new object(), "conv"))).Allowed);
+        Assert.True((await provider.GetRequiredService<IToolInvocationGuard>().InspectAsync(new ToolInvocationRequest("shell.exec", ToolSideEffect.Exec, new object(), session.Id))).Allowed);
     }
 
     [Fact]
@@ -245,13 +246,17 @@ public sealed class IsolationAndPermissionModeTests : TempDirTest
         var engine = new List<AgentTurnRequest>();
         var native = new List<NativeLaneTurn>();
         using (var provider = Services(engine, native))
-        await using (var runner = new ConversationRunner(provider, "conv"))
+        {
+            var session = await provider.GetRequiredService<WorkspaceSessionCatalog>().CreateAsync(Path.Combine(Tmp, "repo"));
+            await using var runner = new ConversationRunner(provider, session.Id);
             Assert.Equal(["claude"], (await Send(runner, "claude", CodingPermissionMode.Auto)).LanesUsed.ToArray());
+        }
         Assert.Single(native);
 
         using (var provider = Services(engine, native, new CodingPermissionRules { Deny = ["shell.exec"] }))
-        await using (var runner = new ConversationRunner(provider, "conv2"))
         {
+            var session = await provider.GetRequiredService<WorkspaceSessionCatalog>().CreateAsync(Path.Combine(Tmp, "repo"));
+            await using var runner = new ConversationRunner(provider, session.Id);
             Assert.Equal(["claude-tools"], (await Send(runner, "claude", CodingPermissionMode.Auto)).LanesUsed.ToArray());
             Assert.Contains(runner.Entries.OfType<NoticeEntry>(), n => n.Text.Contains("deny rules"));
         }

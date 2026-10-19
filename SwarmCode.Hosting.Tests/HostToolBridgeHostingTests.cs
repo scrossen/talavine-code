@@ -1,4 +1,5 @@
 using System.Text.Json;
+using System.Text.Json.Nodes;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Options;
 using ModelContextProtocol.Protocol;
@@ -144,6 +145,37 @@ public class HostToolBridgeHostingTests : TempDirTest
         await using var host = await BridgedWorkspace.StartAsync(Paths, Repo);
         var result = await host.Turn("session-1").CallAsync("web_search", BridgedWorkspace.Args(new { query = "current dotnet version" }), default);
         Assert.Contains("Settings > Web search", result.Text);
+    }
+
+    [Theory]
+    [InlineData(false, "omitted")]
+    [InlineData(false, "null")]
+    [InlineData(false, "empty")]
+    [InlineData(true, "omitted")]
+    [InlineData(true, "null")]
+    [InlineData(true, "empty")]
+    public async Task Shell_arguments_remain_optional_through_the_native_bridge(bool structured, string arguments)
+    {
+        await using var host = await BridgedWorkspace.StartAsync(Paths, Repo);
+        var bridge = host.Turn("session-1");
+        var shell = Assert.Single(await bridge.ListAsync(default), tool => tool.Name == "shell_exec");
+        var required = shell.InputSchema["required"]?.AsArray().Select(value => value!.GetValue<string>()) ?? [];
+        Assert.DoesNotContain("argumentList", required);
+
+        // With no arguments the platform shell exits on shell.exec's closed stdin.
+        var input = structured
+            ? new JsonObject { ["fileName"] = OperatingSystem.IsWindows() ? "cmd.exe" : "/bin/sh" }
+            : new JsonObject { ["command"] = "echo shell-bridge-ok" };
+        if (arguments != "omitted") input["argumentList"] = arguments == "empty" ? new JsonArray() : null;
+        input["timeoutSeconds"] = 10;
+
+        var result = await bridge.CallAsync("shell_exec", BridgedWorkspace.Args(input), default);
+
+        Assert.False(result.IsError, result.Text);
+        using var output = BridgedWorkspace.Json(result);
+        Assert.Equal(0, output.RootElement.Prop("exitCode").GetInt32());
+        Assert.False(output.RootElement.Prop("timedOut").GetBoolean());
+        if (!structured) Assert.Contains("shell-bridge-ok", output.RootElement.Prop("stdout").GetString());
     }
 
     [Fact]

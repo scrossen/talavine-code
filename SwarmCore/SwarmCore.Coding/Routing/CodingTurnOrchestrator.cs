@@ -21,7 +21,7 @@ namespace SwarmCore.Coding.Routing;
 /// repositories.
 /// </para>
 /// </summary>
-public sealed class CodingTurnOrchestrator(
+public sealed partial class CodingTurnOrchestrator(
     IServiceScopeFactory scopes,
     IOptions<CodingOptions> codingOptions,
     ILogger<CodingTurnOrchestrator> logger,
@@ -75,7 +75,7 @@ public sealed class CodingTurnOrchestrator(
         return scope.ServiceProvider.GetService<ICodingLaneSource>()?.GetLanes() ?? CodingLaneSet.Empty;
     }
 
-    public async IAsyncEnumerable<TurnEvent> RunAsync(CodingTurnRequest request, [EnumeratorCancellation] CancellationToken ct = default)
+    private async IAsyncEnumerable<TurnEvent> RunCoreAsync(CodingTurnRequest request, [EnumeratorCancellation] CancellationToken ct = default)
     {
         var coding = codingOptions.Value;
         var startTurnId = NewId();
@@ -232,7 +232,7 @@ public sealed class CodingTurnOrchestrator(
 
         var handOff = CodingRoutingPolicy.CanHandOff(request, options.HandOffOnRefusal);
         var tried = new List<CodingLane> { lane };
-        var message = request.PlanMode ? Planning.CodingPlanMode.FrameRequest(request.UserMessage) : request.UserMessage;
+        var message = request.PlanMode && !request.ReviewOnly ? Planning.CodingPlanMode.FrameRequest(request.UserMessage) : request.UserMessage;
         var attempt = 1;
         var fallbackCatalogLoaded = false;
         var continuation = request.IsContinuation;
@@ -280,6 +280,9 @@ public sealed class CodingTurnOrchestrator(
             var cancelled = false;
             var stuck = false;
             var blockedCalls = 0;
+            var completionFailed = false;
+            var inspectionProgress = new CodingInspectionProgress(request.RequireWorkspaceChange && !request.PlanMode
+                ? coding.NoProgressReadLimit : 0);
             string? limitReason = null;
             NativeCommitSnapshot? nativeCommitSnapshot = null;
             TurnCompleted? deferredNativeAnswer = null;
@@ -453,6 +456,16 @@ public sealed class CodingTurnOrchestrator(
                                 }
                                 break;
                         }
+                        if (!stuck && inspectionProgress.Observe(evt))
+                        {
+                            stuck = true;
+                            error = "Repeated repository inspections returned no new evidence while the requested file changes remain unfinished.";
+                            yield return evt; // preserve the last completed read receipt before cancelling
+                            yield return new CodingLaneNotice(orchestratorTurnId, lane.Name,
+                                "This model is repeating repository inspections without making progress.");
+                            attemptCts.Cancel();
+                            break;
+                        }
                         // A native answer cannot claim completion before any requested host-side commit and audit.
                         if (confinedClaude && evt is TurnCompleted nativeDone) deferredNativeAnswer = nativeDone;
                         else yield return evt;
@@ -492,6 +505,30 @@ public sealed class CodingTurnOrchestrator(
                 if (!answerCompleted && error is null && !stuck && decline is null)
                     error = "The lane stopped without completing an answer; task completion is unverified.";
                 var outcome = RefusalDetector.Classify(finalText, error, mutated, category, decline, stuck);
+                if (outcome == LaneOutcomeKind.Delivered && request.RequireWorkspaceChange && !request.PlanMode && !mutated)
+                {
+                    if (!requestBudget.IsCancellationRequested && workspaceRepairAttempts < 1)
+                    {
+                        workspaceRepairAttempts++;
+                        message = "[Workspace repair] The user asked for repository file changes, but no mutating tool completed. "
+                            + "Your previous prose or code block did not edit a file. Inspect the repository and use the available file tools "
+                            + "to apply the requested change. If this model cannot invoke those tools, say so plainly. "
+                            + "Do not claim that files were changed without a successful tool receipt.\nOriginal request:\n"
+                            + (request.AuthenticatedOriginalUserMessage ?? request.UserMessage);
+                        continuation = true;
+                        yield return new CodingLaneNotice(orchestratorTurnId, lane.Name,
+                            "The answer did not change repository files; asking the selected model to apply the edit with tools.");
+                        continue;
+                    }
+                    error = "The requested repository changes are unfinished: no file-changing tool completed after a repair attempt.";
+                    completionFailed = true;
+                    outcome = LaneOutcomeKind.Stuck;
+                    if (!handOff)
+                    {
+                        yield return new TurnErrored(orchestratorTurnId, error) { ErrorKind = TurnErrorKind.CompletionValidation };
+                        yield break;
+                    }
+                }
                 var observationId = orchestratorTurnId + ":" + attempt + ":" + repairAttempts;
                 var observedModel = resolvedModel ?? lane.Model;
                 var evidenceKind = decline is not null ? "harness-decline" : category == LlmFailureCategory.ContentPolicy
@@ -552,28 +589,6 @@ public sealed class CodingTurnOrchestrator(
                 if (deferredNativeAnswer is not null) yield return deferredNativeAnswer;
                 if (outcome == LaneOutcomeKind.Delivered)
                 {
-                    if (request.RequireWorkspaceChange && !request.PlanMode && !mutated)
-                    {
-                        if (!requestBudget.IsCancellationRequested
-                            && workspaceRepairAttempts < 1)
-                        {
-                            workspaceRepairAttempts++;
-                            message = "[Workspace repair] The user asked for repository file changes, but no mutating tool completed. "
-                                + "Your previous prose or code block did not edit a file. Inspect the repository and use the available file tools "
-                                + "to apply the requested change. If this model cannot invoke those tools, say so plainly. "
-                                + "Do not claim that files were changed without a successful tool receipt.\nOriginal request:\n"
-                                + (request.AuthenticatedOriginalUserMessage ?? request.UserMessage);
-                            continuation = true;
-                            yield return new CodingLaneNotice(orchestratorTurnId, lane.Name,
-                                "The answer did not change repository files; asking the selected model to apply the edit with tools.");
-                            continue;
-                        }
-                        yield return new TurnErrored(orchestratorTurnId,
-                            "The selected model returned text but no file-changing tool completed. No repository edit was verified. "
-                            + "Choose a tool-capable model, then retry the requested change.")
-                        { ErrorKind = TurnErrorKind.CompletionValidation };
-                        yield break;
-                    }
                     _health.Clear(lane.HealthKeyOrName, options.HealthScope);
                     // A plan-mode turn ends with the proposed plan: nothing changed, so there is nothing to verify yet.
                     if (request.PlanMode) yield break;
@@ -616,9 +631,14 @@ public sealed class CodingTurnOrchestrator(
                         yield return new CodingTurnProgress(orchestratorTurnId, lane.Name, requestStarted.Elapsed, completedTools, reportedTokens, "repairing");
                         continue;
                     }
-                    yield return new TurnErrored(orchestratorTurnId, "Task completion failed host acceptance: " + acceptance.Summary)
-                    { ErrorKind = TurnErrorKind.CompletionValidation };
-                    yield break;
+                    error = "Task completion failed host acceptance: " + acceptance.Summary;
+                    completionFailed = true;
+                    if (!handOff)
+                    {
+                        yield return new TurnErrored(orchestratorTurnId, error) { ErrorKind = TurnErrorKind.CompletionValidation };
+                        yield break;
+                    }
+                    outcome = LaneOutcomeKind.Failed;
                 }
 
                 if (outcome == LaneOutcomeKind.RouteUnavailable)
@@ -627,7 +647,8 @@ public sealed class CodingTurnOrchestrator(
                 var reason = DescribeOutcome(outcome, error, decline);
 
                 if (!fallbackCatalogLoaded && handOff && finishingCommit is null
-                    && (outcome is LaneOutcomeKind.RouteUnavailable or LaneOutcomeKind.Refused or LaneOutcomeKind.PartialRefusal)
+                    && (outcome is LaneOutcomeKind.RouteUnavailable or LaneOutcomeKind.Refused or LaneOutcomeKind.PartialRefusal
+                        or LaneOutcomeKind.Stuck or LaneOutcomeKind.Exhausted or LaneOutcomeKind.Failed)
                     && attempt < Math.Max(1, options.MaxLanesPerRequest))
                 {
                     fallbackCatalogLoaded = true;
@@ -684,6 +705,8 @@ public sealed class CodingTurnOrchestrator(
 
                 if (next is null)
                 {
+                    if (completionFailed)
+                        yield return new TurnErrored(orchestratorTurnId, error!) { ErrorKind = TurnErrorKind.CompletionValidation };
                     yield return new CodingLanesExhausted(orchestratorTurnId, $"{lane.Name} {reason}; "
                         + (request.SelectionPinned ? "your explicit model choice is retained; automatic switching is disabled."
                             : attempt >= Math.Max(1, options.MaxLanesPerRequest) ? "the configured lane-attempt limit was reached." : "no other lane available."));
@@ -696,7 +719,9 @@ public sealed class CodingTurnOrchestrator(
                 // describe the native work already saved. Keep the finishing evidence (or acceptance repair)
                 // with the restricted commit scope rather than rebuilding an original-request-only hand-off.
                 if (finishingCommit is null)
-                    message = BuildHandOffMessage(request.UserMessage, lane, next, outcome, mutated, decline?.Remaining);
+                    message = BuildHandOffMessage(request.UserMessage, lane, next, outcome, mutated, decline?.Remaining)
+                        + (error is null || outcome is LaneOutcomeKind.Refused or LaneOutcomeKind.PartialRefusal
+                            ? "" : "\nPrevious attempt's host evidence:\n" + error);
                 tried.Add(next);
                 lane = next;
                 attempt++;
@@ -815,6 +840,7 @@ public sealed class CodingTurnOrchestrator(
                 : "";
         return $"[Hand-off] You are {to.Name} ({to.Route}), continuing a request that a previous attempt did not finish.\n"
              + $"{progress}\n{scope}"
+             + "A tool call without a saved result has an uncertain outcome. Do not repeat an uncertain external action; verify it through a read-only check first.\n"
              + "Evaluate the original request on its own terms. Prior model assumptions are not user requirements or verified facts. Do not substitute an unrelated task for the requested outcome.\n"
              + "If you also cannot do part of it, call harness.decline (or say so in one plain sentence first) and complete the rest.\n\n"
              + "Original request:\n" + original;

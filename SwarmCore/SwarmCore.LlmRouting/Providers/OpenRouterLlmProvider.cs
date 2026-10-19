@@ -33,7 +33,20 @@ public class OpenRouterLlmProvider : OpenAILlmProvider
         response.EnsureSuccessStatusCode();
         using var document = JsonDocument.Parse(await response.Content.ReadAsStringAsync(cancellationToken).ConfigureAwait(false));
         var details = ParseCatalog(document.RootElement);
-        return new LlmModelCatalog(details.Select(m => m.Id).ToArray(), "Account-filtered provider API catalog") { Details = details };
+        return new LlmModelCatalog(details.Select(m => m.Id).ToArray(), "Account-filtered provider API catalog") { Details = details, ReasoningEfforts = ParseReasoningEfforts(document.RootElement) };
+    }
+
+    internal static IReadOnlyDictionary<string, IReadOnlyList<string>> ParseReasoningEfforts(JsonElement root)
+    {
+        var choices = new Dictionary<string, IReadOnlyList<string>>(StringComparer.OrdinalIgnoreCase);
+        foreach (var model in root.GetProperty("data").EnumerateArray())
+        {
+            if (!model.TryGetProperty("id", out var id) || id.GetString() is not { Length: > 0 } name) continue;
+            if (model.TryGetProperty("supported_parameters", out var parameters) && parameters.ValueKind == JsonValueKind.Array)
+                choices[name] = parameters.EnumerateArray().Any(p => p.GetString() is "reasoning" or "reasoning.effort")
+                    ? ["low", "medium", "high"] : [];
+        }
+        return choices;
     }
 
     internal static IReadOnlyList<LlmCatalogModel> ParseCatalog(JsonElement root)

@@ -6,7 +6,7 @@ An SDK/workload upgrade should be validated as a separate change.
 
 ## Terminal
 
-Restore and build `TalavineCode.Cli.slnx`; it excludes the MAUI application.
+Restore and build `TalavineCode.Cli.slnx`; it excludes the native desktop application.
 Run `dotnet run --project SwarmCode -- --help` to verify the executable starts
 without contacting a model or opening a user profile.
 
@@ -33,7 +33,8 @@ interaction require separate checks beyond CLI CI.
 
 ## Apple Silicon macOS desktop
 
-Install the pinned SDK and matching MAUI/Catalyst workload, and Xcode 27. Point
+The Mac host uses AppKit and WKWebView with the shared Blazor UI.
+Install the pinned SDK and matching .NET macOS workload, and Xcode 27. Point
 `DEVELOPER_DIR` at the appropriate Xcode if necessary. The public SDK wrapper
 uses the installed `dotnet`; it does not install tools or modify your system.
 
@@ -51,3 +52,8 @@ Never commit provisioning profiles, certificates, credentials, or signed bundles
 The bundle includes a separately built console bridge; its signing script is
 included under `Installer/macOS`. Native Mac build and runtime verification are
 separate from the Windows CLI CI lane.
+
+The build script runs `scripts/verify-swarmcode-native-macos.sh` to check the
+bundle, signature, runtime, and CLI bridge. It requires `rg` (ripgrep) alongside
+the native Apple command-line tools. Native interaction and Keychain acceptance
+still require a Mac; the Windows CI lane does not establish those results.

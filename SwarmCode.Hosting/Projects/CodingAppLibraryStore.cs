@@ -18,10 +18,11 @@ public sealed class CodingAppLibraryStore(SwarmCodeDataPaths paths)
     public void SetFolder(string folder, string? expectedFolder)
     {
         var full = CodingAppPaths.Normalize(folder);
+        expectedFolder = expectedFolder is null ? null : CodingAppPaths.Normalize(expectedFolder);
         if (!Directory.Exists(full)) throw new DirectoryNotFoundException("Choose an existing folder for your apps.");
         SettingsJsonFile.Mutate(FilePath, json =>
         {
-            if (json["appsFolder"]?.GetValue<string>() != expectedFolder)
+            if (!string.Equals(json["appsFolder"]?.GetValue<string>(), expectedFolder, CodingAppPaths.Comparison))
                 throw new InvalidOperationException("Your apps folder changed in another window. Reload before changing it.");
             json["appsFolder"] = full;
             return true;
@@ -32,10 +33,11 @@ public sealed class CodingAppLibraryStore(SwarmCodeDataPaths paths)
     {
         name = CodingAppPaths.FolderName(name);
         if (string.IsNullOrWhiteSpace(description)) throw new ArgumentException("Describe the app you want to build.");
+        expectedFolder = CodingAppPaths.Normalize(expectedFolder);
         return SettingsJsonFile.Mutate(FilePath, json =>
         {
             var folder = json["appsFolder"]?.GetValue<string>();
-            if (folder != expectedFolder) throw new InvalidOperationException("Your apps folder changed. Reload before creating an app.");
+            if (!string.Equals(folder, expectedFolder, CodingAppPaths.Comparison)) throw new InvalidOperationException("Your apps folder changed. Reload before creating an app.");
             if (folder is null || !Directory.Exists(folder)) throw new DirectoryNotFoundException("Choose your apps folder first.");
             var root = CodingAppPaths.Within(folder, name);
             if (Directory.Exists(root) || File.Exists(root)) throw new InvalidOperationException("That folder already exists. Choose another app name or use Add an app.");

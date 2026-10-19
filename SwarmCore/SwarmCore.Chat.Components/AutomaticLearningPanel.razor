@@ -1,0 +1,107 @@
+@using SwarmCore.Agent.Learning
+@using SwarmCore.HarnessLearning
+@implements IDisposable
+
+<div class="ai-overview">
+<section class="ai-overview__section" aria-label="Automatic learning">
+    <div class="ai-overview__heading"><h2>Automatic learning</h2><span>Structured data preparation</span></div>
+    <p class="ai-overview__copy">Proposes a reviewed strategy, tests it against the baseline, and retains gains for the same model and preparation contract. Runs while this host and its model services are available. Private customer records are not used for training or shared between apps.</p>
+    @if (_state is not null)
+    {
+        <div class="ai-overview__card" role="status" aria-live="polite">
+            <h3>@(_paused ? "Paused" : _state.Stage)</h3>
+            <p>@_state.Outcome</p>
+            @if (_state.FailureCode is not null) { <p class="ai-overview__copy">Diagnostic: @_state.FailureCode</p> }
+            @if (_state.PendingCall) { <p class="ai-overview__copy">A model call is running; its final usage is pending.</p> }
+            @if (_state.TotalTrials > 0)
+            {
+                <p>@_state.CompletedTrials / @_state.TotalTrials trials completed</p>
+                <progress max="@_state.TotalTrials" value="@_state.CompletedTrials" aria-label="Completed learning trials"></progress>
+            }
+            <p class="ai-overview__copy">Retained strategy: <strong>@_state.ActiveStrategy</strong> · Scope: this profile or tenant only</p>
+            @if (_state.RunId is not null)
+            {
+            <p class="ai-overview__copy">Model: @_state.Model @if (_state.CandidateStrategy is not null) { <span>· Testing: @_state.CandidateStrategy</span> }</p>
+            <p>@_state.ReportedTokens.ToString("N0") reported cycle tokens · @_state.ReservedTokens.ToString("N0") reserved tokens</p>
+            <p class="ai-overview__copy">Includes proposal and evaluation. These calls may already appear in host usage above; do not add the totals. @_state.UnknownUsageCalls calls have unknown usage. Recorded cost: @CostLabel(); @_state.UnpricedCalls calls have no price.</p>
+            }
+            else { <p class="ai-overview__copy">No automatic cycle has run in this scope.</p> }
+            @if (_state.NextRunAt > DateTimeOffset.MinValue) { <p class="ai-overview__copy">Next eligible cycle: @_state.NextRunAt.ToLocalTime().ToString("g"). A restart preserves the reservation.</p> }
+            <div class="ai-overview__heading">
+                <button type="button" class="sm-btn sc-btn" @onclick="ToggleAsync">@(_paused ? _state.RunId is null ? "Start automatic learning" : "Resume learning" : "Pause learning")</button>
+                <button type="button" class="sm-btn sc-btn" @onclick="RollbackAsync">Restore previous strategy</button>
+            </div>
+            <p class="ai-overview__copy">Pause stops further dispatch after the current call. Rollback changes only the retained preparation strategy; it does not undo external work or reset spend limits.</p>
+        </div>
+    }
+    @if (_message is not null) { <p class="ai-overview__notice" role="status">@_message</p> }
+</section>
+</div>
+
+@code {
+    [Parameter, EditorRequired] public HarnessLearningHost Host { get; set; } = default!;
+    private readonly CancellationTokenSource _lifetime = new();
+    private HarnessLearningState? _state;
+    private bool _paused = true, _busy;
+    private string? _message;
+    protected override async Task OnInitializedAsync() { await ReadAsync(); _ = PollAsync(); }
+    private async Task ReadAsync()
+    {
+        if (_busy) return;
+        _busy = true;
+        try
+        {
+            if (!Host.IsCurrent()) { _state = null; _message = "The active scope changed. Reopen this view."; return; }
+            var snapshot = await Task.Run(async () =>
+            {
+                var store = new FileHarnessLearningState(Host.Directory);
+                return (await store.ReadAsync(_lifetime.Token), await store.IsPausedAsync(_lifetime.Token));
+            });
+            if (Host.IsCurrent()) { _state = snapshot.Item1; _paused = snapshot.Item2; }
+            else { _state = null; _message = "The active scope changed. Reopen this view."; }
+        }
+        catch (OperationCanceledException) when (_lifetime.IsCancellationRequested) { }
+        catch (Exception) { _state = null; _message = "Learning status is unavailable. Existing evidence was preserved."; }
+        finally { _busy = false; }
+    }
+    private string CostLabel() => _state is null || _state.RecordedCost == 0 && (_state.UnpricedCalls > 0 || _state.ReportedTokens == 0)
+        ? "Not reported" : (_state.UnpricedCalls > 0 ? "partial " : "") + "$" + _state.RecordedCost.ToString("F4") + " USD";
+    private async Task PollAsync()
+    {
+        try
+        {
+            using var timer = new PeriodicTimer(TimeSpan.FromSeconds(2));
+            while (await timer.WaitForNextTickAsync(_lifetime.Token))
+                await InvokeAsync(async () => { await ReadAsync(); StateHasChanged(); });
+        }
+        catch (OperationCanceledException) when (_lifetime.IsCancellationRequested) { }
+        catch (ObjectDisposedException) when (_lifetime.IsCancellationRequested) { }
+    }
+    private async Task ToggleAsync()
+    {
+        try
+        {
+            var paused = _paused;
+            await Task.Run(async () =>
+            {
+                if (!Host.IsCurrent()) throw new InvalidOperationException();
+                await new FileHarnessLearningState(Host.Directory).SetPausedAsync(!paused, _lifetime.Token);
+            });
+            _message = paused ? "Automatic learning enabled. The host will check for an eligible cycle." : "Learning paused. A dispatched call may still finish.";
+            await ReadAsync();
+        }
+        catch (Exception) { _message = "The learning setting could not be changed. Refresh and try again."; }
+    }
+    private async Task RollbackAsync()
+    {
+        try
+        {
+            var restored = await Task.Run(async () => Host.IsCurrent()
+                && await new FileHarnessLearningState(Host.Directory).RollbackAsync(_lifetime.Token));
+            _message = restored ? "Previous strategy restored. Spend reservations are unchanged." : "No previous strategy is available, or a cycle is still running.";
+            await ReadAsync();
+        }
+        catch (Exception) { _message = "The strategy could not be restored. Existing state was preserved."; }
+    }
+    public void Dispose() { _lifetime.Cancel(); _lifetime.Dispose(); }
+}

@@ -27,6 +27,7 @@ public sealed record AgentProfileSnapshot
 
     /// <summary>Optional preferred model override for tool-use calls.</summary>
     public string? Model { get; init; }
+    public string? ReasoningEffort { get; init; }
 
     /// <summary>
     /// Who supplied the complete provider/model route. Only an explicitly

@@ -130,6 +130,59 @@ public sealed class HandOffSignalTests
     }
 
     [Fact]
+    public async Task Prose_only_edit_hands_off_after_one_repair_instead_of_asking_for_a_model()
+    {
+        var h = Build([
+            _ => [new TurnCompleted("t1", "I will create the app files.", TimeSpan.Zero)],
+            _ => [new TurnCompleted("t2", "I will implement it next.", TimeSpan.Zero)],
+            _ => [new ToolCallCompleted("t3", "write", "fs.write_file", "{}", false, TimeSpan.Zero),
+                new TurnCompleted("t3", "Implemented the app.", TimeSpan.Zero)],
+        ]);
+        var events = await Collect(h.Orchestrator, Request("openrouter") with
+        {
+            RequireWorkspaceChange = true, AllowHandOff = true,
+        });
+        Assert.Equal(3, h.Seen.Count);
+        var handoff = Assert.Single(events.OfType<CodingLaneHandOff>());
+        Assert.Equal(LaneOutcomeKind.Stuck, handoff.Outcome);
+        Assert.True(h.Seen[^1].IsContinuation);
+        Assert.Contains("no file-changing tool completed", h.Seen[^1].UserMessage);
+        Assert.DoesNotContain(events, e => e is CodingLanesExhausted or TurnErrored);
+        Assert.Contains(events, e => e is CodingAcceptanceEvaluated);
+    }
+
+    [Fact]
+    public void Subscription_usage_limit_is_route_unavailability()
+        => Assert.Equal(LaneOutcomeKind.RouteUnavailable,
+            RefusalDetector.ClassifyError("You've hit your weekly limit; resets next week."));
+
+    [Theory]
+    [InlineData(true, false, true)]
+    [InlineData(false, false, false)]
+    [InlineData(true, true, false)]
+    public async Task Repeated_successful_inspections_hand_off_only_when_edits_are_pending(bool requireChange, bool plan, bool expected)
+    {
+        var h = Build([
+            _ => Enumerable.Range(0, 12).Select(i => (TurnEvent)new ToolCallCompleted("t1", "read" + i,
+                "code.glob", "{\"Files\":[],\"Total\":0}", false, TimeSpan.Zero))
+                .Append(new TurnCompleted("t1", "The folder is empty. I will build it.", TimeSpan.Zero)),
+            _ => [new ToolCallCompleted("t2", "write", "fs.write_file", "{}", false, TimeSpan.Zero),
+                new TurnCompleted("t2", "App files created.", TimeSpan.Zero)],
+        ]);
+        var events = await Collect(h.Orchestrator, Request("openrouter") with
+        {
+            RequireWorkspaceChange = requireChange, PlanMode = plan, AllowHandOff = true,
+        });
+        Assert.Equal(expected ? 1 : 0, events.OfType<CodingLaneHandOff>().Count());
+        if (expected)
+        {
+            Assert.Equal(9, events.OfType<ToolCallCompleted>().Count(e => e.ToolName == "code.glob"));
+            Assert.Contains("host evidence", h.Seen[^1].UserMessage);
+            Assert.Contains("Do not repeat", h.Seen[^1].UserMessage, StringComparison.OrdinalIgnoreCase);
+        }
+    }
+
+    [Fact]
     public async Task Refusing_reply_rewrite_owns_the_conversations_execution_gate()
     {
         var h = Build([_ => [new TurnCompleted("t1", "I cannot help with this request.", TimeSpan.Zero)],

@@ -1,3 +1,4 @@
+using SwarmCode.App.Services;
 using SwarmCore.Secrets;
 
 namespace SwarmCode.App.Components.Pages;
@@ -36,17 +37,9 @@ public partial class Session
             var path = pathArgument.Trim().Trim('"');
             if (path.Length == 0)
             {
-                var picked = await FilePicker.Default.PickAsync(new PickOptions
-                {
-                    PickerTitle = "Choose a password export (CSV)",
-                    FileTypes = new FilePickerFileType(new Dictionary<DevicePlatform, IEnumerable<string>>
-                    {
-                        [DevicePlatform.WinUI] = [".csv"],
-                        [DevicePlatform.MacCatalyst] = ["public.comma-separated-values-text", "csv"],
-                    }),
-                });
+                var picked = await DesktopPlatform.PickFileAsync("Choose a password export (CSV)", "csv");
                 if (picked is null) { AddNote("info", "Import cancelled."); return; }
-                path = picked.FullPath;
+                path = picked;
             }
             var summary = await App.PasswordImporter.ImportFileAsync(path);
             if (!summary.Success) { AddNote("warn", summary.Describe()); return; }

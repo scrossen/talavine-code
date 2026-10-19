@@ -74,38 +74,7 @@ public sealed class WorkspaceHost : IAsyncDisposable
         await _discoveryGate.WaitAsync(ct).ConfigureAwait(false);
         try
         {
-            var configured = new ModelSourcesStore(_provider.GetRequiredService<SwarmCodeDataPaths>()).Read();
-            var sources = new[]
-            {
-                new ConfiguredModelSource { Name = "lmstudio", Kind = "LMStudio", RequiresApiKey = false,
-                    Endpoint = _provider.GetRequiredService<IOptions<LMStudioProviderOptions>>().Value.Endpoint ?? "http://127.0.0.1:1234/v1" }
-            }.Where(s => !configured.Sources.Any(saved => saved.Provider == s.Provider)).ToArray();
-            var catalog = new ConfiguredModelCatalog(_provider.GetRequiredService<IHttpClientFactory>(),
-                _provider.GetRequiredService<ILlmApiKeyProvider>());
-            var discovered = await CodingCatalogDiscovery.DiscoverAsync(
-                sources.Select(s => new CodingLane(s.Name, s.Provider, "") { Priority = 80 }), LaneOptions.Lanes,
-                async (lane, cancellation) =>
-                {
-                    using var timeout = CancellationTokenSource.CreateLinkedTokenSource(cancellation);
-                    timeout.CancelAfter(TimeSpan.FromSeconds(3));
-                    return await catalog.DiscoverAsync(sources.Single(s => s.Provider == lane.Provider), timeout.Token).ConfigureAwait(false);
-                }, ct).ConfigureAwait(false);
-            LaneOptions.Lanes = LaneOptions.Lanes.Concat(discovered).ToList();
-            var localSources = await new LocalModelServerDiscovery(catalog).DiscoverAsync(
-                LocalModelServerDiscovery.ListeningEndpoints(),
-                configured.Sources.Select(s => s.Endpoint).Concat(sources.Select(s => s.Endpoint))
-                    .Append(_provider.GetRequiredService<IOptions<OllamaProviderOptions>>().Value.Endpoint), ct).ConfigureAwait(false);
-            var registry = _provider.GetRequiredService<ILlmProviderRegistry>();
-            foreach (var source in localSources)
-            {
-                if (LaneOptions.Lanes.Any(l => l.Provider == source.Provider || l.Name == source.Name)) continue;
-                registry.RegisterProvider(ConfiguredCompatibleProvider.Create(source,
-                    _provider.GetRequiredService<ILlmApiKeyProvider>(), _provider.GetRequiredService<IHttpClientFactory>(),
-                    _provider.GetRequiredService<ILoggerFactory>()));
-                LaneOptions.Lanes = LaneOptions.Lanes.Append(new CodingLane(source.Name, source.Provider, source.Model)
-                { Priority = 81, Description = $"Local model server ({source.Endpoint})" }).ToList();
-            }
-            await _provider.GetRequiredService<OllamaCodingLaneSource>().RefreshAsync(ct).ConfigureAwait(false);
+            await LocalCodingModelDiscovery.RefreshAsync(_provider, ct).ConfigureAwait(false);
         }
         finally { _discoveryGate.Release(); }
     }

@@ -121,13 +121,14 @@ public sealed class DecisionSelectionTests : TempDirTest
     }
 
     [Theory]
-    [InlineData(false, true)]
-    [InlineData(true, true)]
-    [InlineData(true, false)]
-    public async Task ActualConversationRunner_DispatchesStartingChoice_WithoutDisablingHandoff_AndPreservesSessionAfterRestart(bool userSelected, bool allowHandOff)
+    [InlineData(false, true, "small")]
+    [InlineData(true, true, "small")]
+    [InlineData(true, false, "small")]
+    [InlineData(true, true, "small@high")]
+    public async Task ActualConversationRunner_DispatchesStartingChoice_WithoutDisablingHandoff_AndPreservesSessionAfterRestart(bool userSelected, bool allowHandOff, string userModel)
     {
         var catalog = new WorkspaceSessionCatalog(Paths); var session = await catalog.CreateAsync(Tmp);
-        if (userSelected) await catalog.SetModelAsync(session.Id, "fast", "small");
+        if (userSelected) await catalog.SetModelAsync(session.Id, "fast", userModel);
         var coordinator = await CoordinatorAsync(new Fake(), catalog);
         var orchestrator = new CaptureOrchestrator();
         var services = new ServiceCollection(); services.AddLogging();
@@ -142,14 +143,14 @@ public sealed class DecisionSelectionTests : TempDirTest
         Assert.True(runner.TrySend("Investigate concurrency", "fast", SwarmCore.Coding.Permissions.CodingPermissionMode.Auto, allowHandOff, "small"));
         await finished.Task.WaitAsync(TimeSpan.FromSeconds(10));
         Assert.Equal(userSelected ? "fast" : "strong", orchestrator.Request!.LaneName);
-        Assert.Equal(userSelected ? "small" : "large@high", orchestrator.Request.ModelOverride);
+        Assert.Equal(userSelected ? userModel : "large@high", orchestrator.Request.ModelOverride);
         Assert.False(orchestrator.Request.SelectionPinned);
         Assert.Equal(allowHandOff, CodingRoutingPolicy.CanHandOff(orchestrator.Request, configured: true));
         // A refusal hands off to the next lane (the point of SwarmCode); the inner router still may not swap a lane's model.
         Assert.False(orchestrator.Request.StopOnRefusal);
         Assert.True(orchestrator.Request.DisableRouteFallback);
         var saved = await new WorkspaceSessionCatalog(Paths).GetAsync(session.Id);
-        Assert.Equal(userSelected ? "small" : "large@high", saved!.Selection!.Model);
+        Assert.Equal(userSelected ? userModel : "large@high", saved!.Selection!.Model);
         Assert.Equal(userSelected ? "fast" : "strong", saved.LaneName);
     }
 

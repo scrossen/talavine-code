@@ -2,35 +2,64 @@
 @using SwarmCore.Coding.Routing
 @using Microsoft.Extensions.DependencyInjection
 
-@if (Efforts.Count > 0)
-{
-    <label class="sc-field">
-        <span class="sc-field__label">Reasoning</span>
-        <select class="sc-select" aria-label="Reasoning effort" value="@Effort" disabled="@Disabled" @onchange="ChangedAsync">
-            <option value="">Provider default</option>
-            @foreach (var effort in Efforts) { <option value="@effort">@effort</option> }
-        </select>
-    </label>
-}
+<div class="thinking-picker" role="group" aria-label="Thinking level">
+    <div class="thinking-picker__heading">
+        <span>Thinking level</span>
+        <strong>@(Efforts.Count > 0 ? Label(Effort) : "Provider controlled")</strong>
+        @if (Effort.Length > 0 && Efforts.Count > 0)
+        {
+            <button type="button" class="thinking-picker__reset" aria-label="Reset thinking level to provider default" disabled="@Disabled" @onclick="ResetAsync">↺</button>
+        }
+    </div>
+    @if (Efforts.Count > 0)
+    {
+        <input type="range" class="thinking-picker__range" aria-label="Thinking level" aria-valuetext="@Label(Effort)"
+               min="0" max="@Efforts.Count" step="1" value="@Level" disabled="@Disabled" @onchange="ChangedAsync" />
+        <div class="thinking-picker__scale"><span>Default</span><span>@Label(Efforts[^1])</span></div>
+    }
+    else
+    {
+        <span class="thinking-picker__note">@(Model.Length == 0 ? "Choose a model to see its thinking options." : "This route controls thinking automatically. Choose another model or provider to adjust it.")</span>
+    }
+</div>
 
 @code {
     [Parameter] public string Model { get; set; } = "";
     [Parameter] public EventCallback<string> ModelChanged { get; set; }
     [Parameter] public CodingLane? Lane { get; set; }
     [Parameter] public WorkspaceHost? Workspace { get; set; }
+    [Parameter] public string? CatalogProvider { get; set; }
+    [Parameter] public IReadOnlyList<SwarmCore.Abstractions.LlmRouting.LlmCatalogModel> Models { get; set; } = [];
     [Parameter] public bool Disabled { get; set; }
+    [Parameter] public IReadOnlyDictionary<string, IReadOnlyList<string>>? CatalogEfforts { get; set; }
     private string Provider = "";
     protected override void OnParametersSet()
     {
-        Provider = Lane?.Provider ?? "";
-        if (Lane is { IsNative: true } && Workspace is not null)
+        Provider = CatalogProvider ?? Lane?.Provider ?? "";
+        if (CatalogProvider is null && Lane is { IsNative: true } && Workspace is not null)
         {
             using var scope = Workspace.Services.CreateScope();
             Provider = scope.ServiceProvider.GetServices<INativeLaneRunner>().FirstOrDefault(r => r.Supports(Lane))?.ModelCatalogProvider ?? "";
         }
     }
-    private string BaseModel => Model.LastIndexOf('@') is var at && at > 0 ? Model[..at] : Model;
-    private string Effort => Model.LastIndexOf('@') is var at && at > 0 ? Model[(at + 1)..] : "";
-    private IReadOnlyList<string> Efforts => ModelRouteCapabilities.ReasoningEfforts(Provider, BaseModel);
-    private Task ChangedAsync(ChangeEventArgs e) => ModelChanged.InvokeAsync(string.IsNullOrWhiteSpace(e.Value?.ToString()) ? BaseModel : BaseModel + "@" + e.Value);
+    // Custom model IDs can contain @. Strip only a supported effort suffix.
+    private string BaseModel => Model.LastIndexOf('@') is var at && at > 0
+        && EffortsFor(Model[..at]).Contains(Model[(at + 1)..], StringComparer.Ordinal)
+        ? Model[..at] : Model;
+    private string Effort => BaseModel.Length < Model.Length ? Model[(BaseModel.Length + 1)..] : "";
+    private IReadOnlyList<string> EffortsFor(string model) => CatalogEfforts?.TryGetValue(model, out var levels) == true ? levels : Models.FirstOrDefault(m => m.Id.Equals(model, StringComparison.OrdinalIgnoreCase))?.ReasoningEfforts
+        ?? ModelRouteCapabilities.ReasoningEfforts(Provider, model);
+    private IReadOnlyList<string> Efforts => EffortsFor(BaseModel);
+    private int Level => Effort.Length == 0 ? 0 : Efforts.ToList().IndexOf(Effort) + 1;
+    private static string Label(string value) => value switch
+    {
+        "" => "Provider default", "xhigh" => "Extra high", "max" => "Maximum",
+        _ => char.ToUpperInvariant(value[0]) + value[1..]
+    };
+    private Task ResetAsync() => Disabled ? Task.CompletedTask : ModelChanged.InvokeAsync(BaseModel);
+    private Task ChangedAsync(ChangeEventArgs e)
+    {
+        if (Disabled || !int.TryParse(e.Value?.ToString(), out var index) || index < 0 || index > Efforts.Count) return Task.CompletedTask;
+        return ModelChanged.InvokeAsync(index == 0 ? BaseModel : BaseModel + "@" + Efforts[index - 1]);
+    }
 }

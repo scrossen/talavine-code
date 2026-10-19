@@ -42,11 +42,10 @@
         <h2 class="sc-card__title">Models</h2>
         <div class="sc-row">
             <div class="sc-field">
-                <label class="sc-field__label" for="sc-default-model-lane">Default model for new sessions</label>
-                <select id="sc-default-model-lane" class="sc-select" value="@_defaultModelLane" @onchange="DefaultModelLaneChangedAsync">
-                    <option value="">Use the configured default</option>
-                    @foreach (var lane in CodingLaneSelections.ForPicker(AvailableLanes().ToArray(), _defaultModelLane)) { <option value="@lane.Name">@lane.SelectionLabel</option> }
-                </select>
+                <span class="sc-field__label">Default provider for new sessions</span>
+                <ProviderPicker Label="Default provider for new sessions" Value="@_defaultModelLane"
+                                ValueChanged="name => DefaultModelLaneChangedAsync(new ChangeEventArgs { Value = name })"
+                                Lanes="AvailableLanes().ToArray()" IncludeAutomatic="true" AutomaticLabel="Use the configured default" />
             </div>
             @if (!string.IsNullOrEmpty(_defaultModelLane))
             {
@@ -58,7 +57,7 @@
                     <datalist id="sc-default-models">@foreach (var model in _defaultModels) { <option value="@model"></option> }</datalist>
                 </div>
             }
-            <ReasoningPicker @bind-Model="_defaultModel" Lane="@AvailableLanes().FirstOrDefault(l => l.Name == _defaultModelLane)" Workspace="@State.Workspace" />
+            <ReasoningPicker @bind-Model="_defaultModel" Lane="@AvailableLanes().FirstOrDefault(l => l.Name == _defaultModelLane)" Workspace="@State.Workspace" Models="_defaultModelDetails" />
             <button type="button" class="sc-btn sc-btn--primary" @onclick="SaveDefaultModelAsync">Save defaults</button>
             <button type="button" class="sc-btn" @onclick="LoadDefaultModel">Reload defaults</button>
             @if (_returnSessionId is not null)
@@ -608,7 +607,7 @@
                 <span class="sc-chip @(State.KeyStore.IsAvailable ? "sc-chip--ok" : "sc-chip--warn")">@KeyStoreLabel</span>
             </div>
             <div class="sc-list__row">
-                <div class="sc-grow"><div class="sc-field__label">Log file</div><div class="sc-mono">@(MauiProgram.LogPath ?? State.Paths.LogPath)</div></div>
+                <div class="sc-grow"><div class="sc-field__label">Log file</div><div class="sc-mono">@(DesktopHost.LogPath ?? State.Paths.LogPath)</div></div>
                 <button type="button" class="sc-btn sc-btn--sm" @onclick="OpenLogFolder">Open folder</button>
             </div>
         </div>
@@ -714,6 +713,7 @@
     private string _defaultModelLane = "";
     private string _defaultModel = "";
     private IReadOnlyList<string> _defaultModels = [];
+    private IReadOnlyList<SwarmCore.Abstractions.LlmRouting.LlmCatalogModel> _defaultModelDetails = [];
     private string? _chromeStatus;
     private bool _connectingChrome;
     private string _laneDefault = "";
@@ -796,7 +796,7 @@
         _defaultLaneBaseline = prefs.DefaultLane; _defaultModelBaseline = prefs.DefaultModel;
         _defaultModelLane = prefs.DefaultLane ?? "";
         _defaultModel = Prefs.DefaultModel ?? AvailableLanes().FirstOrDefault(l => l.Name.Equals(_defaultModelLane, StringComparison.OrdinalIgnoreCase))?.Model ?? "";
-        _defaultModels = [];
+        _defaultModels = []; _defaultModelDetails = [];
     }
 
     private async Task DefaultModelLaneChangedAsync(ChangeEventArgs e)
@@ -804,7 +804,7 @@
         _defaultModelLane = e.Value?.ToString() ?? "";
         var selected = AvailableLanes().FirstOrDefault(l => l.Name.Equals(_defaultModelLane, StringComparison.OrdinalIgnoreCase));
         _defaultModel = selected?.Model ?? "";
-        _defaultModels = [];
+        _defaultModels = []; _defaultModelDetails = [];
         var generation = ++_defaultModelGeneration;
         _defaultModelStatus = null;
         _defaultModelsLoading = false;
@@ -817,7 +817,7 @@
                 using var scope = workspace.Services.CreateScope();
                 return await scope.ServiceProvider.GetRequiredService<CodingModelCatalog>().GetCatalogAsync(selected);
             });
-            if (generation == _defaultModelGeneration) { _defaultModels = models.Models; _defaultModelStatus = models.Source; }
+            if (generation == _defaultModelGeneration) { _defaultModels = models.Models; _defaultModelDetails = models.Details; _defaultModelStatus = models.Source; }
         }
         catch (Exception ex) { if (generation == _defaultModelGeneration) _defaultModelStatus = ex is OperationCanceledException ? "Model lookup timed out. Refresh to retry or enter a custom model ID." : ex.Message; }
         finally { if (generation == _defaultModelGeneration) _defaultModelsLoading = false; }
@@ -1223,17 +1223,9 @@
         _busy = true;
         try
         {
-            var picked = await FilePicker.Default.PickAsync(new PickOptions
-            {
-                PickerTitle = "Choose a password export (CSV)",
-                FileTypes = new FilePickerFileType(new Dictionary<DevicePlatform, IEnumerable<string>>
-                {
-                    [DevicePlatform.WinUI] = [".csv"],
-                    [DevicePlatform.MacCatalyst] = ["public.comma-separated-values-text", "csv"],
-                }),
-            });
+            var picked = await DesktopPlatform.PickFileAsync("Choose a password export (CSV)", "csv");
             if (picked is null) return;
-            var summary = await State.PasswordImporter.ImportFileAsync(picked.FullPath);
+            var summary = await State.PasswordImporter.ImportFileAsync(picked);
             await RefreshSecretsAsync();
             Show(summary.Describe(), !summary.Success);
         }
@@ -1359,7 +1351,7 @@
 
     private Task OpenLogFolder()
     {
-        var log = MauiProgram.LogPath ?? State.Paths.LogPath;
+        var log = DesktopHost.LogPath ?? State.Paths.LogPath;
         return FolderLauncher.OpenAsync(Path.GetDirectoryName(log) ?? State.Paths.LogsDirectory);
     }
 

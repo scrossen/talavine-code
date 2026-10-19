@@ -1,0 +1,12 @@
+<linker>
+  <!-- Runtime-compiled scripts can use handler overloads absent from the host's
+       statically compiled code. Hosts must also preserve parameter names. -->
+  <assembly fullname="System.Private.CoreLib">
+    <type fullname="System.Runtime.CompilerServices.DefaultInterpolatedStringHandler" preserve="all" />
+    <type fullname="System.Text.StringBuilder/AppendInterpolatedStringHandler" preserve="all" />
+    <!-- Roslyn's synthesized async submission factory needs AwaitOnCompleted,
+         even when statically compiled host code only uses AwaitUnsafeOnCompleted. -->
+    <type fullname="System.Runtime.CompilerServices.AsyncTaskMethodBuilder" preserve="all" />
+    <type fullname="System.Runtime.CompilerServices.AsyncTaskMethodBuilder`1" preserve="all" />
+  </assembly>
+</linker>

@@ -117,6 +117,7 @@ internal static class ProviderExecutionRequestBuilder
             if (!ModelRouteCapabilities.ReasoningEfforts(provider.ProviderName, model).Contains(effort, StringComparer.Ordinal))
                 throw new NotSupportedException($"The selected Codex CLI route does not support reasoning effort {effort}.");
             merged["reasoning_effort"] = effort;
+            _ = CodexCliLlmProvider.ResolveReasoningEffort(model, merged);
         }
         return merged;
     }

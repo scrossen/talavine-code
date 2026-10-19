@@ -145,7 +145,7 @@
                             <div class="sc-grow">
                                 <a class="sc-history__title" href="@AppNavigation.SessionUrl(session.Id)" title="@session.Title">@session.Title</a>
                                 <div class="sc-history__meta">
-                                    @if (!_byProject) { <span class="sc-chip" title="@session.Project">@session.ProjectName</span> }
+                                    @if (!_byProject) { <span class="sc-chip" title="@session.Project">@State.ProjectName(session.Project)</span> }
                                     <span title="@($"Last activity {AppNavigation.FullTime(session.LastActivityUtc)} · started {AppNavigation.FullTime(session.CreatedUtc)}")">@AppNavigation.DateAndTime(session.LastActivityUtc)</span>
                                     <span>@session.Turns.Count @(session.Turns.Count == 1 ? "turn" : "turns")</span>
                                     @if (!string.IsNullOrEmpty(session.Lane)) { <span class="sc-chip">@session.Lane</span> }

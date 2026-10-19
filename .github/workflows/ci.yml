@@ -15,6 +15,7 @@ jobs:
       - run: dotnet build TalavineCode.Cli.slnx --no-restore
       - run: dotnet test SwarmCode.Tests/SwarmCode.Tests.csproj --no-build --logger trx
       - run: dotnet test SwarmCode.Hosting.Tests/SwarmCode.Hosting.Tests.csproj --no-build --logger trx
+      - run: dotnet test SwarmCode.App.Tests/SwarmCode.App.Tests.csproj --no-build --logger trx
       - run: dotnet test SwarmCore/SwarmCore.Coding.Tests/SwarmCore.Coding.Tests.csproj --no-build --logger trx
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         if: always()

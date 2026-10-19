@@ -25,6 +25,7 @@ public sealed class MyAppsLiveTests : TempDirTest
         var app = library.Create("Hello app", "Create a single index.html that displays Hello from My apps. No packages or external services. "
             + "Use the installed Python HTTP server with an available loopback port. Verify the page responds, stop your test server, and save the Run app definition.", folder);
         var lane = Environment.GetEnvironmentVariable("SWARMCODE_APP_BUILD_TEST_LANE") ?? "codex";
+        var model = Environment.GetEnvironmentVariable("SWARMCODE_APP_BUILD_TEST_MODEL");
         var configuration = SwarmCodeHostComposer.BuildConfiguration(Paths, new Dictionary<string, string?>
         {
             ["Coding:Agents:Enabled"] = "false", ["Coding:FallbackDiscovery:Enabled"] = "false",
@@ -34,15 +35,21 @@ public sealed class MyAppsLiveTests : TempDirTest
         Assert.Contains(host.Lanes, l => l.Name == lane);
         var sessions = host.Services.GetRequiredService<WorkspaceSessionCatalog>();
         var session = await sessions.CreateAsync(app.Root, app.Name, lane);
+        if (!string.IsNullOrWhiteSpace(model))
+        {
+            await sessions.SetModelAsync(session.Id, lane, model);
+            session = (await sessions.GetAsync(session.Id))!;
+        }
         await using var runner = host.OpenSession(session.Id);
         var finished = new TaskCompletionSource<TurnResult>(TaskCreationOptions.RunContinuationsAsynchronously);
         runner.TurnFinished += result => finished.TrySetResult(result);
-        Assert.True(runner.TrySend(CodingAppPrompts.Create(app), lane, allowHandOff: false));
+        Assert.True(runner.TrySend(CodingAppPrompts.Create(app), lane, allowHandOff: false, modelOverride: model));
         TurnResult result;
         try { result = await finished.Task.WaitAsync(TimeSpan.FromMinutes(7)); }
         finally { if (runner.IsRunning) runner.Cancel(); }
         Assert.Null(result.Error); Assert.False(result.Cancelled); Assert.True(result.Completed);
         Assert.Equal(new[] { lane }, result.LanesUsed);
+        if (model is not null) Assert.Equal(model, runner.ActiveModel);
         Assert.Contains("Hello", await File.ReadAllTextAsync(Path.Combine(app.Root, "index.html")));
         var plan = CodingAppLaunchFile.Read(app.Root);
         Assert.NotNull(plan); Assert.Equal("http", plan.ReadyWhen);

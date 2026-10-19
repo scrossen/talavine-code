@@ -1,0 +1,21 @@
+@implements IDisposable
+@inject SwarmCodeUpdates Updates
+
+@if (Updates.Message is { } message)
+{
+    <div class="sc-toast" role="status">
+        <span class="sc-toast__text">@message</span>
+        @if (Updates.AvailableVersion is not null)
+        {
+            <button class="sc-btn sc-btn--sm" disabled="@Updates.Busy" @onclick="Updates.InstallAsync">Update and restart</button>
+        }
+        <button class="sc-btn sc-btn--ghost sc-btn--sm" disabled="@Updates.Busy" @onclick="Updates.Dismiss" aria-label="Dismiss update notice">✕</button>
+    </div>
+}
+
+@code {
+    private bool _disposed;
+    protected override void OnInitialized() { Updates.Changed += Changed; Updates.Start(); }
+    private void Changed() => _ = InvokeAsync(() => { if (!_disposed) StateHasChanged(); });
+    public void Dispose() { _disposed = true; Updates.Changed -= Changed; }
+}

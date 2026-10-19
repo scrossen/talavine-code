@@ -7,5 +7,7 @@ public static class PlatformText
 
     public static string DesktopControl => OperatingSystem.IsWindows()
         ? "Desktop control uses the current Windows desktop."
-        : "Desktop window control is available on Windows; on this computer the agent uses Chrome only.";
+        : OperatingSystem.IsMacOS()
+            ? "Native Mac app control requires Screen & System Audio Recording and Accessibility permission in System Settings > Privacy & Security. The first request opens the macOS permission prompt."
+            : "Native desktop control is available in the Windows and macOS desktop apps.";
 }

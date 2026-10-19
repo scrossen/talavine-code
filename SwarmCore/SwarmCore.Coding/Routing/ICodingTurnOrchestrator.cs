@@ -7,6 +7,9 @@ public sealed record CodingTurnRequest
 {
     public required string ConversationId { get; init; }
     public required string UserMessage { get; init; }
+    public SwarmCore.Abstractions.Collaboration.TurnAssistanceOptions Assistance { get; init; } = new();
+    /// <summary>Uses the plan-mode tool fence for an inspection report, without the planning prompt.</summary>
+    public bool ReviewOnly { get; init; }
     /// <summary>Host-authenticated original, before continuation or evidence augmentation; runtime only.</summary>
     [System.Text.Json.Serialization.JsonIgnore]
     public string? AuthenticatedOriginalUserMessage { get; init; }
@@ -208,3 +211,6 @@ public sealed record CodingTurnProgress(string TurnId, string Lane, TimeSpan Ela
 
 /// <summary>The job stopped at a user-configured boundary; completion has not been verified.</summary>
 public sealed record CodingTurnLimitReached(string TurnId, string Reason) : TurnEvent(TurnId);
+
+/// <summary>Host-owned receipt: every requested pre-work opinion has returned successfully.</summary>
+public sealed record CodingOpinionsObtained(string TurnId) : TurnEvent(TurnId);

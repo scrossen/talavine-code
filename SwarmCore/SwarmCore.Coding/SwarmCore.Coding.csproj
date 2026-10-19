@@ -13,6 +13,7 @@
     <ProjectReference Include="..\SwarmCore.Agent\SwarmCore.Agent.csproj" />
     <ProjectReference Include="..\SwarmCore.Missions\SwarmCore.Missions.csproj" />
     <ProjectReference Include="..\SwarmCore.Secrets\SwarmCore.Secrets.csproj" />
+    <ProjectReference Include="..\SwarmCore.HarnessLearning\SwarmCore.HarnessLearning.csproj" />
   </ItemGroup>
   <ItemGroup>
     <InternalsVisibleTo Include="SwarmCore.Coding.Tests" />

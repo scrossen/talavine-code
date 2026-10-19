@@ -18,10 +18,22 @@ namespace SwarmCore.Agent.ToolUseEngine;
 /// directives and evidence references; this class only contributes decisions, completed
 /// work, unresolved work, and commitments.
 /// </summary>
-public sealed class PrefixReplayWorkingContextSummarizer(
-    ILlmRouter router,
-    ILogger<PrefixReplayWorkingContextSummarizer>? logger = null) : IWorkingContextSummarizer
+public sealed class PrefixReplayWorkingContextSummarizer : IWorkingContextSummarizer
 {
+    private readonly ILlmRouter router;
+    private readonly ILogger<PrefixReplayWorkingContextSummarizer>? logger;
+    private readonly TimeSpan timeout;
+
+    public PrefixReplayWorkingContextSummarizer(ILlmRouter router, ILogger<PrefixReplayWorkingContextSummarizer>? logger = null)
+        : this(router, TimeSpan.FromSeconds(45), logger) { }
+
+    internal PrefixReplayWorkingContextSummarizer(ILlmRouter router, TimeSpan timeout, ILogger<PrefixReplayWorkingContextSummarizer>? logger = null)
+    {
+        this.router = router;
+        this.timeout = timeout;
+        this.logger = logger;
+    }
+
     public const string DecisionsHeading = "Decisions";
     public const string CompletedHeading = "Completed work";
     public const string UnresolvedHeading = "Unresolved work";
@@ -46,7 +58,25 @@ public sealed class PrefixReplayWorkingContextSummarizer(
             : BuildStandaloneRequest(request.Entries);
         if (call is null) return null;
 
-        var response = await router.ChatWithToolsAsync(FunctionTypes.Summarization, call, cancellationToken).ConfigureAwait(false);
+        // This optional side call must never consume the whole coding turn.
+        // Bound output independently of the parent task's generation settings.
+        var options = call.Options?.Clone() ?? new LlmRouterOptions();
+        options.MaxTokens = Math.Min(options.MaxTokens is > 0 ? options.MaxTokens.Value : 2048, 2048);
+        options.SuppressOutputTokenLimit = false;
+        call = call with { Options = options };
+        using var deadline = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        deadline.CancelAfter(timeout);
+        ChatToolUseResponse response;
+        try
+        {
+            response = await router.ChatWithToolsAsync(FunctionTypes.Summarization, call, deadline.Token)
+                .WaitAsync(deadline.Token).ConfigureAwait(false);
+        }
+        catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested && deadline.IsCancellationRequested)
+        {
+            logger?.LogWarning("Working-context summary exceeded {Timeout}; using the deterministic checkpoint.", timeout);
+            return null;
+        }
         var text = response.Text;
         if (string.IsNullOrWhiteSpace(text))
         {

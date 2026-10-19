@@ -1,0 +1,21 @@
+@if (Efforts.Count > 0)
+{
+    <div class="composer-effort">
+        <span aria-hidden="true">ϟ</span>
+        <label for="@_id">@(string.IsNullOrWhiteSpace(Effort) ? "Provider default" : Effort)</label>
+        <button type="button" title="Reset thinking to provider default" aria-label="Reset reasoning to provider default" disabled="@Disabled" @onclick="() => EffortChanged.InvokeAsync(null)">↶</button>
+        <input id="@_id" type="range" min="0" max="@Efforts.Count" step="1" value="@Index" disabled="@Disabled"
+               aria-label="Reasoning effort" aria-valuetext="@(Effort ?? "Provider default")" @onchange="ChangedAsync" />
+        <div class="composer-effort__labels"><span>Default</span><span>@Efforts[^1]</span></div>
+    </div>
+}
+@code {
+    [Parameter] public IReadOnlyList<string> Efforts { get; set; } = [];
+    [Parameter] public string? Effort { get; set; }
+    [Parameter] public EventCallback<string?> EffortChanged { get; set; }
+    [Parameter] public bool Disabled { get; set; }
+    private readonly string _id = "effort-" + Guid.NewGuid().ToString("N");
+    private int Index => Efforts.ToList().IndexOf(Effort ?? "") + 1;
+    private Task ChangedAsync(ChangeEventArgs e) => int.TryParse(e.Value?.ToString(), out var i) && i >= 0 && i <= Efforts.Count
+        ? EffortChanged.InvokeAsync(i == 0 ? null : Efforts[i - 1]) : Task.CompletedTask;
+}

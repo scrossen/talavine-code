@@ -1,15 +1,16 @@
 # Source layout
 
-Talavine Code has three hosts/composition projects and fourteen shared libraries.
+Talavine Code has three hosts/composition projects and fifteen shared libraries.
 The source includes complete required shared projects, including reusable APIs
 that other hosts may also use. No private product assembly is needed to build it.
 
 | Projects | Responsibility |
 | --- | --- |
 | `SwarmCode` | Terminal entry point and native-agent MCP bridge entry point |
-| `SwarmCode.App` | Windows and Apple Silicon Mac Catalyst desktop UI |
+| `SwarmCode.App` | Windows MAUI and Apple Silicon native AppKit hosts sharing Blazor pages |
 | `SwarmCode.Hosting` | Host configuration, local stores, credentials, scheduling, and composition |
 | `SwarmCore.Coding` | Coding orchestration, repository tools, native lanes, and coding workflows |
+| `SwarmCore.HarnessLearning` | Host-neutral bounded experiments, verified evidence, and learning history |
 | `SwarmCore.Agent` | Reusable agent runtime, tool policy, procedures, and execution contracts |
 | `SwarmCore.Abstractions` | Shared contracts, provider metadata, process and security infrastructure |
 | `SwarmCore.LlmRouting` | Provider adapters, model catalogs, routing, and reviewed provider packs |

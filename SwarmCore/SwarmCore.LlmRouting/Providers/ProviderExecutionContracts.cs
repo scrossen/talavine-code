@@ -392,6 +392,8 @@ public sealed class OpenAICompatibleExecutionContract(OpenAICompatibleContractFl
         LlmReasoningMode.Low => "low",
         LlmReasoningMode.Medium => "medium",
         LlmReasoningMode.High => "high",
+        LlmReasoningMode.XHigh => "xhigh",
+        LlmReasoningMode.Max => "max",
         _ => "medium",
     };
 

@@ -458,12 +458,11 @@ public sealed class BackgroundShellManager : IDisposable, IAsyncDisposable
         public Task WaitForDrainAsync(TimeSpan max, CancellationToken ct)
             => Task.WhenAny(_drained.Task, Task.Delay(max, ct));
 
-        /// <summary>Matches the pattern against output not yet scanned. Call under <see cref="Gate"/>.</summary>
+        /// <summary>Matches against unread output, including patterns spanning output events. Call under <see cref="Gate"/>.</summary>
         public bool ScanForPattern(Regex pattern)
         {
-            var from = Math.Max(_scanPosition, _readPosition);
-            if (from >= Buffer.Written) return false;
-            var text = Buffer.Read(from, int.MaxValue, out _);
+            if (_scanPosition >= Buffer.Written) return false;
+            var text = Buffer.Read(_readPosition, int.MaxValue, out _);
             _scanPosition = Buffer.Written;
             try { return pattern.IsMatch(text); }
             catch (RegexMatchTimeoutException) { return false; }

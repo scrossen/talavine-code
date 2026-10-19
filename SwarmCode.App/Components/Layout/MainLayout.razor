@@ -19,6 +19,7 @@
     </div>
 }
 <IdeBridgeHost />
+<AppUpdateBanner />
 
 @code {
     private DotNetObjectReference<MainLayout>? _self;
@@ -50,8 +51,7 @@
         if (_disposed) return;
         var prefs = State.Preferences.Current;
         // The native window and title bar follow the same choice as the web content.
-        if (Application.Current is { } app)
-            app.UserAppTheme = prefs.Theme switch { "light" => AppTheme.Light, "dark" => AppTheme.Dark, _ => AppTheme.Unspecified };
+        DesktopPlatform.SetTheme(prefs.Theme);
         try
         {
             await JS.InvokeVoidAsync("swarmcode.setTheme", prefs.Theme);
@@ -83,7 +83,7 @@
     public Task OnShortcut(string action) => InvokeAsync(async () =>
     {
         if (action == "settings") Nav.NavigateTo("/settings");
-        else if (action == "new-session" && State.Workspace is not null)
+        else if (action == "new-session")
         {
             var session = await State.NewSessionAsync();
             Nav.NavigateTo(AppNavigation.SessionUrl(session.Id));

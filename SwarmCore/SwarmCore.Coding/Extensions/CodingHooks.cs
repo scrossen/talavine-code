@@ -219,7 +219,9 @@ public sealed class CodingHookSource(IOptions<CodingOptions> options, ICodingHoo
     public static StringComparer RootComparer { get; } = OperatingSystem.IsWindows() || OperatingSystem.IsMacOS() || OperatingSystem.IsMacCatalyst()
         ? StringComparer.OrdinalIgnoreCase : StringComparer.Ordinal;
 
-    public static string NormalizeRoot(string root) => Path.TrimEndingDirectorySeparator(Path.GetFullPath(root));
+    // Match the workspace resolver's physical identity, including parent-directory links.
+    public static string NormalizeRoot(string root)
+        => Path.TrimEndingDirectorySeparator(SwarmCore.Missions.SandboxPathResolver.ResolvePhysicalPath(root));
 
     public static string RepositoryHooksPath(string repositoryRoot)
         => Path.Combine(NormalizeRoot(repositoryRoot), ExtensionFiles.RepositoryFolder, RepositoryHooksFileName);

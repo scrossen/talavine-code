@@ -1,0 +1,91 @@
+@implements IAsyncDisposable
+@inject AppState App
+
+<div class="build-model-picker" role="group" aria-label="AI for this build">
+    <div class="sc-field">
+        <span class="sc-field__label">Provider</span>
+        <ProviderPicker Label="Provider for this build" Value="@_lane" ValueChanged="LaneChangedAsync" Lanes="_lanes" IncludeAutomatic="true" />
+    </div>
+    @if (SelectedLane is { } selected)
+    {
+        <div class="sc-field">
+            <span class="sc-field__label">Model</span>
+            <ModelPicker Value="@_model" ValueChanged="ModelChangedAsync" Models="_models" />
+        </div>
+        <ReasoningPicker Model="@_model" ModelChanged="ModelChangedAsync" Lane="selected" CatalogProvider="@_provider" Models="_details" />
+        @if (_loading) { <span class="sc-muted" role="status">Loading models…</span> }
+    }
+    else
+    {
+        <p class="sc-muted">@DefaultNote Choose a provider to pick the model and thinking level for this build.</p>
+    }
+    @if (_error is not null) { <p class="sc-muted" role="status">@_error</p> }
+    @if (_providersLoading) { <span class="sc-muted" role="status">Looking for installed and connected providers…</span> }
+    <a href="/settings">Manage providers and defaults</a>
+</div>
+
+@code {
+    [Parameter] public EventCallback<CodingModelChoice?> SelectionChanged { get; set; }
+    private ModelSelectionCatalog? _catalog;
+    private IReadOnlyList<CodingLane> _lanes = [];
+    private IReadOnlyList<string> _models = [];
+    private IReadOnlyList<SwarmCore.Abstractions.LlmRouting.LlmCatalogModel> _details = [];
+    private string _lane = "", _model = "", _provider = "";
+    private string? _error;
+    private bool _loading, _disposed;
+    private bool _providersLoading = true;
+    private int _generation;
+    private CodingLane? SelectedLane => _lanes.FirstOrDefault(l => l.Name == _lane);
+    private string DefaultNote => App.Preferences.Current.DefaultModel is { Length: > 0 } model
+        ? $"Your default is {App.Preferences.Current.DefaultLane} / {model}." : "Talavine Code will choose the starting model.";
+    protected override async Task OnInitializedAsync()
+    {
+        try
+        {
+            var result = await Task.Run(async () =>
+            {
+                var catalog = App.CreateModelSelectionCatalog();
+                try { await catalog.RefreshAsync(); return (Catalog: catalog, Lanes: catalog.Lanes); }
+                catch { await catalog.DisposeAsync(); throw; }
+            });
+            if (_disposed) { await result.Catalog.DisposeAsync(); return; }
+            _catalog = result.Catalog;
+            _lanes = result.Lanes;
+        }
+        catch { _error = "Providers could not be loaded. Check your provider settings and reopen this form."; }
+        finally { _providersLoading = false; }
+    }
+    private async Task LaneChangedAsync(string name)
+    {
+        _lane = name;
+        var generation = ++_generation;
+        _error = null; _loading = false; _details = [];
+        if (SelectedLane is not { } lane || _catalog is null)
+        {
+            _model = ""; _models = []; await SelectionChanged.InvokeAsync(null); return;
+        }
+        _model = lane.Model; _models = [lane.Model]; _provider = lane.Provider;
+        await SelectionChanged.InvokeAsync(new(_lane, _model));
+        var provider = await Task.Run(() => _catalog.Provider(lane));
+        if (_disposed || generation != _generation) return;
+        _provider = provider;
+        _loading = true;
+        try
+        {
+            var models = await Task.Run(() => _catalog.GetModelsAsync(lane));
+            if (!_disposed && generation == _generation) { _models = models.Models; _details = models.Details; }
+        }
+        catch { if (!_disposed && generation == _generation) _error = "The model list is unavailable. You can still enter a model ID or choose another provider."; }
+        finally { if (!_disposed && generation == _generation) _loading = false; }
+    }
+    private Task ModelChangedAsync(string model)
+    {
+        _model = model;
+        return SelectionChanged.InvokeAsync(new(_lane, model));
+    }
+    public async ValueTask DisposeAsync()
+    {
+        _disposed = true; ++_generation;
+        if (_catalog is not null) await _catalog.DisposeAsync();
+    }
+}

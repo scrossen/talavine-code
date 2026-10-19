@@ -3,6 +3,7 @@ using SwarmCode.Hosting.Secrets;
 using SwarmCode.Hosting.Web;
 using SwarmCore.Abstractions.LlmRouting;
 using SwarmCore.Coding.Routing;
+using SwarmCore.Coding.Extensions;
 using SwarmCore.LlmRouting.Configuration;
 using SwarmCore.Secrets;
 
@@ -29,8 +30,8 @@ public sealed class Repl
 
     /// <summary>Built-in command names; a custom command with one of these names is ignored.</summary>
     private static readonly string[] BuiltInCommands =
-        ["quit", "exit", "q", "help", "?", "lanes", "lane", "models", "keys", "key", "import-passwords", "new", "clear", "auto", "secret", "secrets", "forget", "hooks",
-         "undo", "rewind", "review", "sessions", "resume", "plan", "approve", "compact", "cost", "status", "agents", "mcp", "export", "model", "mode", "init", "permissions"];
+        ["quit", "exit", "q", "help", "?", GreetingCommand.Name, "lanes", "lane", "models", "keys", "key", "import-passwords", "new", "clear", "auto", "secret", "secrets", "forget", "hooks",
+         "undo", "rewind", "review", "sessions", "resume", "fork", "plan", "approve", "compact", "cost", "status", "agents", "mcp", "export", "model", "mode", "init", "permissions"];
 
     /// <summary>The session to start in (<c>--continue</c>, <c>--resume</c>); a new one when null.</summary>
     public string? InitialConversationId { get; init; }
@@ -317,6 +318,10 @@ public sealed class Repl
                 PrintLanes();
                 break;
 
+            case "/" + GreetingCommand.Name:
+                Console.WriteLine(GreetingCommand.Message);
+                break;
+
             case "/lane":
                 if (parts.Length < 2)
                 {
@@ -417,6 +422,22 @@ public sealed class Repl
 
             case "/sessions":
                 await PrintSessionsAsync().ConfigureAwait(false);
+                break;
+
+            case "/fork":
+                if (Services?.GetService(typeof(SwarmCode.Hosting.ConversationForkService)) is not SwarmCode.Hosting.ConversationForkService forks)
+                { Console.WriteLine("Conversation forking is unavailable in this host."); break; }
+                try
+                {
+                    var fork = await Task.Run(() => forks.ForkAsync(_conversationId)).ConfigureAwait(false);
+                    await RunSessionEndAsync("fork").ConfigureAwait(false);
+                    _conversationId = fork.Id;
+                    _runner.PendingContext = null;
+                    _runner.ClearPlanApproval();
+                    Console.WriteLine($"Forked into session {fork.Id}. Working files are shared with the original chat.");
+                    await RunSessionStartAsync("resume").ConfigureAwait(false);
+                }
+                catch (Exception ex) { Console.WriteLine("Could not fork: " + ex.Message); }
                 break;
 
             case "/resume":
@@ -804,6 +825,7 @@ public sealed class Repl
         Console.WriteLine("""
             Commands:
               /help                    show this help
+              /greeting                show a welcome message
               /lanes                   list lanes (* = current)
               /lane <name>             switch the current lane
               /models                  probe providers and list available models
@@ -829,6 +851,7 @@ public sealed class Repl
               /init                    write or improve the repository's AGENTS.md
               /sessions, /resume [n|id] list saved sessions of this repository, or switch to one
               /new, /clear             start a new conversation
+              /fork                    branch this conversation with its saved history
               /hooks                   show the repository's hooks and allow or keep them off
               /permissions             show the repository's permission rules (deny always applies) and allow or keep off its allow rules
               /quit                    exit

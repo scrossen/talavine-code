@@ -69,6 +69,15 @@ window.swarmcode = window.swarmcode || {};
 })(window.swarmcode);
 
 (function (sc) {
+    // Blazor's propagation boundary does not cancel a native <dialog>'s Escape
+    // action. Consume only an open provider menu's Escape before that default;
+    // let the delegated Blazor handler close the menu and restore its focus.
+    document.addEventListener('keydown', event => {
+        if (event.key !== 'Escape') return;
+        const picker = event.target instanceof Element ? event.target.closest('.provider-picker') : null;
+        if (picker?.querySelector('.provider-picker__toggle[aria-expanded="true"]')) event.preventDefault();
+    }, true);
+
     sc.openDialog = element => { if (element && !element.open) element.showModal(); };
     sc.closeDialog = element => element?.close();
     sc.pickFiles = id => document.getElementById(id)?.click();

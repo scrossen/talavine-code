@@ -15,12 +15,12 @@ public static class FolderLauncher
             await Task.CompletedTask;
             return true;
 #else
-            return await Launcher.Default.OpenAsync(new Uri(folder));
+            return await DesktopPlatform.OpenFileAsync(folder);
 #endif
         }
         catch (Exception ex)
         {
-            MauiProgram.LogToFile($"Open folder failed: {ex.Message}");
+            DesktopHost.LogToFile($"Open folder failed: {ex.Message}");
             return false;
         }
     }

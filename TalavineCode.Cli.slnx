@@ -1,4 +1,5 @@
 <Solution>
+  <Project Path="SwarmCode.App.Tests/SwarmCode.App.Tests.csproj" />
   <Project Path="SwarmCode.Hosting.Tests/AppRuntimeFixture/AppRuntimeFixture.csproj" />
   <Project Path="SwarmCode.Hosting.Tests/SwarmCode.Hosting.Tests.csproj" />
   <Project Path="SwarmCode.Hosting/SwarmCode.Hosting.csproj" />
@@ -10,6 +11,7 @@
   <Project Path="SwarmCore/SwarmCore.Chat/SwarmCore.Chat.csproj" />
   <Project Path="SwarmCore/SwarmCore.Coding.Tests/SwarmCore.Coding.Tests.csproj" />
   <Project Path="SwarmCore/SwarmCore.Coding/SwarmCore.Coding.csproj" />
+  <Project Path="SwarmCore/SwarmCore.HarnessLearning/SwarmCore.HarnessLearning.csproj" />
   <Project Path="SwarmCore/SwarmCore.Knowledge/SwarmCore.Knowledge.csproj" />
   <Project Path="SwarmCore/SwarmCore.LlmRouting/SwarmCore.LlmRouting.csproj" />
   <Project Path="SwarmCore/SwarmCore.Mcp/SwarmCore.Mcp.csproj" />

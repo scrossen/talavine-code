@@ -203,7 +203,7 @@ public sealed class CliOptions
           --version            print the version
           -h, --help           show this help
 
-        Interactive commands: /help /lanes /lane <name> /model [id|auto] /mode [auto|ask-risky|ask] /models
+        Interactive commands: /help /greeting /lanes /lane <name> /model [id|auto] /mode [auto|ask-risky|ask] /models
           /sessions /resume [n|id] /new /clear /plan /approve /compact /cost /status /agents /mcp /hooks /permissions
           /undo /review <text> /export [path] /init /keys /key <provider|brave> [value]
           /secret <name> [value] /secrets /forget <name> /import-passwords <csv> /quit

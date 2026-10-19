@@ -9,10 +9,37 @@ namespace SwarmCode.Hosting.Settings;
 internal static class SettingsJsonFile
 {
     internal static readonly JsonSerializerOptions Json = new(JsonSerializerDefaults.Web) { WriteIndented = true, PropertyNameCaseInsensitive = true };
-    internal static JsonObject Read(string path) => File.Exists(path)
-        ? JsonNode.Parse(File.ReadAllText(path)) as JsonObject ?? throw new InvalidDataException("Settings must be a JSON object.") : new();
-    internal static string Revision(string path) => File.Exists(path)
-        ? Convert.ToHexString(SHA256.HashData(File.ReadAllBytes(path))) : "missing";
+    internal static JsonObject Read(string path)
+    {
+        var bytes = ReadSnapshot(path);
+        if (bytes is null) return new();
+        using var stream = new MemoryStream(bytes);
+        using var reader = new StreamReader(stream, Encoding.UTF8, detectEncodingFromByteOrderMarks: true);
+        return JsonNode.Parse(reader.ReadToEnd()) as JsonObject
+            ?? throw new InvalidDataException("Settings must be a JSON object.");
+    }
+    internal static string Revision(string path)
+        => ReadSnapshot(path) is { } bytes ? Convert.ToHexString(SHA256.HashData(bytes)) : "missing";
+
+    private static byte[]? ReadSnapshot(string path)
+    {
+        // Writers replace a complete file atomically. A reader must allow that replacement,
+        // and briefly retry a Windows sharing lock without converting it into empty settings.
+        for (var attempt = 0; ; attempt++)
+        {
+            try
+            {
+                using var file = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete);
+                using var buffer = new MemoryStream();
+                file.CopyTo(buffer);
+                return buffer.ToArray();
+            }
+            catch (FileNotFoundException) { return null; }
+            catch (DirectoryNotFoundException) { return null; }
+            catch (Exception ex) when (IsTransientSharing(ex) && attempt < 10)
+            { Thread.Sleep(10); }
+        }
+    }
     internal static T Mutate<T>(string path, Func<JsonObject, T> edit, string? revision = null)
     {
         Directory.CreateDirectory(Path.GetDirectoryName(path)!);
@@ -21,10 +48,23 @@ internal static class SettingsJsonFile
         var root = Read(path);
         var result = edit(root);
         var tmp = path + "." + Guid.NewGuid().ToString("N") + ".tmp";
-        try { File.WriteAllText(tmp, root.ToJsonString(Json), Encoding.UTF8); File.Move(tmp, path, true); }
+        try { File.WriteAllText(tmp, root.ToJsonString(Json), Encoding.UTF8); ReplaceSnapshot(tmp, path); }
         finally { if (File.Exists(tmp)) File.Delete(tmp); }
         return result;
     }
+    private static bool IsTransientSharing(Exception error)
+        => error is IOException && (error.HResult & 0xffff) is 32 or 33
+            || error is UnauthorizedAccessException && (error.HResult & 0xffff) == 5;
+
+    private static void ReplaceSnapshot(string temporary, string path)
+    {
+        for (var attempt = 0; ; attempt++)
+        {
+            try { File.Move(temporary, path, true); return; }
+            catch (Exception ex) when (IsTransientSharing(ex) && attempt < 10) { Thread.Sleep(10); }
+        }
+    }
+
     internal static FileStream Lease(string path)
     {
         var until = DateTime.UtcNow.AddSeconds(10);

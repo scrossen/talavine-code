@@ -11,7 +11,7 @@ namespace SwarmCore.Coding.Tests;
 
 public sealed class BackgroundShellTests : IDisposable
 {
-    private readonly string _root = Directory.CreateTempSubdirectory("bgshell-").FullName;
+    private readonly string _root = SandboxPathResolver.ResolvePhysicalPath(Directory.CreateTempSubdirectory("bgshell-").FullName);
 
     public void Dispose()
     {
@@ -82,7 +82,8 @@ public sealed class BackgroundShellTests : IDisposable
             : "echo one; echo two 1>&2; " + Sleep(2) + "; echo three; exit 3";
         var shell = await manager.StartAsync("conv", command, _root);
 
-        var first = await manager.ReadAsync("conv", shell.Id, "two", 20);
+        // stdout and stderr are pumped independently; wait for both before taking the first read.
+        var first = await manager.ReadAsync("conv", shell.Id, "(?s)(?:one.*two|two.*one)", 20);
         Assert.Contains("one", first.Output);
         Assert.Contains("two", first.Output); // stderr is merged
 
@@ -95,6 +96,30 @@ public sealed class BackgroundShellTests : IDisposable
 
         var empty = await manager.ReadAsync("conv", shell.Id);
         Assert.Equal("", empty.Output);
+    }
+
+    [SwarmCore.Testing.PosixFact]
+    public async Task Pattern_wait_matches_across_separately_delivered_output()
+    {
+        using var manager = Manager();
+        var shell = await manager.StartAsync("conv",
+            "echo first; while [ ! -f release ]; do sleep 0.02; done; echo second; sleep 30", _root);
+        var deadline = Stopwatch.StartNew();
+        while (!manager.Peek("conv", shell.Id).Contains("first") && deadline.Elapsed < TimeSpan.FromSeconds(5))
+            await Task.Delay(10);
+        Assert.Contains("first", manager.Peek("conv", shell.Id));
+
+        // ReadAsync scans the first chunk before awaiting the next output signal.
+        var pending = manager.ReadAsync("conv", shell.Id, "(?s)first.*second", 2);
+        Assert.False(pending.IsCompleted);
+        File.WriteAllText(Path.Combine(_root, "release"), "go");
+        var result = await pending.WaitAsync(TimeSpan.FromSeconds(5));
+
+        Assert.True(result.PatternMatched);
+        Assert.False(result.TimedOut);
+        Assert.True(result.Shell.IsRunning);
+        Assert.Contains("first", result.Output);
+        Assert.Contains("second", result.Output);
     }
 
     [Fact]

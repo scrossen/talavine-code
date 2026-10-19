@@ -134,6 +134,29 @@ public sealed class HarnessContractTests
         }
     }
 
+    [Fact]
+    public async Task Failed_acceptance_hands_remaining_work_to_another_provider_after_bounded_repair()
+    {
+        var options = new CodingOptions { Acceptance = new() { MaxRepairAttempts = 1 } };
+        var failed = new CodingAcceptanceResult(CodingAcceptanceStatus.Failed, "calculator files missing", []);
+        var passed = new CodingAcceptanceResult(CodingAcceptanceStatus.Passed, "verified calculator", []);
+        var (harness, seen, provider) = Harness(options,
+            [[new TurnCompleted("t1", "will implement", TimeSpan.Zero)],
+             [new TurnCompleted("t2", "will implement", TimeSpan.Zero)],
+             [new TurnCompleted("t3", "implemented", TimeSpan.Zero)]], [failed, failed, passed],
+            lanes: new() { Lanes = [new("small", "Initial", "small"), new("backup", "Backup", "capable")] });
+        using (provider)
+        {
+            var events = await Run(harness);
+            Assert.Equal(new[] { "Initial", "Initial", "Backup" }, seen.Select(r => r.ProviderOverride));
+            Assert.Single(events.OfType<CodingLaneHandOff>());
+            Assert.True(seen[^1].IsContinuation);
+            Assert.Contains("calculator files missing", seen[^1].UserMessage);
+            Assert.Empty(events.OfType<TurnErrored>());
+            Assert.Equal(CodingAcceptanceStatus.Passed, events.OfType<CodingAcceptanceEvaluated>().Last().Result.Status);
+        }
+    }
+
     [Theory]
     [InlineData(false)]
     [InlineData(true)]

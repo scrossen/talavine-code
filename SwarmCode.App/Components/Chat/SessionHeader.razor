@@ -29,6 +29,10 @@
         {
             <a class="sess-chip" href="@AppNavigation.SessionUrl(ParentId)" title="This is an agent another session started">Agent of @(ParentTitle ?? "a session")</a>
         }
+        @if (!string.IsNullOrEmpty(ForkedFromId))
+        {
+            <a class="sess-chip" href="@AppNavigation.SessionUrl(ForkedFromId)">Forked from original chat</a>
+        }
         @if (ActiveAgents > 0)
         {
             <a class="sess-chip sess-chip--lane" href="/agents" title="Agents this session started">@ActiveAgents @(ActiveAgents == 1 ? "agent" : "agents") working</a>
@@ -41,6 +45,7 @@
             Changes@(ChangeCount > 0 ? $" ({ChangeCount})" : "")
         </button>
         <button type="button" class="sess-btn" @onclick="() => OnNewSession.InvokeAsync()">New session</button>
+        <button type="button" class="sess-btn" disabled="@(IsRunning || ForkUnavailable)" title="Start an independent chat with this conversation's saved history" @onclick="() => OnFork.InvokeAsync()">Fork conversation</button>
     </div>
 </div>
 
@@ -58,6 +63,9 @@
     [Parameter] public EventCallback<string> OnRename { get; set; }
     [Parameter] public EventCallback OnToggleChanges { get; set; }
     [Parameter] public EventCallback OnNewSession { get; set; }
+    [Parameter] public EventCallback OnFork { get; set; }
+    [Parameter] public bool ForkUnavailable { get; set; }
+    [Parameter] public string? ForkedFromId { get; set; }
     /// <summary>Set when this session is an agent: the session that started it.</summary>
     [Parameter] public string? ParentId { get; set; }
     [Parameter] public string? ParentTitle { get; set; }

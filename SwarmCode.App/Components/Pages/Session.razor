@@ -34,10 +34,10 @@ else if (_runner is null)
     <div class="sess-empty-page">
         <div class="sess-card">
             <h2>Different repository</h2>
-            <p>This session belongs to <strong>@AppNavigation.FolderName(_session.RepositoryRoot)</strong>, but <strong>@AppNavigation.FolderName(App.RepositoryRoot ?? "")</strong> is open.</p>
+            <p>This session belongs to <strong>@App.ProjectName(_session.RepositoryRoot)</strong>, but <strong>@App.ProjectName(App.RepositoryRoot)</strong> is open.</p>
             <p class="sess-muted">@_session.RepositoryRoot</p>
             @if (_openError is not null) { <p class="sess-error">@_openError</p> }
-            <button type="button" class="sess-btn sess-btn--primary" @onclick="OpenSessionRepositoryAsync">Open @AppNavigation.FolderName(_session.RepositoryRoot)</button>
+            <button type="button" class="sess-btn sess-btn--primary" @onclick="OpenSessionRepositoryAsync">Open @App.ProjectName(_session.RepositoryRoot)</button>
         </div>
     </div>
 }
@@ -46,8 +46,8 @@ else
     <div class="sess-page @(_showChanges ? "sess-page--changes" : "")" tabindex="-1" @onkeydown="OnPageKeyDown">
         <div class="sess-main">
             <SessionHeader Title="@_session.Title"
-                           RepositoryName="@AppNavigation.FolderName(_session.RepositoryRoot)"
-                           RepositoryPath="@_session.RepositoryRoot"
+                           RepositoryName="@App.ProjectName(_session.RepositoryRoot)"
+                           RepositoryPath="@(App.Paths.IsChatWorkspace(_session.RepositoryRoot) ? null : _session.RepositoryRoot)"
                            Lane="@(_runner.ActiveLane ?? _lane)"
                            Model="@(_runner.ActiveModel ?? _model)"
                            ArtifactsOpen="_showArtifacts"
@@ -58,6 +58,9 @@ else
                            OnRename="RenameAsync"
                            OnToggleChanges="ToggleChanges"
                            OnNewSession="NewSessionAsync"
+                           OnFork="ForkSessionAsync"
+                           ForkedFromId="@_session.ForkedFromSessionId"
+                           ForkUnavailable="@(_forking || _session.ParentSessionId is not null)"
                            ParentId="@_session.ParentSessionId"
                            ParentTitle="@_parentTitle"
                            CreatedUtc="_session.CreatedUtc"
@@ -86,10 +89,10 @@ else
                     {
                         <div class="sess-welcome">
                             <div class="sess-card">
-                                <h2>What should I build?</h2>
-                                <p>Describe a change, a bug, or a question about this repository.</p>
+                                <h2>@(App.HasProject ? "What should I build?" : "How can I help?")</h2>
+                                <p>@(App.HasProject ? "Describe a change, a bug, or a question about this project." : "Ask a question or describe what you want to work on.")</p>
                                 <div class="sess-examples">
-                                    @foreach (var example in Examples)
+                                    @foreach (var example in (App.HasProject ? Examples : new[] { "Help me think through an idea.", "Explain a programming concept.", "Help me plan a new project." }))
                                     {
                                         var text = example;
                                         <button type="button" class="sess-example" @onclick="() => UseExampleAsync(text)">@text</button>
@@ -155,13 +158,13 @@ else
                 }
                 <PlanChecklist Plan="_runner.Plan" AwaitingApproval="_runner.PlanAwaitingApproval" OnApprove="ApprovePlanAsync" />
                 <QueuedMessages Items="_runner.QueuedMessages" IsRunning="_runner.IsRunning" OnRemove="RemoveQueued" OnEdit="EditQueuedAsync" OnSteer="SteerQueuedAsync" />
-                <AttachmentIntake @key="SessionId" SessionId="@SessionId" @bind-Files="_attachments" BusyChanged="value => _attachmentsBusy = value" OnOpen="OpenArtifact">
-                <ChatComposer @ref="_composer"
+                <AttachmentIntake @ref="_attachmentIntake" Compact="true" PickerId="@("session-attachments-" + SessionId)" @key="SessionId" SessionId="@SessionId" @bind-Files="_attachments" BusyChanged="value => _attachmentsBusy = value" OnOpen="OpenArtifact">
+                <ChatComposer Compact="true" @ref="_composer"
                               HasAttachments="@(_attachments.Count > 0)"
                               Disabled="_attachmentsBusy"
                               Value="@_draft"
                               ValueChanged="OnDraftChanged"
-                              Placeholder="@(_runner.IsRunning ? (_sendMode == "steer" ? "Correct the current task…" : "Queue a follow-up…") : "Ask Talavine Code to work on this repository")"
+                              Placeholder="@(_runner.IsRunning ? (_sendMode == "steer" ? "Correct the current task…" : "Queue a follow-up…") : (App.HasProject ? "Ask Talavine Code to work on this project" : "Ask Talavine Code anything"))"
                               IsRunning="_runner.IsRunning"
                               ShowSendWhileRunning="true"
                               SendLabel="@(_runner.IsRunning ? (_sendMode == "steer" ? "Steer now" : "Queue") : "Send")"
@@ -169,8 +172,15 @@ else
                               OnStop="StopAsync"
                               SlashCommands="SlashCommands">
                     <Toolbar>
-                        <SwarmCore.Chat.Components.DictateButton TargetSelector=".chat-composer__input" Class="sess-dictate" />
-                        <label class="sess-lane-label" for="session-lane">Next message</label>
+                        <button type="button" class="sess-composer-icon" title="Attach files (or paste / drop files)" aria-label="Attach files" disabled="@_attachmentsBusy" @onclick="() => _attachmentIntake!.PickAsync()">+</button>
+                        @{ var permissionMode = App.Preferences.Current.Mode; }
+                        <button type="button" class="sess-approval @(permissionMode == CodingPermissionMode.Auto ? "" : "sess-approval--on")" @onclick="CyclePermissionMode"
+                                title="@(Settings.ModeNote(permissionMode)) Click to change; allow and deny rules are in Settings.">
+                            @(permissionMode switch { CodingPermissionMode.AskRisky => "Ask risky", CodingPermissionMode.Ask => "Ask", _ => "Auto" })
+                        </button>
+                        <ComposerModelPicker Model="@_model" ModelChanged="SaveModelAsync" Lane="@Lanes.FirstOrDefault(l => l.Name == _lane)" Workspace="@App.Workspace" Disabled="_modelsLoading" CatalogEfforts="_catalogEfforts" AssistanceSummary="@_session?.Assistance.Summary">
+                        <ChildContent>
+                        <label class="sess-lane-label" for="session-lane">Provider</label>
                         <select id="session-lane" class="sess-lane-select" aria-label="Provider for next message" value="@_lane" @onchange="OnLaneChanged">
                             @foreach (var lane in CodingLaneSelections.ForPicker(Lanes, _lane))
                             {
@@ -178,7 +188,6 @@ else
                             }
                         </select>
                         <ModelPicker OpenAbove="true" @key="_lane" Value="@_model" ValueChanged="SaveModelAsync" Models="ModelChoices" Disabled="_modelsLoading" />
-                        <ReasoningPicker Model="@_model" ModelChanged="SaveModelAsync" Lane="@Lanes.FirstOrDefault(l => l.Name == _lane)" Workspace="@App.Workspace" Disabled="_modelsLoading" />
                         <button type="button" class="sess-btn" disabled="@_modelsLoading" @onclick="RefreshModelsAsync" aria-label="Refresh models">Refresh models</button>
                         @if (_session?.Selection?.UserSelected == true)
                         {
@@ -187,6 +196,8 @@ else
                         @if (_modelSource is not null) { <span class="sess-muted">@_modelSource</span> }
                         @if (_modelsLoading) { <span class="sess-muted" role="status">Loading models…</span> }
                         @if (_modelError is not null) { <span class="sess-muted" title="@_modelError">Model list unavailable; custom IDs still work.</span> }
+                        <button type="button" class="sess-btn @(_runner.PlanMode ? "sess-btn--active" : "")" aria-pressed="@(_runner.PlanMode ? "true" : "false")"
+                                title="Investigate read-only and propose a plan before changing anything" @onclick="TogglePlanMode">Plan first</button>
                         @if (_runner.IsRunning)
                         {
                             <select class="sess-lane-select" aria-label="Follow-up delivery" @bind="_sendMode">
@@ -194,16 +205,13 @@ else
                                 <option value="steer">Interrupt and steer now</option>
                             </select>
                         }
-                        <button type="button" class="sess-btn @(_runner.PlanMode ? "sess-btn--active" : "")" aria-pressed="@(_runner.PlanMode ? "true" : "false")"
-                                title="@(_runner.PlanMode ? "Plan first is on: the agent investigates read-only and proposes a plan before changing anything." : "Ask the agent to investigate read-only and propose a plan before changing anything.")"
-                                @onclick="TogglePlanMode">Plan first</button>
-                                                @{ var permissionMode = App.Preferences.Current.Mode; }
-                        <button type="button" class="sess-approval @(permissionMode == CodingPermissionMode.Auto ? "" : "sess-approval--on")" @onclick="CyclePermissionMode"
-                                title="@(Settings.ModeNote(permissionMode)) Click to change; allow and deny rules are in Settings.">
-                            @(permissionMode switch { CodingPermissionMode.AskRisky => "Ask risky", CodingPermissionMode.Ask => "Ask", _ => "Auto" })
-                        </button>
+                        </ChildContent>
+                        <AssistanceControls>
+                            <ChatAssistanceControl @key="SessionId" Revision="@(_session?.AssistanceRevision ?? 0)" OnEditing="BeginAssistanceEdit" Value="@(_session?.Assistance ?? new())" ValueChanged="SaveAssistanceAsync" Choices="AssistanceChoices" OnOpening="LoadAssistanceChoicesAsync" Disabled="_runner.IsRunning" />
+                        </AssistanceControls>
+                        </ComposerModelPicker>
+                        <SwarmCore.Chat.Components.DictateButton TargetSelector=".chat-composer__input" Class="sess-dictate" />
                     </Toolbar>
-                    <Hint>@(_runner.IsRunning && _sendMode == "steer" ? "Steer now stops the current turn, then resumes with your correction and saved tool results." : "Enter to send · Shift+Enter newline · Esc to stop · /help for commands")</Hint>
                 </ChatComposer>
                 </AttachmentIntake>
             </div>

@@ -1,0 +1,133 @@
+@page "/overview"
+@implements IDisposable
+@inject AppState State
+@using SwarmCore.Agent.Learning
+@using SwarmCore.HarnessLearning
+@using SwarmCore.Coding.SelfImprovement
+@using SwarmCode.Hosting.Observability
+
+<PageTitle>AI overview - Talavine Code</PageTitle>
+<div class="sm-shell sc-page">
+    <header class="sm-topbar sc-topbar">
+        <div><h1 class="sm-topbar__title sc-topbar__title">AI overview</h1><p class="sm-topbar__copy sc-topbar__copy">See current work, model usage and the evidence behind improvements.</p></div>
+        <div class="sc-topbar__actions">
+            <label class="sc-row">Period <select class="sc-input" aria-label="Usage period" value="@_days" @onchange="ChangePeriodAsync"><option value="7">7 days</option><option value="30">30 days</option></select></label>
+            <button type="button" class="sc-btn" @onclick="ImportAsync">Import experiment report</button>
+            <button type="button" class="sc-btn" @onclick="RefreshAsync">Refresh</button>
+        </div>
+    </header>
+    <p class="sc-muted" role="status">@(_importing ? "Importing experiment evidence…" : _loading ? "Reading recorded activity…" : $"Updated {_updated.ToLocalTime():T}. Refreshes every 10 seconds while open.")</p>
+    @if (_message is not null) { <p class="sc-notice" role="status">@_message</p> }
+    <AutomaticLearningPanel Host="@(new HarnessLearningHost(Path.Combine(State.Paths.RootDirectory, "harness-learning"), "code", () => true))" />
+    <AiOverviewPanel Usage="_usage" Experiments="_experiments" UsageError="@_usageError" ReportsError="@_reportsError" Days="_days">
+        <Activity>
+            <div class="ai-overview__heading"><h2>What is happening now</h2><a href="/self-improvement">Open self-repair queue</a></div>
+            <div class="ai-overview__columns">
+                <div class="ai-overview__card"><h3>Current work</h3>
+                    @if (_running.Count == 0) { <p class="ai-overview__copy">No chat or scheduled work is running in this app instance.</p> }
+                    @foreach (var work in _running)
+                    {
+                        <div class="ai-overview__model"><div><a href="@AppNavigation.SessionUrl(work.Id)">@work.Title</a><small>@work.Phase · @work.Model</small><small>Current turn: @(work.Tokens is { } tokens ? $"{tokens:N0} reported tokens" : "usage unavailable")</small></div></div>
+                    }
+                    <a href="/agents">Agents</a><span> / </span><a href="/schedules">Schedules</a><span> / </span><a href="/history">Session history</a>
+                </div>
+                <div class="ai-overview__card"><h3>Idle self-repair</h3>
+                    <p>@_selfRepairStatus</p>
+                    @foreach (var reason in State.SelfImprovement?.WaitingReasons ?? []) { <p class="ai-overview__copy">@reason</p> }
+                    <p class="ai-overview__copy">@_queued queued / @_verified verified on branches / @_attention need attention / @_merged merged into source.</p>
+                    <p class="ai-overview__copy">A verified branch or merge does not establish that the running app has been rebuilt. Harness experiments below evaluate changes separately.</p>
+                </div>
+            </div>
+        </Activity>
+    </AiOverviewPanel>
+</div>
+
+@code {
+    private readonly CancellationTokenSource _lifetime = new();
+    private AiUsageOverview? _usage;
+    private IReadOnlyList<HarnessExperimentOverview> _experiments = [];
+    private List<Work> _running = [];
+    private string? _usageError, _reportsError, _message;
+    private string _selfRepairStatus = "Reading self-repair status…";
+    private bool _loading, _importing;
+    private int _days = 7, _queued, _verified, _attention, _merged;
+    private DateTime _updated;
+    private sealed record Work(string Id, string Title, string Phase, string Model, long? Tokens);
+
+    protected override async Task OnInitializedAsync()
+    {
+        await RefreshAsync();
+        _ = PollAsync(_lifetime.Token);
+    }
+    private async Task PollAsync(CancellationToken ct)
+    {
+        try
+        {
+            using var timer = new PeriodicTimer(TimeSpan.FromSeconds(10));
+            while (await timer.WaitForNextTickAsync(ct)) await InvokeAsync(async () => { await RefreshAsync(); StateHasChanged(); });
+        }
+        catch (OperationCanceledException) when (ct.IsCancellationRequested) { }
+        catch (ObjectDisposedException) when (ct.IsCancellationRequested) { }
+    }
+    private async Task ChangePeriodAsync(ChangeEventArgs e)
+    {
+        _days = e.Value?.ToString() == "30" ? 30 : 7;
+        await RefreshAsync();
+    }
+    private async Task RefreshAsync()
+    {
+        if (_loading || _lifetime.IsCancellationRequested) return;
+        _loading = true;
+        var ct = _lifetime.Token;
+        var days = _days;
+        try
+        {
+            try { _usage = await Task.Run(() => SwarmCodeUsageOverview.ReadAsync(State.Paths, days, ct), ct); _usageError = null; }
+            catch (Exception ex) when (ex is IOException or System.Text.Json.JsonException or UnauthorizedAccessException)
+            { _usageError = "Usage history could not be read. Existing records have not been changed."; }
+            try { _experiments = await Task.Run(async () => HarnessExperimentOverview.From((await HarnessReportReader.ReadHistoryAsync(State.Paths.HarnessExperimentsDirectory, ct)).Concat(await HarnessReportReader.ReadHistoryAsync(Path.Combine(State.Paths.RootDirectory, "harness-learning", "reports"), ct))), ct); _reportsError = null; }
+            catch (Exception ex) when (ex is IOException or System.Text.Json.JsonException or UnauthorizedAccessException or ArgumentException)
+            { _reportsError = "Experiment history could not be read. Existing reports have not been changed."; }
+            var sessions = await Task.Run(() => State.Sessions.ListAsync(ct: ct), ct);
+            var runners = sessions.Select(s => (Session: s, Runner: State.TryGetRunner(s.Id))).Where(x => x.Runner?.IsRunning == true)
+                .Select(x => new Work(x.Session.Id, x.Session.Title, x.Runner!.Phase ?? x.Runner.JobState, x.Runner.ActiveModel ?? x.Runner.ActiveLane ?? "Model not reported", x.Runner.ReportedTokens));
+            var background = State.ScheduledRuns.BackgroundRunners.Where(r => r.IsRunning).Select(r => new Work(r.ConversationId,
+                sessions.FirstOrDefault(s => s.Id == r.ConversationId)?.Title ?? "Background work", r.Phase ?? r.JobState, r.ActiveModel ?? r.ActiveLane ?? "Model not reported", r.ReportedTokens));
+            _running = runners.Concat(background).DistinctBy(w => w.Id).ToList();
+            var backlog = await Task.Run(() => State.SelfImprovementBacklog.ListAsync(ct), ct);
+            var repairEnabled = await Task.Run(() => State.SelfImprovementOptions().Enabled, ct);
+            _selfRepairStatus = State.SelfImprovement is null ? "This build does not run the developer self-repair worker."
+                : !repairEnabled ? "Off in Settings." : State.Preferences.Current.SelfImprovementPaused ? "Paused." : State.SelfImprovement.Status;
+            _queued = backlog.Count(i => i.Stage == SelfImprovementStage.Queued);
+            _verified = backlog.Count(i => i.Stage == SelfImprovementStage.Verified);
+            _attention = backlog.Count(i => i.Stage == SelfImprovementStage.NeedsHuman);
+            _merged = backlog.Count(i => i.Stage == SelfImprovementStage.Merged);
+            _updated = DateTime.UtcNow;
+        }
+        catch (OperationCanceledException) when (ct.IsCancellationRequested) { }
+        catch (Exception ex) { DesktopHost.LogToFile("AI overview: " + ex.GetType().Name); _message = "Current activity could not be refreshed."; }
+        finally { _loading = false; }
+    }
+    private async Task ImportAsync()
+    {
+        if (_importing) return;
+        _importing = true;
+        try
+        {
+            var path = await DesktopPlatform.PickFileAsync("Choose a saved harness experiment report", "json");
+            if (path is null) return;
+            await Task.Run(async () =>
+            {
+                var report = await HarnessReportReader.ReadFileAsync(path, _lifetime.Token);
+                await new FileHarnessExperimentHistory(State.Paths.HarnessExperimentsDirectory).AppendAsync(report, _lifetime.Token);
+            });
+            _message = "Experiment evidence imported. No agent configuration was changed.";
+            await RefreshAsync();
+        }
+        catch (OperationCanceledException) when (_lifetime.IsCancellationRequested) { }
+        catch (Exception ex) when (ex is IOException or InvalidOperationException or System.Text.Json.JsonException or UnauthorizedAccessException or ArgumentException)
+        { _message = "That report could not be imported. Select a complete harness experiment JSON report; existing evidence was preserved."; }
+        finally { _importing = false; }
+    }
+    public void Dispose() { _lifetime.Cancel(); _lifetime.Dispose(); }
+}

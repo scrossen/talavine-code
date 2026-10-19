@@ -227,7 +227,7 @@
     private static string Repository(string model) => model["hf.co/".Length..].Split(':')[0];
     private static string Size(long bytes) => bytes > 0 ? $"{bytes / 1_000_000_000d:F1} GB" : "Size not reported";
     private Task GetOllamaAsync() => OpenUrlAsync("https://ollama.com/download");
-    private async Task OpenUrlAsync(string url) { try { await Microsoft.Maui.ApplicationModel.Launcher.Default.OpenAsync(url); } catch { _status = "Could not open the browser. Visit " + url; } }
+    private async Task OpenUrlAsync(string url) { try { await DesktopPlatform.OpenUriAsync(new Uri(url)); } catch { _status = "Could not open the browser. Visit " + url; } }
     private void Cancel() => _operation?.Cancel();
     public void Dispose() { _disposed = true; _operation?.Cancel(); }
 }

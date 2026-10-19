@@ -1,0 +1,37 @@
+@using SwarmCore.Chat
+@if (AllowAutomatic)
+{
+    <button type="button" class="chat-model-options__choice" aria-pressed="@(Value == "auto" ? "true" : "false")" disabled="@Disabled" @onclick="ChooseAutomaticAsync">Choose automatically</button>
+}
+<label class="chat-model-options__field">Provider
+    <select aria-label="Provider" value="@ProviderFilter" disabled="@Disabled" @onchange="ProviderChanged">
+        <option value="">All providers</option>
+        @foreach (var provider in Options.Select(o => o.Provider).Distinct(StringComparer.OrdinalIgnoreCase))
+        {
+            <option value="@provider">@provider</option>
+        }
+    </select>
+</label>
+<label class="chat-model-options__field">Model
+    <input type="search" aria-label="Search models" placeholder="Search models…" @bind="_search" @bind:event="oninput" disabled="@Disabled" />
+</label>
+<div class="chat-model-options__list" aria-label="Models">
+    @foreach (var option in Matches)
+    {
+        <button type="button" class="chat-model-options__choice" aria-pressed="@(option.Key == Value ? "true" : "false")" disabled="@Disabled" @onclick="() => ValueChanged.InvokeAsync(option.Key)">@option.Model <small>@option.Provider</small></button>
+    }
+    @if (!Matches.Any()) { <span role="status">No matching models</span> }
+</div>
+@code {
+    [Parameter] public IReadOnlyList<ChatModelOption> Options { get; set; } = [];
+    [Parameter] public string Value { get; set; } = "";
+    [Parameter] public EventCallback<string> ValueChanged { get; set; }
+    [Parameter] public bool AllowAutomatic { get; set; }
+    [Parameter] public bool Disabled { get; set; }
+    private string _search = "", _provider = "";
+    private string ProviderFilter => _provider;
+    private Task ChooseAutomaticAsync() => ValueChanged.InvokeAsync("auto");
+    private void ProviderChanged(ChangeEventArgs e) { _provider = e.Value?.ToString() ?? ""; _search = ""; }
+    private IEnumerable<ChatModelOption> Matches => Options.Where(o => (_provider.Length == 0 || o.Provider == _provider)
+        && (o.Model.Contains(_search, StringComparison.OrdinalIgnoreCase) || o.Provider.Contains(_search, StringComparison.OrdinalIgnoreCase)));
+}

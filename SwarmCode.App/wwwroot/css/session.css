@@ -127,9 +127,17 @@
 .sess-body .chat-notice--error { border-left: 3px solid var(--sc-danger); }
 .sess-body .chat-notice__details { margin-top: 0.4rem; }
 .sess-body .chat-notice__details summary { font-size: 0.9rem; }
-.sess-footer .chat-composer { padding: 0.75rem 1rem; border-radius: calc(var(--sc-radius) * 2); }
-.sess-footer .chat-composer__input { min-height: 3rem; }
-.sess-footer .chat-composer__send { border-radius: var(--sc-radius); padding: 0.45rem 0.9rem; }
+.sess-composer-icon { font: inherit; font-size: 1.5rem; width: 2rem; height: 2rem; padding: 0; border: 0; background: transparent; color: var(--sc-text); border-radius: 50%; cursor: pointer; flex-shrink: 0; }
+.sess-composer-icon:hover { background: var(--sc-sunken); }
+.sess-attachment-actions--compact { margin: 0; }
+.sess-attachment-actions--compact > label { display: none; }
+.sess-attachment-actions--compact > .sess-muted:empty { display: none; }
+.sess-footer .sess-approval { background: transparent; white-space: nowrap; }
+@media (max-width: 600px) {
+    .composer-model__name { max-width: 9rem; }
+    .composer-model__effort { display: none; }
+    .sess-footer .sess-lane-select { max-width: 7rem; }
+}
 @media (max-width: 600px) {
     .sess-body .chat-scroll { padding: 1rem; }
     .sess-body .chat-msg--user { max-width: 95%; }

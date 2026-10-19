@@ -57,6 +57,9 @@ public sealed class AcceptanceIntentTests
 
     [Theory]
     [InlineData("Can you implement those changes for me?")]
+    [InlineData("Build this app in the current project folder.\nApp name: Calculator")]
+    [InlineData("Create an app to track my garden.")]
+    [InlineData("Can you build a calculator app?")]
     [InlineData("Please fix the failing tests.")]
     [InlineData("Make code changes in the app.")]
     [InlineData("Make changes to the code.")]

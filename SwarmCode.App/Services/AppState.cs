@@ -23,11 +23,15 @@ public sealed class AppState : IAsyncDisposable, SwarmCode.Hosting.Agents.IConve
 
     private readonly Dictionary<string, ConversationRunner> _runners = new();
     private readonly object _gate = new();
+    private readonly SemaphoreSlim _workspaceGate = new(1, 1);
     private readonly UiPermissionBroker _broker = new();
     private readonly ServiceProvider _secretServices;
+    private readonly CancellationTokenSource _learningLifetime = new();
+    private readonly Task _learningWorkspaceTask;
     private readonly KeyStoreBrokerServer? _vaultBroker;
 
-    public AppState(SwarmCodeDataPaths paths, AppPreferencesStore preferences, WorkspaceSessionCatalog sessions, UserSettingsFile userSettings, ILoggerFactory loggerFactory, IOsKeyStore? keyStore = null)
+    public AppState(SwarmCodeDataPaths paths, AppPreferencesStore preferences, WorkspaceSessionCatalog sessions, UserSettingsFile userSettings, ILoggerFactory loggerFactory, IOsKeyStore? keyStore = null,
+        SwarmCore.Coding.Computer.IMacDesktopDriver? macDesktop = null)
     {
         Paths = paths;
         Preferences = preferences;
@@ -99,12 +103,15 @@ public sealed class AppState : IAsyncDisposable, SwarmCode.Hosting.Agents.IConve
             new SwarmCode.Hosting.Scheduling.SwarmCodeScheduledRunHost(sessions, preferences, ScheduledRuns),
             scheduleOptions, logger: loggerFactory.CreateLogger<SwarmCore.Coding.Scheduling.CodingScheduler>());
 
-        // Self-improvement is app level too: one backlog and one worker above every workspace. Workspaces get the shared
-        // backlog and reporter (so turns report into it) and the workspace overrides a cycle sets for its session.
-        // A developer feature: Debug builds only (SelfImprovementAvailable), and inert without a source checkout.
+        // Explicit product feedback is durable in every build, but does not register a worker, capture, tool or
+        // developer control. The Debug-only self-improvement lifecycle below shares this same backlog.
+        SelfImprovementBacklog = new SwarmCore.Coding.SelfImprovement.JsonFileSelfImprovementBacklog(paths.SelfImprovementDirectory);
+        UserBugIntake = new UserBugIntake(SelfImprovementBacklog, SelfImprovementOptions);
+
+        // Self-improvement is app level too: one worker above every workspace. Workspaces get its reporter (so turns
+        // report into it) and the workspace overrides a cycle sets for its session. This remains a Debug-only feature.
         if (SelfImprovementAvailable)
         {
-            SelfImprovementBacklog = new SwarmCore.Coding.SelfImprovement.JsonFileSelfImprovementBacklog(paths.SelfImprovementDirectory);
             SelfImprovementReporter = new SwarmCore.Coding.SelfImprovement.SelfImprovementReporter(SelfImprovementBacklog, SelfImprovementOptions,
                 logger: loggerFactory.CreateLogger<SwarmCore.Coding.SelfImprovement.SelfImprovementReporter>());
             SelfImprovementReporter.Reported += (_, _) => { SelfImprovement?.Wake(); Changed?.Invoke(); };
@@ -131,6 +138,7 @@ public sealed class AppState : IAsyncDisposable, SwarmCode.Hosting.Agents.IConve
             ConfigureServices = services =>
             {
                 services.AddSingleton(sessions);
+                if (macDesktop is not null) services.AddSingleton(macDesktop);
                 services.AddSingleton(preferences);
                 services.AddSingleton(userSettings);
                 services.AddSingleton(_settingsActivation);
@@ -146,7 +154,7 @@ public sealed class AppState : IAsyncDisposable, SwarmCode.Hosting.Agents.IConve
                 services.AddSingleton<SwarmCore.PersonalMemory.IPersonalMemoryStore>(MemoryStore);
                 services.AddSingleton<SwarmCore.Coding.Memory.IRepoMemoryProposalStore>(RepoMemoryProposals);
                 services.AddSingleton(Schedules!);
-                if (SelfImprovementBacklog is not null) services.AddSingleton(SelfImprovementBacklog);
+                if (SelfImprovementAvailable) services.AddSingleton(SelfImprovementBacklog!);
                 if (SelfImprovementReporter is not null) services.AddSingleton(SelfImprovementReporter);
                 if (WorkspaceOverridesForSessions is not null) services.AddSingleton(WorkspaceOverridesForSessions);
                 if (background)
@@ -176,6 +184,38 @@ public sealed class AppState : IAsyncDisposable, SwarmCode.Hosting.Agents.IConve
         Schedules.Changed += OnSettingsActivityChanged;
         Schedules.Start();
         SelfImprovement?.Start();
+        // The automatic preparation learner also works with no project selected. Its private scratch
+        // workspace exposes no task tools to the experimental model; ordinary host services own routing.
+        _learningWorkspaceTask = Task.Run(async () =>
+        {
+            WorkspaceHost? learningWorkspace = null;
+            try
+            {
+                while (!_learningLifetime.IsCancellationRequested)
+                {
+                    try
+                    {
+                        var learningStore = new SwarmCore.HarnessLearning.FileHarnessLearningState(Path.Combine(paths.RootDirectory, "harness-learning"));
+                        var wanted = Workspace is null && !await learningStore.IsPausedAsync(_learningLifetime.Token);
+                        if (wanted && learningWorkspace is null)
+                        {
+                            var root = Path.Combine(paths.RootDirectory, "harness-learning", "workspace");
+                            Directory.CreateDirectory(root);
+                            learningWorkspace = await WorkspaceHost.CreateAsync(WorkspaceOptions(root, background: true), ConfigureWorkspaceLogging, _learningLifetime.Token);
+                        }
+                        else if (!wanted && learningWorkspace is not null)
+                        {
+                            await learningWorkspace.DisposeAsync(); learningWorkspace = null;
+                        }
+                    }
+                    catch (OperationCanceledException) when (_learningLifetime.IsCancellationRequested) { throw; }
+                    catch (Exception ex) { loggerFactory.CreateLogger<AppState>().LogWarning("Learning host will retry: {FailureType}", ex.GetType().Name); }
+                    await Task.Delay(TimeSpan.FromSeconds(10), _learningLifetime.Token);
+                }
+            }
+            catch (OperationCanceledException) when (_learningLifetime.IsCancellationRequested) { }
+            finally { if (learningWorkspace is not null) await learningWorkspace.DisposeAsync(); }
+        });
         Instance = this;
     }
 
@@ -252,8 +292,11 @@ public sealed class AppState : IAsyncDisposable, SwarmCode.Hosting.Agents.IConve
     /// <summary>The self-improvement loop: works through <see cref="SelfImprovementBacklog"/> while the app is idle. Null outside Debug builds.</summary>
     public SwarmCore.Coding.SelfImprovement.SelfImprovementWorker? SelfImprovement { get; }
 
-    /// <summary>Defects and feature requests observed in use (the Self-improvement view). Shared by every workspace.</summary>
-    public SwarmCore.Coding.SelfImprovement.ISelfImprovementBacklog? SelfImprovementBacklog { get; }
+    /// <summary>Durable explicit product-feedback backlog. Release does not expose it to automatic capture or workers.</summary>
+    public SwarmCore.Coding.SelfImprovement.ISelfImprovementBacklog SelfImprovementBacklog { get; }
+
+    /// <summary>Explicit /bug intake, available without the Debug-only self-improvement lifecycle.</summary>
+    internal UserBugIntake UserBugIntake { get; }
 
     /// <summary>The one way sightings enter the backlog (turns, unknown commands, crash handlers).</summary>
     public SwarmCore.Coding.SelfImprovement.SelfImprovementReporter? SelfImprovementReporter { get; }
@@ -320,7 +363,7 @@ public sealed class AppState : IAsyncDisposable, SwarmCode.Hosting.Agents.IConve
                 var memoryOptions = SwarmCode.Hosting.Memory.SwarmCodePersonalMemoryRegistration.BindOptions(SwarmCodeHostComposer.BuildConfiguration(Paths));
                 MemoryOptions.Enabled = memoryOptions.Enabled; MemoryOptions.FunctionType = memoryOptions.FunctionType;
                 MemoryOptions.PrivacyClass = memoryOptions.PrivacyClass; MemoryOptions.RouteProvider = memoryOptions.RouteProvider; MemoryOptions.RouteModel = memoryOptions.RouteModel;
-                if (await ReloadWorkspaceAsync()) MauiProgram.LogToFile("Saved runtime settings applied after active work finished.");
+                if (await ReloadWorkspaceAsync()) DesktopHost.LogToFile("Saved runtime settings applied after active work finished.");
             }
             catch (Exception ex) { LastError = "Settings were saved, but the workspace could not reload: " + ex.Message; Changed?.Invoke(); }
             finally { Interlocked.Exchange(ref _settingsReloadApplying, 0); }
@@ -338,7 +381,23 @@ public sealed class AppState : IAsyncDisposable, SwarmCode.Hosting.Agents.IConve
     public UiPermissionBroker PermissionBroker => _broker;
 
     public WorkspaceHost? Workspace => Workspaces.Current;
+
+    public ModelSelectionCatalog CreateModelSelectionCatalog() => new(new SwarmCodeHostOptions
+    {
+        RepositoryRoot = RepositoryRoot ?? Paths.RootDirectory,
+        DataPaths = Paths,
+        Configuration = SwarmCodeHostComposer.BuildConfiguration(Paths),
+        ConfigureServices = services =>
+        {
+            services.AddSingleton(Vault);
+            services.AddSingleton(KeyStore);
+            services.AddSingleton<SwarmCore.LlmRouting.Configuration.ILlmApiKeyProvider>(ApiKeys);
+        }
+    });
     public string? RepositoryRoot => Workspace?.RepositoryRoot;
+    public bool HasProject => RepositoryRoot is { } root && !Paths.IsChatWorkspace(root);
+    public string SessionListRoot => RepositoryRoot ?? Paths.ChatWorkspaceDirectory;
+    public string ProjectName(string? root) => Paths.IsChatWorkspace(root) || root is null ? "No project" : AppNavigation.FolderName(root);
     public bool IsOpeningWorkspace { get; private set; }
     public string? LastError { get; private set; }
 
@@ -347,6 +406,13 @@ public sealed class AppState : IAsyncDisposable, SwarmCode.Hosting.Agents.IConve
 
     /// <summary>Opens (or rebuilds) the runtime for a repository. Running turns in the previous workspace are cancelled.</summary>
     public async Task<bool> OpenWorkspaceAsync(string repositoryRoot, CancellationToken ct = default)
+    {
+        await _workspaceGate.WaitAsync(ct).ConfigureAwait(false);
+        try { return await Task.Run(() => OpenWorkspaceCoreAsync(repositoryRoot, ct), ct).ConfigureAwait(false); }
+        finally { _workspaceGate.Release(); }
+    }
+
+    private async Task<bool> OpenWorkspaceCoreAsync(string repositoryRoot, CancellationToken ct)
     {
         ReportUserActivity();
         IsOpeningWorkspace = true;
@@ -369,7 +435,7 @@ public sealed class AppState : IAsyncDisposable, SwarmCode.Hosting.Agents.IConve
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
             LastError = ex.Message;
-            MauiProgram.LogToFile($"Open workspace failed: {ex}");
+            DesktopHost.LogToFile($"Open workspace failed: {ex}");
             return false;
         }
         finally
@@ -379,18 +445,55 @@ public sealed class AppState : IAsyncDisposable, SwarmCode.Hosting.Agents.IConve
         }
     }
 
+    /// <summary>Closes the selected project, retaining its files and saved chats.</summary>
+    public async Task CloseProjectAsync(CancellationToken ct = default)
+    {
+        await _workspaceGate.WaitAsync(ct).ConfigureAwait(false);
+        try
+        {
+            await Task.Run(async () =>
+            {
+                ReportUserActivity();
+                IsOpeningWorkspace = true;
+                LastError = null;
+                Changed?.Invoke();
+                try
+                {
+                    if (Workspace?.Services.GetService<SwarmCode.Hosting.Agents.SwarmCodeAgentHost>() is { } host)
+                        Agents.DetachHost(host, interruptRunning: true);
+                    await CloseRunnersAsync().ConfigureAwait(false);
+                    await Workspaces.CloseAsync().ConfigureAwait(false);
+                    Preferences.Update(p => { p.LastRepositoryRoot = null; p.LastSessionId = null; });
+                }
+                finally { IsOpeningWorkspace = false; Changed?.Invoke(); }
+            }, ct).ConfigureAwait(false);
+        }
+        finally { _workspaceGate.Release(); }
+    }
+
     /// <summary>Rebuilds the current workspace so new lanes, keys, or preferences take effect.</summary>
     public Task<bool> ReloadWorkspaceAsync(CancellationToken ct = default)
         => RepositoryRoot is { } root ? OpenWorkspaceAsync(root, ct) : Task.FromResult(false);
 
     public async Task<WorkspaceSessionInfo> NewSessionAsync(CancellationToken ct = default)
     {
-        var root = RepositoryRoot ?? throw new InvalidOperationException("Open a repository first.");
-        var lane = Preferences.Current.DefaultLane ?? Workspace?.LaneOptions.DefaultLane;
-        var session = await Sessions.CreateAsync(root, laneName: lane, ct: ct,
-            model: Preferences.Current.DefaultLane is not null ? Preferences.Current.DefaultModel : null).ConfigureAwait(false);
-        Preferences.Update(p => p.LastSessionId = session.Id);
-        return session;
+        await _workspaceGate.WaitAsync(ct).ConfigureAwait(false);
+        try
+        {
+            if (Workspace is null)
+            {
+                await Task.Run(() => Directory.CreateDirectory(Paths.ChatWorkspaceDirectory), ct).ConfigureAwait(false);
+                if (!await Task.Run(() => OpenWorkspaceCoreAsync(Paths.ChatWorkspaceDirectory, ct), ct).ConfigureAwait(false))
+                    throw new InvalidOperationException(LastError ?? "Could not start the chat workspace.");
+            }
+            var root = RepositoryRoot!;
+            var lane = Preferences.Current.DefaultLane ?? Workspace?.LaneOptions.DefaultLane;
+            var session = await Sessions.CreateAsync(root, laneName: lane, ct: ct,
+                model: Preferences.Current.DefaultLane is not null ? Preferences.Current.DefaultModel : null).ConfigureAwait(false);
+            Preferences.Update(p => p.LastSessionId = session.Id);
+            return session;
+        }
+        finally { _workspaceGate.Release(); }
     }
 
     /// <summary>Gets the runner for a session in the open workspace, loading its history on first use.</summary>
@@ -505,7 +608,7 @@ public sealed class AppState : IAsyncDisposable, SwarmCode.Hosting.Agents.IConve
             && Workspace?.Services.GetService(typeof(SwarmCore.Coding.Checkpoints.TurnCheckpointService)) is SwarmCore.Coding.Checkpoints.TurnCheckpointService checkpoints)
         {
             try { await Task.Run(() => checkpoints.DeleteConversationAsync(info.RepositoryRoot, sessionId, ct), ct).ConfigureAwait(false); }
-            catch (Exception ex) when (ex is not OperationCanceledException) { MauiProgram.LogToFile($"Could not delete undo checkpoints of {sessionId}: {ex.Message}"); }
+            catch (Exception ex) when (ex is not OperationCanceledException) { DesktopHost.LogToFile($"Could not delete undo checkpoints of {sessionId}: {ex.Message}"); }
         }
         await Sessions.DeleteAsync(sessionId, ct).ConfigureAwait(false);
         if (Workspace?.Services.GetService(typeof(IConversationStore)) is IConversationStore store)
@@ -536,6 +639,9 @@ public sealed class AppState : IAsyncDisposable, SwarmCode.Hosting.Agents.IConve
 
     public async ValueTask DisposeAsync()
     {
+        _learningLifetime.Cancel();
+        await _learningWorkspaceTask.ConfigureAwait(false);
+        _learningLifetime.Dispose();
         Instance = null;
         _settingsActivation.ReloadRequested -= RequestSettingsReload;
         if (SelfImprovement is not null) await SelfImprovement.DisposeAsync().ConfigureAwait(false);

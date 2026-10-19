@@ -17,11 +17,16 @@ public sealed record WorkspaceSessionInfo(
 
     /// <summary>Temporary session: personal memory is neither read nor written for its turns.</summary>
     public bool Temporary { get; init; }
+    public long AssistanceRevision { get; init; }
+    public SwarmCore.Abstractions.Collaboration.TurnAssistanceOptions Assistance { get; init; } = new();
     // Null means legacy: never silently reclassify an existing conversation as new.
     public SessionModelSelection? Selection { get; init; }
 
     /// <summary>Set for an agent's session: the session whose agent started it. The desktop sidebar nests it under that session (<see cref="SessionTree"/>).</summary>
     public string? ParentSessionId { get; init; }
+
+    /// <summary>Historical origin of an independent fork; does not make it an agent or grant authority.</summary>
+    public string? ForkedFromSessionId { get; init; }
 
     /// <summary>
     /// Where this session's turns work when it is not <see cref="RepositoryRoot"/> itself: an isolated agent's own git
@@ -41,9 +46,10 @@ public sealed class WorkspaceSessionCatalog
 {
     private static readonly JsonSerializerOptions Json = new(JsonSerializerDefaults.Web) { WriteIndented = true, DefaultIgnoreCondition = JsonIgnoreCondition.WhenWritingNull };
     private readonly string _path;
+    private readonly SwarmCodeDataPaths _paths;
     private readonly SemaphoreSlim _gate = new(1, 1);
 
-    public WorkspaceSessionCatalog(SwarmCodeDataPaths paths) => _path = paths.SessionIndexPath;
+    public WorkspaceSessionCatalog(SwarmCodeDataPaths paths) { _paths = paths; _path = paths.SessionIndexPath; }
 
     public event Action? Changed;
 
@@ -63,7 +69,7 @@ public sealed class WorkspaceSessionCatalog
         => (await LoadAsync(ct).ConfigureAwait(false)).Sessions.FirstOrDefault(s => s.Id == id);
 
     public async Task<IReadOnlyList<string>> RecentRepositoriesAsync(CancellationToken ct = default)
-        => (await LoadAsync(ct).ConfigureAwait(false)).RecentRepositories.ToList();
+        => (await LoadAsync(ct).ConfigureAwait(false)).RecentRepositories.Where(r => !_paths.IsChatWorkspace(r)).ToList();
 
     public async Task<WorkspaceSessionInfo> CreateAsync(string repositoryRoot, string? title = null, string? laneName = null, CancellationToken ct = default, string? model = null, string? parentSessionId = null,
         string? workingRoot = null, string? permissionMode = null)
@@ -85,13 +91,52 @@ public sealed class WorkspaceSessionCatalog
         await MutateAsync(doc =>
         {
             doc.Sessions.Add(session);
-            Touch(doc.RecentRepositories, root);
+            if (!_paths.IsChatWorkspace(root)) Touch(doc.RecentRepositories, root);
         }, ct).ConfigureAwait(false);
         return session;
     }
 
     public Task RememberRepositoryAsync(string repositoryRoot, CancellationToken ct = default)
-        => MutateAsync(doc => Touch(doc.RecentRepositories, Normalize(repositoryRoot)), ct);
+        => _paths.IsChatWorkspace(repositoryRoot) ? Task.CompletedTask
+            : MutateAsync(doc => Touch(doc.RecentRepositories, Normalize(repositoryRoot)), ct);
+
+    /// <summary>Prepare private payloads before publishing a new index entry. The source cannot be deleted or
+    /// have its settings changed by another catalog writer while the snapshot is prepared.</summary>
+    internal async Task<WorkspaceSessionInfo> PublishForkAsync(string sourceId,
+        Func<WorkspaceSessionInfo, WorkspaceSessionInfo, Task> prepare, CancellationToken ct)
+    {
+        WorkspaceSessionInfo fork;
+        await _gate.WaitAsync(ct).ConfigureAwait(false);
+        try
+        {
+            using var lease = await AcquireLeaseAsync(ct).ConfigureAwait(false);
+            var doc = await LoadUnlockedAsync(ct).ConfigureAwait(false);
+            var source = doc.Sessions.FirstOrDefault(s => s.Id == sourceId)
+                ?? throw new InvalidOperationException("The source session no longer exists.");
+            if (source.ParentSessionId is not null)
+                throw new InvalidOperationException("Fork a main conversation, rather than an agent's session.");
+            var now = DateTime.UtcNow;
+            fork = source with
+            {
+                Id = Guid.NewGuid().ToString("N"), Title = "Fork: " + source.Title,
+                CreatedUtc = now, LastActivityUtc = now, ForkedFromSessionId = source.Id,
+                ModelChoices = new Dictionary<string, string>(source.ModelChoices, StringComparer.OrdinalIgnoreCase),
+            };
+            await prepare(source, fork).ConfigureAwait(false);
+            ct.ThrowIfCancellationRequested();
+            doc.Sessions.Add(fork);
+            var tmp = _path + "." + Guid.NewGuid().ToString("N") + ".tmp";
+            try
+            {
+                await File.WriteAllTextAsync(tmp, JsonSerializer.Serialize(doc, Json), ct).ConfigureAwait(false);
+                File.Move(tmp, _path, overwrite: true);
+            }
+            finally { if (File.Exists(tmp)) File.Delete(tmp); }
+        }
+        finally { _gate.Release(); }
+        Changed?.Invoke();
+        return fork;
+    }
 
     /// <summary>Console host creates its own session id. Never replaces an existing session.</summary>
     public Task EnsureAsync(string id, string repositoryRoot, CancellationToken ct = default)
@@ -120,6 +165,20 @@ public sealed class WorkspaceSessionCatalog
         => MutateAsync(doc => doc.Sessions.RemoveAll(s => s.Id == id), ct);
 
     /// <summary>Marks a session temporary (memory off for its turns) or ordinary.</summary>
+    public Task SetAssistanceAsync(string id, SwarmCore.Abstractions.Collaboration.TurnAssistanceOptions value, long expectedRevision, CancellationToken ct = default)
+    {
+        if (value.Validate() is { } error) throw new ArgumentException(error);
+        return MutateAsync(doc =>
+        {
+            var index = doc.Sessions.FindIndex(s => s.Id == id);
+            if (index < 0) throw new InvalidOperationException("This conversation was deleted. Your choices have not been saved.");
+            var current = doc.Sessions[index];
+            if (current.AssistanceRevision != expectedRevision) throw new InvalidOperationException("Opinions and review changed in another window. Reopen the options before saving.");
+            doc.Sessions[index] = current with { AssistanceRevision = current.AssistanceRevision + 1,
+                Assistance = value with { OpinionModels = value.OpinionModels.ToArray() } };
+        }, ct);
+    }
+
     public Task SetTemporaryAsync(string id, bool temporary, CancellationToken ct = default)
         => Update(id, s => s with { Temporary = temporary }, ct);
 

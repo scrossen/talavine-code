@@ -199,9 +199,9 @@
             }
             var script = rebuild.WriteRelaunchScript(plan, Environment.ProcessId, merged);
             rebuild.StartRelaunch(script);
-            MauiProgram.LogToFile($"Self-improvement: merged {merged.Count} fix(es); relaunch helper started ({script}). Closing for the rebuild.");
+            DesktopHost.LogToFile($"Self-improvement: merged {merged.Count} fix(es); relaunch helper started ({script}). Closing for the rebuild.");
             await Task.Delay(300);
-            Application.Current?.Quit();
+            DesktopPlatform.Quit();
         }
         catch (Exception ex)
         {
@@ -252,7 +252,7 @@
         }
         catch (Exception ex)
         {
-            MauiProgram.LogToFile($"Self-improvement refresh failed: {ex.Message}");
+            DesktopHost.LogToFile($"Self-improvement refresh failed: {ex.Message}");
             Interlocked.Exchange(ref _refreshState, 0);
         }
     }

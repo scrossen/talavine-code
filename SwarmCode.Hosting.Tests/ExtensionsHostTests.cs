@@ -314,7 +314,8 @@ public class ExtensionsHostTests : TempDirTest
         File.WriteAllText(Path.Combine(repo, ".claude", "settings.json"), """{ "permissions": { "allow": ["git.commit"], "deny": ["shell.*"] } }""");
         var decisions = new List<ToolGuardDecision>();
         using var provider = PolicyServices(repo, new CodingPermissionRules { Allow = ["git.push"] }, decisions);
-        await using var runner = new ConversationRunner(provider, "conv");
+        var session = await provider.GetRequiredService<WorkspaceSessionCatalog>().CreateAsync(repo);
+        await using var runner = new ConversationRunner(provider, session.Id);
 
         // Unapproved: the repository deny refuses shell.exec, the repository allow does nothing (git.commit asks under AskRisky), the person's allow runs.
         var result = await SendAsync(runner, CodingPermissionMode.AskRisky);

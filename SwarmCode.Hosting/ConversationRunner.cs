@@ -63,6 +63,8 @@ public sealed class ConversationRunner : IDisposable, IAsyncDisposable
     private readonly List<QueuedTurn> _queue = [];
     private string _jobState = "Idle";
     private string? _jobRequest;
+    private SwarmCore.Abstractions.Collaboration.TurnAssistanceOptions? _jobAssistance;
+    private bool _jobOpinionsObtained;
     private CodingContinuationContext? _jobContinuation;
     private IReadOnlyList<CodingAttachment> _jobAttachments = [];
     private DateTime? _jobStarted;
@@ -79,6 +81,8 @@ public sealed class ConversationRunner : IDisposable, IAsyncDisposable
     private long _turnSequence;
     private readonly SemaphoreSlim _queueControlGate = new(1, 1);
     private bool _undoing;
+    private bool _forking;
+    private bool _clearing;
     private string? _checkpointNotice;
     private readonly IConversationPlanStore? _plans;
     private ConversationPlan _plan = ConversationPlan.Empty;
@@ -290,6 +294,8 @@ public sealed class ConversationRunner : IDisposable, IAsyncDisposable
                 ActiveModel = saved.ActiveModel;
                 _jobStarted = saved.StartedUtc;
                 _jobRequest = saved.Request;
+                _jobAssistance = saved.Assistance;
+                _jobOpinionsObtained = saved.OpinionsObtained;
                 _jobContinuation = saved.Continuation ?? (saved.Request is null ? null : new(saved.Request, []));
                 _jobAttachments = saved.Attachments;
                 _jobState = saved.State == "Running" ? "Interrupted" : saved.State;
@@ -365,13 +371,18 @@ public sealed class ConversationRunner : IDisposable, IAsyncDisposable
         lock (_gate)
         {
             // An undo writing files must finish first; the caller queues the message instead.
-            if (_disposed || _running || _undoing) return false;
+            if (_disposed || _running || _undoing || _forking) return false;
+            // A fresh request starts a new queue cycle. An earlier stop/failure must not
+            // strand follow-ups added to it, but older paused work still needs Resume.
+            // Steering/recovery continues the old cycle and retains its pause.
+            if (!isContinuation && _queue.Count == 0) _queuePaused = false;
             _turnCts?.Dispose();
             _turnCts = new CancellationTokenSource();
             var ct = _turnCts.Token;
             _running = true;
             ++_turnSequence;
             _jobRequest = null;
+            if (!isContinuation) { _jobAssistance = null; _jobOpinionsObtained = false; }
             _turnTask = Task.Run(() => RunTurnAsync(text, laneName, permissionMode, allowHandOff, modelOverride, isContinuation, attachments?.ToArray() ?? [], ct, origin, continuation), CancellationToken.None);
             return true;
         }
@@ -599,7 +610,7 @@ public sealed class ConversationRunner : IDisposable, IAsyncDisposable
     {
         lock (_gate)
         {
-            if (_disposed || _running || _queueMutations > 0 || _queue.Count == 0) return;
+            if (_disposed || _running || _undoing || _forking || _queueMutations > 0 || _queue.Count == 0) return;
             if (_queuePaused && !(_resumeSteering && _queue[0].IsSteering)) return;
             var next = _queue[0];
             _queue.RemoveAt(0);
@@ -729,30 +740,35 @@ public sealed class ConversationRunner : IDisposable, IAsyncDisposable
     /// </summary>
     public void ClearTranscript()
     {
-        // A cleared conversation starts over: grants given for it no longer apply, and a question nobody can see any more is skipped.
-        _broker?.ClearConversation(ConversationId);
-        _questions?.ClearConversation(ConversationId);
-        lock (_gate)
+        lock (_gate) { if (_forking || _clearing) return; _clearing = true; }
+        try
         {
-            ResetEntries([]);
-            _clearedThroughEvent = Interlocked.Read(ref _producedEvents);
-            // Text after the clear starts a new visible bubble instead of extending a cleared one.
-            _streaming = null;
-        }
-        var transcripts = _services.GetService<IAgentSessionStore>();
-        EnqueueJournal(async () =>
-        {
-            var count = 0;
-            if (transcripts is not null)
+            // A cleared conversation starts over: grants given for it no longer apply, and a question nobody can see any more is skipped.
+            _broker?.ClearConversation(ConversationId);
+            _questions?.ClearConversation(ConversationId);
+            lock (_gate)
             {
-                // A watermark of zero only means reconciliation may re-add the final turn's
-                // cards; the clear marker itself must land whatever the store does.
-                try { count = (await transcripts.LoadAsync(ConversationId).ConfigureAwait(false)).Count; }
-                catch (Exception ex) { _logger.LogWarning(ex, "Could not read the transcript length for the clear marker of {Conversation}.", ConversationId); }
+                ResetEntries([]);
+                _clearedThroughEvent = Interlocked.Read(ref _producedEvents);
+                // Text after the clear starts a new visible bubble instead of extending a cleared one.
+                _streaming = null;
             }
-            _journal!.AppendClear(ConversationId, count);
-        }, "the transcript clear");
-        Changed?.Invoke();
+            var transcripts = _services.GetService<IAgentSessionStore>();
+            EnqueueJournal(async () =>
+            {
+                var count = 0;
+                if (transcripts is not null)
+                {
+                    // A watermark of zero only means reconciliation may re-add the final turn's
+                    // cards; the clear marker itself must land whatever the store does.
+                    try { count = (await transcripts.LoadAsync(ConversationId).ConfigureAwait(false)).Count; }
+                    catch (Exception ex) { _logger.LogWarning(ex, "Could not read the transcript length for the clear marker of {Conversation}.", ConversationId); }
+                }
+                _journal!.AppendClear(ConversationId, count);
+            }, "the transcript clear");
+            Changed?.Invoke();
+        }
+        finally { lock (_gate) _clearing = false; }
     }
 
     private async Task RunTurnAsync(string text, string? laneName, CodingPermissionMode permissionMode, bool? allowHandOff, string? modelOverride, bool isContinuation, IReadOnlyList<CodingAttachment> attachments, CancellationToken ct, TurnOrigin? origin = null, CodingContinuationContext? continuation = null)
@@ -862,6 +878,8 @@ public sealed class ConversationRunner : IDisposable, IAsyncDisposable
 
         // Session titles are also persisted user text: only the protected message may become a title.
         var temporary = false;
+        var assistance = new SwarmCore.Abstractions.Collaboration.TurnAssistanceOptions();
+        string? assistanceSettingsError = null;
         if (_services.GetService<WorkspaceSessionCatalog>() is { } catalog)
         {
             try { await catalog.TouchAsync(ConversationId, laneName, titleHint: message, ct: ct).ConfigureAwait(false); }
@@ -869,15 +887,24 @@ public sealed class ConversationRunner : IDisposable, IAsyncDisposable
             try
             {
                 var session = await catalog.GetAsync(ConversationId, ct).ConfigureAwait(false);
+                if (session is null) throw new InvalidOperationException("The conversation was deleted.");
+                assistance = session.Assistance;
                 temporary = session?.Temporary == true;
                 // An agent's session never runs with less caution than the session that started it.
                 permissionMode = SwarmCodePermissions.ForSession(permissionMode, session);
             }
-            catch (Exception) when (!ct.IsCancellationRequested) { temporary = true; } // unknown: fail closed, memory off for this turn
+            catch (Exception) when (!ct.IsCancellationRequested)
+            { temporary = true; assistanceSettingsError = "The conversation settings could not be loaded. Work has not started; reopen the conversation before retrying."; }
         }
 
         // Personal memory for this turn: the person's own (credential-scrubbed) message is the only text memory may learn
         // from or that "remember" may cite; a continuation's harness-written prompt is not the person's words.
+        lock (_gate)
+        {
+            if (isContinuation && _jobAssistance is not null) assistance = _jobAssistance;
+            else _jobAssistance = origin?.Unattended == true ? new() : assistance with { OpinionModels = assistance.OpinionModels.ToArray() };
+            if (isContinuation && _jobOpinionsObtained) assistance = assistance with { GetOpinionsFirst = false };
+        }
         var memoryTurns = _services.GetService<SwarmCodeMemoryTurns>();
         var memoryTurn = memoryTurns?.Create(ConversationId, temporary, isContinuation ? null : message, Guid.NewGuid().ToString("N"));
 
@@ -890,6 +917,7 @@ public sealed class ConversationRunner : IDisposable, IAsyncDisposable
         var request = SwarmCodeTurnPolicy.Apply(new CodingTurnRequest
         {
             PlanMode = planMode,
+            Assistance = origin?.Unattended == true && !isContinuation ? new() : assistance,
             CompactWorkingContextFirst = compactFirst,
             ConversationId = ConversationId,
             UserMessage = laneMessage,
@@ -915,6 +943,9 @@ public sealed class ConversationRunner : IDisposable, IAsyncDisposable
             using var memoryScope = memoryTurn is null ? null : memoryTurns!.Begin(memoryTurn);
             try
             {
+                if (assistanceSettingsError is not null) throw new InvalidOperationException(assistanceSettingsError);
+                // Save required collaboration intent before any selected model can run.
+                await PersistAsync().ConfigureAwait(false);
                 if (decisionCoordinator is not null)
                 {
                     var selection = await decisionCoordinator.PrepareAsync(ConversationId, message, laneName, modelOverride,
@@ -1110,6 +1141,7 @@ public sealed class ConversationRunner : IDisposable, IAsyncDisposable
         {
             if (_disposed) return UndoUnavailable("This session is closed.");
             if (_running) return UndoUnavailable("Stop the current turn before undoing file changes.");
+            if (_forking) return UndoUnavailable("Wait for the conversation fork to finish before undoing file changes.");
             if (_undoing) return UndoUnavailable("An undo is already running.");
             _undoing = true;
         }
@@ -1196,6 +1228,12 @@ public sealed class ConversationRunner : IDisposable, IAsyncDisposable
             switch (evt)
             {
                 case CodingLaneSelected sel:
+                    // Keep prior attempts in the transcript, but their candidate
+                    // answer and error are not the outcome of the new attempt.
+                    result.Completed = false;
+                    result.Error = null;
+                    result.FinalText = null;
+                    _acceptance = null;
                     ActiveLane = sel.Lane.Name;
                     ActiveModel = sel.Lane.Model;
                     result.LanesUsed.Add(sel.Lane.Name);
@@ -1244,6 +1282,9 @@ public sealed class ConversationRunner : IDisposable, IAsyncDisposable
                     entry.State = done.IsError ? ToolCallState.Failed : ToolCallState.Completed;
                     Journal(entry);
                     if (CodingTurnOrchestrator.MutatingToolIds.Contains(done.ToolName) && !done.IsError) result.WorkspaceChanged = true;
+                    break;
+                case CodingOpinionsObtained:
+                    _jobOpinionsObtained = true;
                     break;
                 case CodingAcceptanceEvaluated acceptance:
                     _acceptance = acceptance.Result;
@@ -1385,6 +1426,25 @@ public sealed class ConversationRunner : IDisposable, IAsyncDisposable
     /// <summary>Waits for queued presentation-journal writes to land; used by hosts before closing and by tests.</summary>
     public Task FlushJournalAsync() => DrainJournalAsync();
 
+    public async Task<WorkspaceSessionInfo> ForkAsync(CancellationToken ct = default)
+    {
+        lock (_gate)
+        {
+            if (_disposed || _running || _undoing || _forking || _clearing)
+                throw new InvalidOperationException("Wait for the current operation to finish before forking.");
+            _forking = true;
+        }
+        try
+        {
+            return await Task.Run(async () =>
+            {
+                await FlushJournalAsync().ConfigureAwait(false);
+                return await _services.GetRequiredService<ConversationForkService>().ForkAsync(ConversationId, ct).ConfigureAwait(false);
+            }, ct).ConfigureAwait(false);
+        }
+        finally { lock (_gate) _forking = false; StartNextQueued(); }
+    }
+
     /// <summary>Attaches the files named by <c>@path</c> mentions (resolved in this session's repository) to the lane message.</summary>
     private async Task<SwarmCore.Coding.Prompting.FileMentionExpansion> ExpandFileMentionsAsync(string laneMessage, CancellationToken ct)
     {
@@ -1435,6 +1495,7 @@ public sealed class ConversationRunner : IDisposable, IAsyncDisposable
             lock (_gate)
                 snapshot = new ConversationJob
                 {
+                    Assistance = _jobAssistance, OpinionsObtained = _jobOpinionsObtained,
                     State = _jobState, Request = _jobRequest, Continuation = _jobContinuation, Attachments = _jobAttachments, StartedUtc = _jobStarted,
                     ActiveLane = ActiveLane, ActiveModel = ActiveModel, QueuePaused = _queuePaused, Queue = _queue.ToArray(),
                     Elapsed = _elapsed, CompletedToolCalls = _completedToolCalls, ReportedTokens = _reportedTokens,

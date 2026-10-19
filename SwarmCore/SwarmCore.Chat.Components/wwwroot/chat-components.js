@@ -317,7 +317,9 @@
         enhanceCodeBlocks,
         observeScroll,
         unobserveScroll,
-        isSubmitEnter
+        isSubmitEnter,
+        showDialog: dialog => { if (dialog && !dialog.open) dialog.showModal(); },
+        closeDialog: dialog => dialog?.close()
     };
 
     function initialize() {

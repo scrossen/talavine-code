@@ -14,15 +14,15 @@ public interface ICodingComputer
     Task<ComputerActionResult> DesktopActAsync(ComputerActionBatch batch, CancellationToken ct = default);
 }
 
-public sealed class LocalCodingComputer(ChromeComputerSession browser, WindowsComputerSession desktop) : ICodingComputer
+public sealed class LocalCodingComputer(ChromeComputerSession browser, WindowsComputerSession desktop, MacComputerSession mac) : ICodingComputer
 {
     public Task<IReadOnlyList<BrowserTabInfo>> BrowserTabsAsync(CancellationToken ct = default) => browser.ListAsync(ct);
     public Task<BrowserTabInfo> BrowserOpenAsync(string url, CancellationToken ct = default) => browser.OpenAsync(url, ct);
     public Task<BrowserObservation> BrowserObserveAsync(string tabId, CancellationToken ct = default) => browser.ObserveAsync(tabId, ct);
     public Task<ComputerActionResult> BrowserActAsync(ComputerActionBatch batch, CancellationToken ct = default) => browser.ActAsync(batch, ct);
-    public Task<IReadOnlyList<DesktopWindowInfo>> WindowsAsync(CancellationToken ct = default) => desktop.ListAsync(ct);
-    public Task<ComputerObservation> DesktopObserveAsync(string windowId, CancellationToken ct = default) => desktop.ObserveAsync(windowId, ct);
-    public Task<ComputerActionResult> DesktopActAsync(ComputerActionBatch batch, CancellationToken ct = default) => desktop.ExecuteBatchAsync(batch, ct);
+    public Task<IReadOnlyList<DesktopWindowInfo>> WindowsAsync(CancellationToken ct = default) => OperatingSystem.IsMacOS() ? mac.ListAsync(ct) : desktop.ListAsync(ct);
+    public Task<ComputerObservation> DesktopObserveAsync(string windowId, CancellationToken ct = default) => OperatingSystem.IsMacOS() ? mac.ObserveAsync(windowId, ct) : desktop.ObserveAsync(windowId, ct);
+    public Task<ComputerActionResult> DesktopActAsync(ComputerActionBatch batch, CancellationToken ct = default) => OperatingSystem.IsMacOS() ? mac.ExecuteBatchAsync(batch, ct) : desktop.ExecuteBatchAsync(batch, ct);
 }
 
 /// <summary>

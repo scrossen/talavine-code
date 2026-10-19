@@ -25,6 +25,8 @@ public sealed record ProviderPackDocument
     public OpenRouterProviderPack? OpenRouter { get; init; }
     public DirectApiProviderPack? DirectApi { get; init; }
 
+    public Dictionary<string, List<string>> ModelReasoningEfforts { get; init; } = new(StringComparer.OrdinalIgnoreCase);
+
     public string ContentSha256 { get; internal set; } = string.Empty;
     public string Identity => $"{PackId}@{Version}:{ContentSha256}";
 }

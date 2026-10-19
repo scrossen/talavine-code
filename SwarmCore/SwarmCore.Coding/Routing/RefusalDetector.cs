@@ -88,7 +88,7 @@ public static partial class RefusalDetector
     // cools a healthy lane down and hides the real error behind a hand-off.
     [GeneratedRegex(@"not\s+installed|not\s+authenticated|not\s+(?:logged|signed)\s+in|log\s*in\s+required|sign\s*[- ]?in\s+(?:is\s+)?required|please\s+(?:log|sign)\s*[- ]?in\b"
         + @"|quota\s+(?:exceeded|exhausted|reached)|exceeded\s+(?:your\s+)?(?:current\s+)?quota|insufficient[_\s](?:credit|quota|funds)|\b(?:out\s+of|no\s+remaining)\s+credits?\b|\bcredit\s+balance\b|\bpayment\s+required\b|\bbilling\s+(?:hard\s+limit|issue|problem|required|details)\b"
-        + @"|rate[\s_-]?limit|usage\s+limit"
+        + @"|rate[\s_-]?limit|usage\s+limit|\b(?:hit|reached|exceeded)\s+(?:your|the)\s+(?:daily|weekly|monthly)\s+(?:usage\s+)?limit\b"
         + @"|no\s+api\s+key|(?:invalid|missing|incorrect)\s+api\s+key|api\s+key\s+(?:is\s+)?(?:missing|invalid|not\s+(?:set|found|configured|valid))|\bunauthori[sz]ed\b"
         + @"|(?:\bHTTP(?:/[\d.]+)?|\bstatus(?:[\s_]?code)?|\berror|does\s+not\s+indicate\s+success:)\s*[:=]?\s*(?:40[13]|429|5\d\d)\b"
         + @"|\b(?:403\s+forbidden|429\s+too\s+many\s+requests|50[0-4]\s+\(?(?:internal\s+server\s+error|bad\s+gateway|service\s+unavailable|gateway\s+time-?out))\b"

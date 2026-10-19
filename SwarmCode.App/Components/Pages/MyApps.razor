@@ -52,6 +52,7 @@
                 <h2 class="sc-card__title">What would you like to build?</h2>
                 <label class="sc-field"><span class="sc-field__label">App name</span><input class="sc-input" @bind="_name" placeholder="Garden planner" maxlength="80" /></label>
                 <label class="sc-field"><span class="sc-field__label">Describe your app</span><textarea class="sc-textarea" rows="4" @bind="_description" placeholder="An app to plan my garden, track planting dates, and see what to harvest next." /></label>
+                <BuildModelPicker SelectionChanged="choice => _buildSelection = choice" />
                 <p class="sc-muted">Talavine Code creates a project folder, opens its chat, and starts building. You can keep refining it there.</p>
                 <div class="sc-row">
                     <button type="button" class="sc-btn sc-btn--primary" @onclick="CreateAsync">Build in chat</button>
@@ -158,6 +159,7 @@
 @code {
     [Parameter] public string? AppId { get; set; }
     private CodingAppLibrary? _library;
+    private CodingModelChoice? _buildSelection;
     private CodingAppProject? _selected;
     private CodingAppProject? _approval;
     private string? _approvalPlan;
@@ -196,7 +198,7 @@
         catch (Exception ex) { _error = ex.Message; }
         finally { _busy = false; if (!_disposed) { await LoadAsync(); StateHasChanged(); } }
     }
-    private void ShowCreate() { _create = true; _error = null; }
+    private void ShowCreate() { if (!_create) _buildSelection = null; _create = true; _error = null; }
     private Task ChooseFolderAsync() => PerformAsync("Choosing your apps folder…", async () =>
     {
         var expected = _library?.AppsFolder;
@@ -213,7 +215,7 @@
     private Task CreateAsync() => PerformAsync("Creating your project and opening chat…", async () =>
     {
         if (_library?.AppsFolder is not { } folder) throw new InvalidOperationException("Choose your apps folder first. Your description has been kept.");
-        var session = await Apps.CreateAsync(_name, _description, folder);
+        var session = await Apps.CreateAsync(_name, _description, folder, _buildSelection);
         Nav.NavigateTo(AppNavigation.SessionUrl(session.Id));
     });
     private Task WorkAsync(string id, bool newChat = false) => PerformAsync("Opening your app's chat…", async () =>

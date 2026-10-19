@@ -18,6 +18,13 @@ public sealed class SwarmCodeDataPaths
 
     public string RootDirectory { get; }
 
+    /// <summary>File workspace for chats with no selected project. Never use the profile root itself.</summary>
+    public string ChatWorkspaceDirectory => Path.Combine(RootDirectory, "chat-workspace");
+
+    public bool IsChatWorkspace(string? root) => !string.IsNullOrWhiteSpace(root)
+        && string.Equals(Path.GetFullPath(root).TrimEnd(Path.DirectorySeparatorChar),
+            ChatWorkspaceDirectory, OperatingSystem.IsWindows() ? StringComparison.OrdinalIgnoreCase : StringComparison.Ordinal);
+
     /// <summary>User configuration (Coding / CodingLanes / LlmProviders sections). Optional.</summary>
     public string UserConfigPath => Path.Combine(RootDirectory, "settings.json");
 
@@ -73,6 +80,9 @@ public sealed class SwarmCodeDataPaths
     /// <summary>Self-improvement backlog (one record per defect or feature request); cycles are ordinary sessions.</summary>
     public string SelfImprovementDirectory => Path.Combine(RootDirectory, "self-improvement");
 
+    /// <summary>Private immutable harness evidence; importing a report never activates its recommendation.</summary>
+    public string HarnessExperimentsDirectory => Path.Combine(RootDirectory, "harness-experiments");
+
     public string LogsDirectory => Path.Combine(RootDirectory, "logs");
 
     public string LogPath => Path.Combine(LogsDirectory, "swarmcode.log");
@@ -84,6 +94,35 @@ public sealed class SwarmCodeDataPaths
         var local = Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData);
         if (string.IsNullOrWhiteSpace(local))
             local = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), ".local", "share");
-        return Path.Combine(local, "SwarmCode");
+        var current = Path.Combine(local, "SwarmCode");
+        if (!OperatingSystem.IsMacOS()) return current;
+        // Catalyst historically resolved LocalApplicationData to Documents.
+        // Adopt its established profile in place; never replace it with an empty
+        // profile created by the native runtime's different folder mapping.
+        var legacy = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), "Documents", "SwarmCode");
+        return SelectMacDataRoot(current, legacy);
+    }
+
+    internal static string SelectMacDataRoot(string current, string legacy)
+        => HasUserData(legacy) && !HasUserData(current) ? legacy : current;
+
+    private static bool HasUserData(string root)
+    {
+        if (!Directory.Exists(root)) return false;
+        if (new[] { "preferences.json", "settings.json", "llm-settings.json", "mcp-servers.json", "services.db" }
+            .Any(name => File.Exists(Path.Combine(root, name)))) return true;
+        var sessions = Path.Combine(root, "sessions");
+        if (Directory.Exists(sessions) && Directory.EnumerateFiles(sessions, "*.json").Any(path => Path.GetFileName(path) != "index.json")) return true;
+        var vault = Path.Combine(root, "secrets.db");
+        if (!File.Exists(vault)) return false;
+        // Empty native bootstrap databases are not user data. Open read-only:
+        // a locked or damaged existing vault must fail visibly, never be
+        // mistaken for an empty profile and silently switch the person's data.
+        using var connection = new Microsoft.Data.Sqlite.SqliteConnection(new Microsoft.Data.Sqlite.SqliteConnectionStringBuilder
+        { DataSource = vault, Mode = Microsoft.Data.Sqlite.SqliteOpenMode.ReadOnly, Pooling = false }.ToString());
+        connection.Open();
+        using var command = connection.CreateCommand();
+        command.CommandText = "SELECT EXISTS(SELECT 1 FROM secrets LIMIT 1);";
+        return Convert.ToInt64(command.ExecuteScalar()) != 0;
     }
 }

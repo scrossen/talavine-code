@@ -370,6 +370,66 @@ public sealed class WorkspaceAndAuthorityTests : IDisposable
 
     // ---- instructions ----
 
+    [Theory]
+    [InlineData(true, true)]
+    [InlineData(true, false)]
+    [InlineData(false, true)]
+    [InlineData(false, false)]
+    public async Task Access_context_matches_real_outside_workspace_file_access(bool userInitiated, bool allowOutside)
+    {
+        var options = Options.Create(new SandboxOptions { Root = _configured, AllowAbsolutePathsOutsideTurnWorkspace = allowOutside });
+        var injector = new RepoInstructionsInjector(Options.Create(new CodingOptions()), sandboxOptions: options);
+        var block = await injector.BuildAsync(new ContextInjectionRequest("c", "Inspect a local file", Guid.NewGuid(),
+            CommunicationScopeUserInitiated: userInitiated, WorkspaceRoot: _repoA));
+        var file = Path.Combine(_repoB, "outside.txt");
+        await File.WriteAllTextAsync(file, "outside evidence");
+        EnterTurn(_repoA, userInitiated ? AgentCommunicationScope.UserRequested("fixture") : AgentCommunicationScope.None);
+        var resolver = new SandboxPathResolver(options);
+        var tool = new ReadFileTool(resolver).Descriptor;
+        if (userInitiated && allowOutside)
+        {
+            Assert.Contains("explicit absolute paths outside the workspace are allowed", block);
+            var result = await tool.Invoke(new ReadFileTool.Input { Path = file }, default);
+            Assert.Contains("outside evidence", System.Text.Json.JsonSerializer.Serialize(result));
+            // Relative traversal still fails, even when the explicit absolute path succeeds.
+            Assert.Throws<UnauthorizedAccessException>(() => resolver.Resolve("../repo-b/outside.txt"));
+        }
+        else
+        {
+            Assert.Contains("limited to this workspace", block);
+            Assert.DoesNotContain("explicit absolute paths outside the workspace are allowed", block);
+            await Assert.ThrowsAsync<UnauthorizedAccessException>(async () => await tool.Invoke(new ReadFileTool.Input { Path = file }, default));
+        }
+    }
+
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public async Task Access_context_does_not_grant_general_access_to_missions_or_tool_free_turns(bool toolsWithheld)
+    {
+        var injector = new RepoInstructionsInjector(Options.Create(new CodingOptions()),
+            sandboxOptions: Options.Create(new SandboxOptions()));
+        var block = await injector.BuildAsync(new ContextInjectionRequest("c", "Inspect files", Guid.NewGuid(),
+            CommunicationScopeUserInitiated: true, WorkspaceRoot: _repoA)
+        {
+            ToolsWithheldByUser = toolsWithheld,
+            MissionObjectiveId = toolsWithheld ? null : Guid.NewGuid(),
+        });
+        Assert.DoesNotContain("explicit absolute paths outside the workspace are allowed", block);
+        Assert.Contains(toolsWithheld ? "withheld tools" : "current resource grants", block);
+    }
+
+    [Fact]
+    public async Task Access_context_without_host_policy_does_not_invent_a_boundary()
+    {
+        var injector = new RepoInstructionsInjector(Options.Create(new CodingOptions()));
+        var block = await injector.BuildAsync(new ContextInjectionRequest("c", "Inspect files", Guid.NewGuid(),
+            CommunicationScopeUserInitiated: true, WorkspaceRoot: _repoA));
+        Assert.Contains("No outside-workspace path policy was supplied", block);
+        Assert.DoesNotContain("explicit absolute paths outside the workspace are allowed", block);
+        Assert.DoesNotContain("File tools are limited to this workspace", block);
+    }
+
     [Fact]
     public async Task Instructions_come_from_the_turns_workspace()
     {

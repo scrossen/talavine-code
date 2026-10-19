@@ -2,7 +2,8 @@ namespace SwarmCode.Hosting.Tests;
 
 public abstract class TempDirTest : IDisposable
 {
-    protected string Tmp { get; } = Path.Combine(Path.GetTempPath(), "swarmcode-hosting-tests", Guid.NewGuid().ToString("N"));
+    protected string Tmp { get; } = SwarmCore.Missions.SandboxPathResolver.ResolvePhysicalPath(
+        Path.Combine(Path.GetTempPath(), "swarmcode-hosting-tests", Guid.NewGuid().ToString("N")));
     protected SwarmCodeDataPaths Paths { get; }
 
     protected TempDirTest()

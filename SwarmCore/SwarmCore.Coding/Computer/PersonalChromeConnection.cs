@@ -19,7 +19,9 @@ public static class PersonalChromeConnection
         try { return ParseActivePort(File.ReadAllText(Path.Combine(root, "DevToolsActivePort"))); }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or ArgumentException)
         {
-            throw new InvalidOperationException("Open your regular Chrome (version 144 or newer), go to " + SetupUrl +
+            // Missing, unreadable or invalid discovery data is an environmental prerequisite, not a code defect.
+            // Keep that distinction through the API/native tool error text and self-improvement capture.
+            throw new IOException("Open your regular Chrome (version 144 or newer), go to " + SetupUrl +
                 ", enable remote debugging, then connect again and allow Chrome's connection prompt. Your existing tabs and sign-ins stay in Chrome.", ex);
         }
     }

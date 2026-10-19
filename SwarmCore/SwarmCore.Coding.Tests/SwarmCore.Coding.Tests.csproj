@@ -10,4 +10,13 @@
   <ItemGroup><Compile Include="../Testing/TestGit.cs" Link="TestSupport/TestGit.cs" /><Compile Include="../Testing/TestShell.cs" Link="TestSupport/TestShell.cs" /></ItemGroup>
   <ItemGroup><Compile Include="../Testing/AppleSiliconProbeFixture.cs" Link="TestSupport/AppleSiliconProbeFixture.cs" /><Compile Include="../Testing/PlatformFactAttributes.cs" Link="TestSupport/PlatformFactAttributes.cs" /></ItemGroup>
   <ItemGroup><Compile Include="../Testing/PortableGitPoisonedPathTests.cs" Link="TestSupport/PortableGitPoisonedPathTests.cs" /></ItemGroup>
+  <ItemGroup>
+    <Compile Include="../Testing/OwnedTestScratch.cs" Link="TestSupport/OwnedTestScratch.cs" />
+    <Compile Include="../../TestSupport/TestTempRoot.cs" Link="TestSupport/TestTempRoot.cs" />
+    <Compile Include="../Testing/OwnedScratchTestFramework.cs" Link="TestSupport/OwnedScratchTestFramework.cs" />
+    <AssemblyAttribute Include="Xunit.TestFrameworkAttribute">
+      <_Parameter1>SwarmCore.Testing.OwnedScratchTestFramework</_Parameter1>
+      <_Parameter2>$(AssemblyName)</_Parameter2>
+    </AssemblyAttribute>
+  </ItemGroup>
 </Project>

@@ -56,9 +56,11 @@ public sealed partial class SwarmCodeSettingsHost(SwarmCodeDataPaths paths, AppP
             if (schema["properties"] is JsonObject props)
             {
                 foreach (var key in props.Select(p => p.Key).Where(k => !PreferenceKeys.Contains(k)).ToArray()) props.Remove(key);
-                // Publish finite choices to every native settings renderer.
-                props["theme"]!["enum"] = new JsonArray("system", "light", "dark");
-                props["permissionMode"]!["enum"] = new JsonArray(null, "auto", "ask-risky", "ask");
+                // These are finite user choices, not arbitrary strings. Retain the
+                // legacy null permission mode so an unchanged preference file still
+                // means "migrate from requireApproval" rather than losing its default.
+                ((JsonObject)props["theme"]!)["enum"] = new JsonArray(JsonValue.Create("system"), JsonValue.Create("light"), JsonValue.Create("dark"));
+                ((JsonObject)props["permissionMode"]!)["enum"] = new JsonArray(JsonValue.Create((string?)null), JsonValue.Create("auto"), JsonValue.Create("ask-risky"), JsonValue.Create("ask"));
             }
             result.Add(new("preferences", prefsDescription, prefsRevision, values, schema, "Immediately; defaults apply to new sessions. Model IDs include @reasoning variants when supported."));
         }

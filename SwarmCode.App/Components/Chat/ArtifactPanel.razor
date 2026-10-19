@@ -102,12 +102,12 @@
     private Task RefreshAsync() => OpenPathAsync();
     private async Task PickFileAsync()
     {
-        try { var file = await FilePicker.Default.PickAsync(new PickOptions { PickerTitle = "Open an artifact" }); if (file is not null) { _path = file.FullPath; await OpenPathAsync(); } }
+        try { var file = await DesktopPlatform.PickFileAsync("Open an artifact"); if (file is not null) { _path = file; await OpenPathAsync(); } }
         catch (Exception ex) { _error = ex.Message; }
     }
     private async Task OpenExternalAsync()
     {
-        try { if (_preview is not null && !await Launcher.Default.OpenAsync(new OpenFileRequest { File = new ReadOnlyFile(_preview.Path) })) _error = "No app could open this file."; }
+        try { if (_preview is not null && !await DesktopPlatform.OpenFileAsync(_preview.Path)) _error = "No app could open this file."; }
         catch (Exception ex) { _error = ex.Message; }
     }
     private async Task ToggleBrowserAsync() { _browse = !_browse; if (_browse) await ListAsync(); }

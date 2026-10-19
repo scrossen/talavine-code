@@ -1,7 +1,10 @@
 namespace SwarmCore.Chat;
 
 /// <summary>The model a chat surface should use right now, and whether it can see images.</summary>
-public sealed record ChatModelChoice(string Provider, string Model, bool SupportsVision);
+public sealed record ChatModelChoice(string Provider, string Model, bool SupportsVision)
+{
+    public string? ReasoningEffort { get; init; }
+}
 
 /// <summary>One selectable entry for a model-picker dropdown.</summary>
 public sealed record ChatModelCandidate(string Provider, string Model, bool SupportsVision, bool IsRecommended);

@@ -196,6 +196,7 @@ public static class SwarmCodeHostComposer
         // hand-offs, answers) so a reopened session replays exactly what the user saw.
         services.TryAddSingleton<FileTranscriptJournal>();
         services.TryAddSingleton<WorkspaceSessionCatalog>();
+        services.TryAddSingleton<ConversationForkService>();
         // Saved sessions across every repository (index + turns journals) for history search and work summaries.
         services.TryAddSingleton<SwarmCore.Coding.History.IConversationHistorySource, ConversationHistorySource>();
         // Conversations work in the open repository, except an isolated agent's session, which works in its own worktree.
@@ -247,6 +248,11 @@ public static class SwarmCodeHostComposer
             ? SwarmCore.Coding.Interaction.UserQuestionPrompts.Guidance
             : coding.AdditionalInstructions.Trim() + Environment.NewLine + SwarmCore.Coding.Interaction.UserQuestionPrompts.Guidance);
         services.AddSwarmCodeModelSources(options.DataPaths);
+        var learningOptions = new SwarmCore.HarnessLearning.HarnessLearningOptions();
+        configuration.GetSection("HarnessLearning").Bind(learningOptions);
+        SwarmCore.Agent.Learning.HarnessLearningRegistration.AddHarnessLearning(services,
+            _ => new(Path.Combine(options.DataPaths.RootDirectory, "harness-learning"), "code", () => true), learningOptions);
+
         services.AddSwarmCodeExternalMcp();
         // Agents that sessions start (agents.*).
         services.AddSwarmCodeAgents(options.DataPaths, configuration);

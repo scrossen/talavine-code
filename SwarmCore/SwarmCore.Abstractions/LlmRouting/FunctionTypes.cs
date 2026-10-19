@@ -6,6 +6,8 @@ namespace SwarmCore.Abstractions.LlmRouting;
 /// </summary>
 public static class FunctionTypes
 {
+    /// <summary>Bounded tool-free preparation research and the matching source-grounded preparation contract.</summary>
+    public const string HarnessLearning = "harness-learning";
     // Core AI operations
     public const string Chatbot = "chatbot";
     public const string DataAnalysis = "data-analysis";

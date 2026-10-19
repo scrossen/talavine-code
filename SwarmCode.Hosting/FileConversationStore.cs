@@ -184,6 +184,24 @@ public sealed class FileConversationStore : IConversationStore
         return Task.CompletedTask;
     }
 
+    /// <summary>Import history into a private, unpublished fork. No provider state or action authority is copied.</summary>
+    internal Task ImportForkAsync(string id, string title, IReadOnlyList<ChatTurnInfo> turns, CancellationToken ct)
+    {
+        lock (_gate)
+        {
+            if (ReadHeader(id) is not null) throw new InvalidOperationException("Fork destination already exists.");
+            var conversation = Create(id, title, null);
+            foreach (var turn in turns)
+            {
+                ct.ThrowIfCancellationRequested();
+                var copy = turn with { Id = Guid.NewGuid(), ConversationId = id, MetadataJson = null };
+                AppendJournalLine(id, new JournalEntry { Turn = copy });
+                conversation.Turns.Add(copy);
+            }
+        }
+        return Task.CompletedTask;
+    }
+
     public Task RenameAsync(string conversationId, string title, CancellationToken ct = default)
         => MutateHeader(conversationId, header => header.Info = header.Info with { Title = title });
 

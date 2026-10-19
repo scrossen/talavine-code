@@ -1,0 +1,8 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <TargetFramework>net11.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <Description>Host-neutral bounded harness experiments, independent evidence, paired selection and immutable learning history.</Description>
+  </PropertyGroup>
+</Project>

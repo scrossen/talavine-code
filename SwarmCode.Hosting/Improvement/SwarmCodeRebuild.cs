@@ -30,7 +30,7 @@ public sealed record RelaunchStatus(DateTime StartedUtc, IReadOnlyList<string> M
 
 /// <summary>
 /// Closes the loop for a developer: merges the verified fixes into the source checkout, then hands off to a small
-/// detached PowerShell helper that waits for this process to exit, rebuilds the Debug app into the folder it is running
+/// detached platform helper that waits for this process to exit, rebuilds the Debug app into the folder it is running
 /// from (the same command the VS Code task uses, or the repository's Windows build script for the <c>.build</c>
 /// layout) and starts the new build. The app itself only merges, writes the helper, starts it and quits.
 /// </summary>
@@ -38,6 +38,7 @@ public sealed class SwarmCodeRebuild(SwarmCodeDataPaths paths, Func<SelfImprovem
     ILogger? logger = null, string? executablePath = null, string? baseDirectory = null)
 {
     public const string ScriptName = "relaunch.ps1";
+    public const string MacScriptName = "relaunch.sh";
     public const string StatusName = "relaunch.json";
     public const string LogName = "relaunch.log";
 
@@ -55,12 +56,23 @@ public sealed class SwarmCodeRebuild(SwarmCodeDataPaths paths, Func<SelfImprovem
     {
         var repo = SwarmCodeSourceRepository.Resolve(options().RepositoryRoot, BaseDirectory);
         if (repo is null) return Impossible("The Talavine Code source repository was not found, so there is nothing to rebuild from.");
-        if (!isWindows) return Impossible("Rebuilding and relaunching is supported on Windows only for now. Merge the branches and rebuild from VS Code.");
         var exe = ExecutablePath;
         if (string.IsNullOrWhiteSpace(exe) || !File.Exists(exe)) return Impossible("The running executable could not be located.");
         var baseDir = Path.GetFullPath(BaseDirectory);
         if (!IsUnder(baseDir, repo))
             return Impossible($"Talavine Code is running from {baseDir}, outside the source checkout {repo}, so a rebuild would not replace this build.");
+        if (!isWindows)
+        {
+            var bundle = Path.Combine(repo, "SwarmCode.App", "bin", "Debug", "net11.0-macos", "osx-arm64", "Talavine Code.app");
+            var expected = Path.Combine(bundle, "Contents", "MacOS", "SwarmCode.App");
+            var build = Path.Combine(repo, "scripts", "build-swarmcode-macos.sh");
+            if (!string.Equals(Path.GetFullPath(exe), expected, StringComparison.Ordinal)
+                || !IsUnder(baseDir, Path.Combine(bundle, "Contents")))
+                return Impossible("Build and relaunch requires the native macOS Debug app in this source checkout. Open it with the Talavine Code App (macOS) launch profile.");
+            if (!File.Exists(build)) return Impossible("The native macOS build script is missing from this source checkout.");
+            return new(true, "Rebuilds, signs and verifies the native macOS app, then reopens it with the same profile.",
+                repo, exe, "macos-appkit", "/bin/bash", [build]);
+        }
         var rid = baseDir.Split(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar).FirstOrDefault(s => s.StartsWith("win-", StringComparison.OrdinalIgnoreCase)) ?? "win-x64";
 
         if (IsUnder(baseDir, Path.Combine(repo, "SwarmCode.App", "bin")))
@@ -111,12 +123,15 @@ public sealed class SwarmCodeRebuild(SwarmCodeDataPaths paths, Func<SelfImprovem
     /// Writes the detached helper: wait for this process, build, record the result, start the executable again. The
     /// build's output goes to <see cref="LogPath"/>; <see cref="StatusPath"/> says how it went.
     /// </summary>
-    public string WriteRelaunchScript(RebuildPlan plan, int processId, IReadOnlyList<string> merged)
+    public string WriteRelaunchScript(RebuildPlan plan, int processId, IReadOnlyList<string> merged, int waitSeconds = 180)
     {
         if (!plan.Possible || plan.RepositoryRoot is null || plan.ExecutablePath is null) throw new InvalidOperationException(plan.Message);
+        if (processId < 1) throw new ArgumentOutOfRangeException(nameof(processId));
+        if (waitSeconds < 1 || waitSeconds > 180) throw new ArgumentOutOfRangeException(nameof(waitSeconds));
         Directory.CreateDirectory(paths.SelfImprovementDirectory);
         var started = DateTime.UtcNow;
         File.WriteAllText(StatusPath, JsonSerializer.Serialize(new RelaunchStatus(started, merged, plan.Describe(), null, null, LogPath), Json));
+        if (plan.Layout == "macos-appkit") return WriteMacRelaunchScript(plan, processId, waitSeconds);
         var exeDir = Path.GetDirectoryName(plan.ExecutablePath) ?? plan.RepositoryRoot;
         var script = new StringBuilder();
         script.AppendLine("$ErrorActionPreference = 'Continue'");
@@ -124,7 +139,8 @@ public sealed class SwarmCodeRebuild(SwarmCodeDataPaths paths, Func<SelfImprovem
         script.AppendLine($"$status = {Quote(StatusPath)}");
         script.AppendLine("function Note($text) { \"[$(Get-Date -Format o)] $text\" | Out-File -FilePath $log -Append -Encoding utf8 }");
         script.AppendLine($"Note 'Waiting for Talavine Code (pid {processId}) to exit.'");
-        script.AppendLine($"try {{ Wait-Process -Id {processId} -Timeout 180 -ErrorAction SilentlyContinue }} catch {{ }}");
+        script.AppendLine($"try {{ Wait-Process -Id {processId} -Timeout {waitSeconds} -ErrorAction SilentlyContinue }} catch {{ }}");
+        script.AppendLine($"if (Get-Process -Id {processId} -ErrorAction SilentlyContinue) {{ Note 'App is still running; rebuild cancelled.'; $s = Get-Content -Raw $status | ConvertFrom-Json; $s.buildExitCode = 125; $s.finishedUtc = (Get-Date).ToUniversalTime().ToString('o'); $s | ConvertTo-Json -Depth 5 | Set-Content -Path $status -Encoding utf8; exit 125 }}");
         script.AppendLine("Start-Sleep -Seconds 2");
         script.AppendLine($"Set-Location {Quote(plan.RepositoryRoot)}");
         script.AppendLine($"Note 'Building: {plan.Describe().Replace("'", "''")}'");
@@ -132,6 +148,7 @@ public sealed class SwarmCodeRebuild(SwarmCodeDataPaths paths, Func<SelfImprovem
         script.AppendLine("$exit = $LASTEXITCODE");
         script.AppendLine("Note \"Build exit code $exit\"");
         script.AppendLine("try { $s = Get-Content -Raw $status | ConvertFrom-Json; $s | Add-Member -NotePropertyName buildExitCode -NotePropertyValue $exit -Force; $s | Add-Member -NotePropertyName finishedUtc -NotePropertyValue ((Get-Date).ToUniversalTime().ToString('o')) -Force; $s | ConvertTo-Json -Depth 5 | Set-Content -Path $status -Encoding utf8 } catch { Note \"Could not update status: $_\" }");
+        script.AppendLine("if ($exit -ne 0) { Note 'Build failed; app was not relaunched.'; exit $exit }");
         script.AppendLine($"Note 'Starting {plan.ExecutablePath.Replace("'", "''")}'");
         script.AppendLine($"Start-Process -FilePath {Quote(plan.ExecutablePath)} -WorkingDirectory {Quote(exeDir)}");
         File.WriteAllText(ScriptPath, script.ToString());
@@ -141,6 +158,19 @@ public sealed class SwarmCodeRebuild(SwarmCodeDataPaths paths, Func<SelfImprovem
     /// <summary>Starts the helper detached (it must outlive this process); returns the helper's process id.</summary>
     public int StartRelaunch(string scriptPath)
     {
+        if (Path.GetFileName(scriptPath) == MacScriptName)
+        {
+            var detached = new ProcessStartInfo("/usr/bin/nohup")
+            {
+                UseShellExecute = false,
+                WorkingDirectory = Path.GetDirectoryName(scriptPath) ?? paths.RootDirectory,
+            };
+            detached.ArgumentList.Add("/bin/bash");
+            detached.ArgumentList.Add(scriptPath);
+            detached.Environment[SwarmCodeDataPaths.HomeEnvironmentVariable] = paths.RootDirectory;
+            using var helper = Process.Start(detached) ?? throw new InvalidOperationException("The native macOS relaunch helper could not be started.");
+            return helper.Id;
+        }
         var shell = FindPowerShell();
         var info = new ProcessStartInfo(shell)
         {
@@ -150,6 +180,46 @@ public sealed class SwarmCodeRebuild(SwarmCodeDataPaths paths, Func<SelfImprovem
         foreach (var arg in new[] { "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-File", scriptPath }) info.ArgumentList.Add(arg);
         var process = Process.Start(info) ?? throw new InvalidOperationException("The relaunch helper could not be started.");
         return process.Id;
+    }
+
+    private string WriteMacRelaunchScript(RebuildPlan plan, int processId, int waitSeconds)
+    {
+        var scriptPath = Path.Combine(paths.SelfImprovementDirectory, MacScriptName);
+        var script = new StringBuilder();
+        script.AppendLine("#!/bin/bash");
+        script.AppendLine("set -u");
+        script.AppendLine($"log={ShellQuote(LogPath)}");
+        script.AppendLine($"status={ShellQuote(StatusPath)}");
+        script.AppendLine("exec >>\"$log\" 2>&1 < /dev/null");
+        script.AppendLine($"export SWARMCODE_HOME={ShellQuote(paths.RootDirectory)}");
+        script.AppendLine("finish() {");
+        script.AppendLine("  python3 - \"$status\" \"$1\" <<'SWARMCODE_STATUS_PY'");
+        script.AppendLine("import datetime, json, os, pathlib, sys, tempfile");
+        script.AppendLine("path = pathlib.Path(sys.argv[1])");
+        script.AppendLine("data = json.loads(path.read_text(encoding='utf-8-sig'))");
+        script.AppendLine("data.update(buildExitCode=int(sys.argv[2]), finishedUtc=datetime.datetime.now(datetime.timezone.utc).isoformat())");
+        script.AppendLine("with tempfile.NamedTemporaryFile(mode='w', dir=path.parent, delete=False) as output:");
+        script.AppendLine("    json.dump(data, output); output.flush(); os.fsync(output.fileno()); temporary = output.name");
+        script.AppendLine("os.replace(temporary, path)");
+        script.AppendLine("SWARMCODE_STATUS_PY");
+        script.AppendLine("}");
+        script.AppendLine($"echo 'Waiting for Talavine Code (pid {processId}) to exit.'");
+        script.AppendLine($"for ((attempt=0; attempt<{waitSeconds}; attempt++)); do");
+        script.AppendLine($"  kill -0 {processId} 2>/dev/null || break");
+        script.AppendLine("  sleep 1");
+        script.AppendLine("done");
+        script.AppendLine($"if kill -0 {processId} 2>/dev/null; then echo 'App is still running; rebuild cancelled.'; finish 125; exit 125; fi");
+        script.AppendLine($"cd {ShellQuote(plan.RepositoryRoot!)} || {{ finish 126; exit 126; }}");
+        script.AppendLine($"{ShellQuote(plan.BuildCommand)} {string.Join(' ', plan.BuildArguments.Select(ShellQuote))}");
+        script.AppendLine("result=$?");
+        script.AppendLine("finish \"$result\" || exit 126");
+        script.AppendLine("if [[ $result -ne 0 ]]; then echo 'Build failed; app was not relaunched.'; exit \"$result\"; fi");
+        script.AppendLine($"if [[ ! -x {ShellQuote(plan.ExecutablePath!)} ]]; then echo 'Rebuilt executable is missing; app was not relaunched.'; finish 127; exit 127; fi");
+        script.AppendLine($"cd {ShellQuote(Path.GetDirectoryName(plan.ExecutablePath!)!)} || exit 126");
+        script.AppendLine($"{ShellQuote(plan.ExecutablePath!)} >>\"$log\" 2>&1 < /dev/null &");
+        script.AppendLine("echo \"Started native Talavine Code (pid $!).\"");
+        File.WriteAllText(scriptPath, script.ToString());
+        return scriptPath;
     }
 
     public RelaunchStatus? ReadStatus()
@@ -183,4 +253,5 @@ public sealed class SwarmCodeRebuild(SwarmCodeDataPaths paths, Func<SelfImprovem
     }
 
     private static string Quote(string value) => "'" + value.Replace("'", "''") + "'";
+    private static string ShellQuote(string value) => "'" + value.Replace("'", "'\"'\"'") + "'";
 }

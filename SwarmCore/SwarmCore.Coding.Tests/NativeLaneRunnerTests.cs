@@ -7,6 +7,20 @@ namespace SwarmCore.Coding.Tests;
 
 public sealed class NativeLaneRunnerTests : IDisposable
 {
+    [Theory]
+    [InlineData("claude-code:opus@high", "opus", "high")]
+    [InlineData("claude-code:sonnet@medium", "sonnet", "medium")]
+    [InlineData("claude-code:default@low", null, "low")]
+    public void ExplicitThinkingReachesClaudeWithoutContaminatingItsModelId(string model, string? expectedModel, string effort)
+    {
+        var psi = ClaudeCodeNativeLaneRunner.BuildStartInfo(Path.Combine(_repo, "claude.exe"), Turn(lane: Lane with { Model = model }), null);
+        var args = psi.ArgumentList.ToList();
+        Assert.Equal(effort, args[args.IndexOf("--effort") + 1]);
+        if (expectedModel is null) Assert.DoesNotContain("--model", args);
+        else Assert.Equal(expectedModel, args[args.IndexOf("--model") + 1]);
+        Assert.DoesNotContain(args, a => a.Contains('@'));
+    }
+
     private readonly string _repo = Path.Combine(Path.GetTempPath(), "native-lane-tests-" + Guid.NewGuid().ToString("N"));
     private static readonly CodingLane Lane = new("claude", ClaudeCodeNativeLaneRunner.ProviderId, "claude-code:default");
 

@@ -50,6 +50,62 @@ public sealed class CodingToolsTests : IDisposable
 
     // ---- edit ----
 
+    [Theory]
+    [InlineData(null, false)]
+    [InlineData(null, true)]
+    [InlineData("", false)]
+    [InlineData("", true)]
+    public async Task Edit_rejects_empty_old_text_without_changing_file(string? oldText, bool replaceAll)
+    {
+        var p = Write("a.txt", "original\r\ncontent\r\n");
+        var before = File.ReadAllBytes(p);
+
+        var r = await Edit("a.txt", oldText!, "replacement", replaceAll);
+
+        Assert.False(r.Succeeded);
+        Assert.Equal("a.txt", r.Path);
+        Assert.Equal(0, r.Replacements);
+        Assert.Contains("oldText must not be empty", r.Error);
+        Assert.Contains("fs.read_file", r.Error);
+        Assert.Contains("fs.write_file", r.Error);
+        Assert.Null(r.Preview);
+        Assert.Null(r.Sha256);
+        Assert.Equal(before, File.ReadAllBytes(p));
+        Assert.Empty(Directory.GetFiles(_root, "*.tmp"));
+
+        var retry = await Edit("a.txt", "original", "replacement");
+        Assert.True(retry.Succeeded);
+        Assert.Equal("replacement\r\ncontent\r\n", File.ReadAllText(p));
+    }
+
+    [Theory]
+    [InlineData("")]
+    [InlineData("old text")]
+    public async Task Edit_new_file_directs_to_create_only_writer_without_creating_anything(string oldText)
+    {
+        var result = await Edit("src/new.cs", oldText, "new content");
+        Assert.False(result.Succeeded);
+        Assert.Contains("fs.write_file", result.Error);
+        Assert.Contains("content", result.Error);
+        Assert.Contains("expectedSha256='missing'", result.Error);
+        Assert.False(File.Exists(Path.Combine(_root, "src/new.cs")));
+        // Follow the returned recovery path using the real writer.
+        await Call<WriteFileTool.Input, WriteFileTool.Output>(new WriteFileTool(_sandbox).Descriptor,
+            new() { Path = "src/new.cs", Content = "new content", ExpectedSha256 = "missing" });
+        Assert.Equal("new content", File.ReadAllText(Path.Combine(_root, "src/new.cs")));
+        await Assert.ThrowsAsync<SwarmCore.Agent.Continual.MissionActionSkippedException>(() => Call<WriteFileTool.Input, WriteFileTool.Output>(new WriteFileTool(_sandbox).Descriptor,
+            new() { Path = "src/new.cs", Content = "overwrite", ExpectedSha256 = "missing" }));
+        Assert.Equal("new content", File.ReadAllText(Path.Combine(_root, "src/new.cs")));
+    }
+
+    [Fact]
+    public async Task Edit_empty_old_text_preserves_existing_file()
+    {
+        var path = Write("existing.cs", "keep this");
+        Assert.False((await Edit("existing.cs", "", "replacement")).Succeeded);
+        Assert.Equal("keep this", File.ReadAllText(path));
+    }
+
     [Fact]
     public async Task Edit_replaces_exactly_once()
     {

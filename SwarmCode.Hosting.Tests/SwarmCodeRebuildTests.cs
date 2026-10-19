@@ -141,4 +141,73 @@ public class SwarmCodeRebuildTests : TempDirTest
         Assert.Contains("dotnet build", status.Command);
         Assert.Equal(rebuild.LogPath, status.LogPath);
     }
+
+    [Fact]
+    public async Task Mac_plan_rebuilds_only_the_native_debug_bundle_in_the_source_checkout()
+    {
+        var repo = await CheckoutAsync();
+        var exe = Path.Combine(repo, "SwarmCode.App", "bin", "Debug", "net11.0-macos", "osx-arm64", "Talavine Code.app", "Contents", "MacOS", "SwarmCode.App");
+        Directory.CreateDirectory(Path.GetDirectoryName(exe)!);
+        await File.WriteAllTextAsync(exe, "");
+        Directory.CreateDirectory(Path.Combine(repo, "scripts"));
+        await File.WriteAllTextAsync(Path.Combine(repo, "scripts", "build-swarmcode-macos.sh"), "exit 0");
+        var rebuild = new SwarmCodeRebuild(Paths, () => new() { RepositoryRoot = repo }, new InMemorySelfImprovementBacklog(),
+            executablePath: exe, baseDirectory: Path.Combine(Path.GetDirectoryName(exe)!, "..", "MonoBundle"));
+        var plan = rebuild.Plan(isWindows: false);
+        Assert.True(plan.Possible, plan.Message);
+        Assert.Equal("macos-appkit", plan.Layout);
+        Assert.Equal("/bin/bash", plan.BuildCommand);
+        Assert.Equal([Path.Combine(repo, "scripts", "build-swarmcode-macos.sh")], plan.BuildArguments);
+        var path = rebuild.WriteRelaunchScript(plan, 4242, []);
+        Assert.EndsWith("relaunch.sh", path);
+        Assert.Contains(Paths.RootDirectory, await File.ReadAllTextAsync(path));
+        File.Delete(Path.Combine(repo, "scripts", "build-swarmcode-macos.sh"));
+        Assert.False(rebuild.Plan(isWindows: false).Possible);
+    }
+
+    [Theory]
+    [InlineData(0)]
+    [InlineData(9)]
+    public async Task Native_helper_executes_the_build_and_only_relaunches_after_success(int buildExit)
+    {
+        if (OperatingSystem.IsWindows()) return;
+        var root = Path.Combine(Tmp, "native path with ' quote");
+        Directory.CreateDirectory(root);
+        var marker = Path.Combine(root, "relaunched.txt");
+        var exe = Path.Combine(root, "native-app");
+        await File.WriteAllTextAsync(exe, "#!/bin/bash\nprintf '%s' \"$SWARMCODE_HOME\" > \"$(dirname \"$0\")/relaunched.txt\"\n");
+        File.SetUnixFileMode(exe, UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute);
+        var build = Path.Combine(root, "build.sh");
+        await File.WriteAllTextAsync(build, $"exit {buildExit}\n");
+        using var departed = Process.Start(new ProcessStartInfo("/bin/bash") { ArgumentList = { "-c", "exit 0" } })!;
+        await departed.WaitForExitAsync();
+        var rebuild = new SwarmCodeRebuild(Paths, () => new(), new InMemorySelfImprovementBacklog());
+        var plan = new RebuildPlan(true, "fixture", root, exe, "macos-appkit", "/bin/bash", [build]);
+        var script = rebuild.WriteRelaunchScript(plan, departed.Id, [], waitSeconds: 1);
+        using var helper = Process.Start(new ProcessStartInfo("/bin/bash") { ArgumentList = { script } })!;
+        await helper.WaitForExitAsync().WaitAsync(TimeSpan.FromSeconds(15));
+        Assert.Equal(buildExit, helper.ExitCode);
+        Assert.Equal(buildExit, rebuild.ReadStatus()!.BuildExitCode);
+        Assert.False(rebuild.ReadStatus()!.InProgress);
+        if (buildExit == 0)
+        {
+            for (var attempt = 0; attempt < 20 && !File.Exists(marker); attempt++) await Task.Delay(50);
+            Assert.Equal(Paths.RootDirectory, await File.ReadAllTextAsync(marker));
+        }
+        else Assert.False(File.Exists(marker));
+    }
+
+    [Fact]
+    public async Task Native_helper_refuses_to_rebuild_a_still_running_app()
+    {
+        if (OperatingSystem.IsWindows()) return;
+        var rebuild = new SwarmCodeRebuild(Paths, () => new(), new InMemorySelfImprovementBacklog());
+        var plan = new RebuildPlan(true, "fixture", Tmp, Path.Combine(Tmp, "missing"), "macos-appkit", "/bin/bash", ["-c", "exit 0"]);
+        var script = rebuild.WriteRelaunchScript(plan, Environment.ProcessId, [], waitSeconds: 1);
+        using var helper = Process.Start(new ProcessStartInfo("/bin/bash") { ArgumentList = { script } })!;
+        await helper.WaitForExitAsync().WaitAsync(TimeSpan.FromSeconds(10));
+        Assert.Equal(125, helper.ExitCode);
+        Assert.Equal(125, rebuild.ReadStatus()!.BuildExitCode);
+        Assert.False(rebuild.ReadStatus()!.InProgress);
+    }
 }

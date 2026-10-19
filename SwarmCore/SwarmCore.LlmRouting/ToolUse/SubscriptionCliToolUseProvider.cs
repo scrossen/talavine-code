@@ -70,7 +70,7 @@ public abstract class SubscriptionCliToolUseProviderBase : IToolUseProvider
 
         try
         {
-            return WithReasoningEffort(ParseResponse(response.Content, model, request.Tools), model, executionSettings);
+            return WithMeasuredUsage(WithReasoningEffort(ParseResponse(response.Content, model, request.Tools), model, executionSettings), response);
         }
         catch (InvalidOperationException firstFailure) when (IsRecoverableReply(firstFailure))
         {
@@ -100,8 +100,19 @@ public abstract class SubscriptionCliToolUseProviderBase : IToolUseProvider
             }
 
             CaptureRawExchange(corrective, retry.Content, wasCorrective: true);
-            return WithReasoningEffort(ParseResponse(retry.Content, model, request.Tools), model, executionSettings);
+            return WithMeasuredUsage(WithReasoningEffort(ParseResponse(retry.Content, model, request.Tools), model, executionSettings), response, retry);
         }
+    }
+
+    private static ChatToolUseResponse WithMeasuredUsage(ChatToolUseResponse parsed, params LlmResponse[] executions)
+    {
+        if (executions.Any(r => !r.UsageMeasurementComplete)) return parsed;
+        return parsed with
+        {
+            Usage = new(executions.Aggregate(0, (sum, r) => checked(sum + r.InputTokens)),
+                executions.Aggregate(0, (sum, r) => checked(sum + r.OutputTokens)))
+            { CachedInputTokens = executions.Aggregate(0, (sum, r) => checked(sum + r.CacheReadInputTokens)) }
+        };
     }
 
     private ChatToolUseResponse WithReasoningEffort(ChatToolUseResponse response, string model,

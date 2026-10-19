@@ -186,7 +186,7 @@
         }
         catch (Exception ex)
         {
-            MauiProgram.LogToFile($"Schedules refresh failed: {ex.Message}");
+            DesktopHost.LogToFile($"Schedules refresh failed: {ex.Message}");
             Interlocked.Exchange(ref _refreshState, 0);
         }
     }

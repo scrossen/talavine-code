@@ -17,7 +17,7 @@
         </div>
     }
     <textarea @ref="_textarea"
-              class="chat-composer__input"
+              class="chat-composer__input @(Compact ? "chat-composer-surface__input" : "")"
               rows="1"
               data-sm-autosize="true"
               data-sm-enter-submits="true"
@@ -28,19 +28,21 @@
               value="@_value"
               @oninput="OnInputAsync"
               @onkeydown="OnKeyDownAsync"></textarea>
-    <div class="chat-composer__bar">
-        <div class="chat-composer__toolbar">@Toolbar</div>
+    <div class="chat-composer__bar @(Compact ? "chat-composer-surface__bar" : "")">
+        <div class="chat-composer__toolbar @(Compact ? "chat-composer-surface__toolbar" : "")">@Toolbar</div>
+        <div class="chat-composer-surface__actions">
         @if (IsRunning)
         {
-            <button type="button" class="chat-composer__send chat-composer__send--stop" title="Stop (Esc)" aria-label="Stop"
+            <button type="button" class="chat-composer__send chat-composer__send--stop @(Compact ? "chat-composer-surface__send" : "")" title="Stop (Esc)" aria-label="Stop"
                     @onclick="OnStop"><span class="chat-composer__stop-shape" aria-hidden="true"></span><span>Stop</span></button>
         }
         @if (!IsRunning || ShowSendWhileRunning)
         {
-            <button type="button" class="chat-composer__send" title="@(SendLabel + " (Enter)")" aria-label="@SendLabel"
+            <button type="button" class="chat-composer__send @(Compact ? "chat-composer-surface__send" : "")" title="@(SendLabel + " (Enter)")" aria-label="@SendLabel"
                     disabled="@(Disabled || (!HasAttachments && string.IsNullOrWhiteSpace(_value)))"
                     @onclick="SendAsync"><span>@SendLabel</span><span aria-hidden="true">↑</span></button>
         }
+        </div>
     </div>
     @if (Hint is not null)
     {
@@ -51,6 +53,7 @@
 @code {
     [Inject] private IJSRuntime JS { get; set; } = default!;
 
+    [Parameter] public bool Compact { get; set; }
     [Parameter] public string Value { get; set; } = "";
     [Parameter] public EventCallback<string> ValueChanged { get; set; }
     [Parameter] public string? Placeholder { get; set; }
@@ -74,7 +77,7 @@
     private bool _slashDismissed;
     private IReadOnlyList<SlashCommand> _matches = Array.Empty<SlashCommand>();
 
-    private string RootClass => "chat-composer" + (Disabled ? " chat-composer--disabled" : "") + (IsRunning ? " chat-composer--running" : "");
+    private string RootClass => "chat-composer" + (Compact ? " chat-composer-surface" : "") + (Disabled ? " chat-composer--disabled" : "") + (IsRunning ? " chat-composer--running" : "");
 
     private bool PopupOpen => !Disabled && !_slashDismissed && _matches.Count > 0;
 

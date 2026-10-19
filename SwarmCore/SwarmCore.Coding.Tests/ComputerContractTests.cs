@@ -1,6 +1,8 @@
 using Microsoft.Extensions.Options;
 using SwarmCore.Abstractions.Computer;
 using SwarmCore.Coding.Computer;
+using SwarmCore.Coding.SelfImprovement;
+using Talavine.TestSupport;
 
 namespace SwarmCore.Coding.Tests;
 
@@ -34,10 +36,44 @@ public sealed class ComputerContractTests
     [Fact]
     public void MissingChromeConnectionExplainsRequiredUserActionWithoutCreatingAProfile()
     {
-        var root = Path.Combine(Path.GetTempPath(), Guid.NewGuid().ToString("N"));
-        var error = Assert.Throws<InvalidOperationException>(() => PersonalChromeConnection.GetEndpoint(root));
+        using var root = TestTempDirectory.Reserve("missing-chrome-connection");
+        var error = Assert.Throws<IOException>(() => PersonalChromeConnection.GetEndpoint(root.Path));
         Assert.Contains(PersonalChromeConnection.SetupUrl, error.Message);
-        Assert.False(Directory.Exists(root));
+        Assert.IsAssignableFrom<IOException>(error.InnerException);
+        Assert.False(root.Exists);
+    }
+
+    [Theory]
+    [InlineData(null)]
+    [InlineData("")]
+    [InlineData("9222\n/devtools/browser/")]
+    public async Task UnavailableChromeConnectionIsEnvironmentalAndDoesNotQueueASourceRepair(string? content)
+    {
+        using var root = TestTempDirectory.Reserve("chrome-connection");
+        if (content is not null)
+            await File.WriteAllTextAsync(Path.Combine(root.EnsureCreated(), "DevToolsActivePort"), content);
+
+        var error = Record.Exception(() => { PersonalChromeConnection.GetEndpoint(root.Path); });
+        Assert.NotNull(error);
+        Assert.Contains(PersonalChromeConnection.SetupUrl, error.Message);
+        Assert.Contains("allow Chrome's connection prompt", error.Message);
+        Assert.Equal(content is not null, root.Exists);
+
+        var backlog = new InMemorySelfImprovementBacklog();
+        var reporter = new SelfImprovementReporter(backlog, () => new SelfImprovementOptions());
+        Assert.Null(await reporter.ReportDefectAsync(error, "turn-error"));
+        // Native MCP failures arrive at capture inside a JSON text block, as in the original sighting.
+        var toolError = System.Text.Json.JsonSerializer.Serialize(new
+        {
+            content = new[] { new { type = "text", text = $"{error.GetType().Name}: {error.Message}" } },
+        });
+        Assert.Null(await reporter.ReportErrorTextAsync(toolError, null, "tool-error"));
+        Assert.Empty(await backlog.ListAsync());
+
+        // Keep reporting actual code failures, including failures from browser code.
+        Assert.NotNull(await reporter.ReportErrorTextAsync(
+            "InvalidOperationException: Sequence contains no elements", null, "tool-error"));
+        Assert.Single(await backlog.ListAsync());
     }
     [Theory]
     [InlineData("https://example.com:9222")]

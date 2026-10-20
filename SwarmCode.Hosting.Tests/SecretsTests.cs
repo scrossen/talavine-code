@@ -121,6 +121,10 @@ public class VaultKeyProviderTests : TempDirTest
 
 public class LegacyMigrationConcurrencyTests : TempDirTest
 {
+    // Hosted runners execute this suite alongside many other asynchronous tests.
+    // Allow scheduling headroom; the protector signals, rather than elapsed time,
+    // still establish the exact competing-writer interleaving.
+    private static readonly TimeSpan SchedulingTimeout = TimeSpan.FromSeconds(30);
     private SqliteSecretVault Vault() => new(Paths.SecretsDbPath, new EnvelopeSecretProtector(new NoOpKeyStore(), NullLogger<EnvelopeSecretProtector>.Instance));
 
     [Fact]
@@ -131,16 +135,16 @@ public class LegacyMigrationConcurrencyTests : TempDirTest
         var protector = new HoldingProtector(new EnvelopeSecretProtector(new NoOpKeyStore(), NullLogger<EnvelopeSecretProtector>.Instance));
         var migratingKeys = new VaultApiKeyProvider(new SqliteSecretVault(Paths.SecretsDbPath, protector));
         var provider = new SwarmCodeApiKeyProvider(migratingKeys, legacy, new LlmProvidersOptions());
-        var migration = provider.GetApiKeyAsync("OpenAI");
+        var migration = Task.Run(() => provider.GetApiKeyAsync("OpenAI"));
         try
         {
-            await protector.Entered.Task.WaitAsync(TimeSpan.FromSeconds(5));
+            await protector.Entered.Task.WaitAsync(SchedulingTimeout);
             var explicitWriter = new VaultApiKeyProvider(Vault());
             await explicitWriter.SetApiKeyAsync("OpenAI", "synthetic-new-user-key");
         }
         finally { protector.Release.TrySetResult(); }
 
-        Assert.Equal("synthetic-new-user-key", await migration.WaitAsync(TimeSpan.FromSeconds(5)));
+        Assert.Equal("synthetic-new-user-key", await migration.WaitAsync(SchedulingTimeout));
         Assert.Equal("synthetic-new-user-key", await new VaultApiKeyProvider(Vault()).GetApiKeyAsync("OpenAI"));
         // The old source was not adopted, so migration must not erase it.
         Assert.Equal("synthetic-legacy-key", await legacy.GetApiKeyAsync("OpenAI"));
@@ -157,15 +161,15 @@ public class LegacyMigrationConcurrencyTests : TempDirTest
         await legacy.SetApiKeyAsync("OpenAI", "synthetic-legacy-key");
         var protector = new HoldingProtector(new EnvelopeSecretProtector(new NoOpKeyStore(), NullLogger<EnvelopeSecretProtector>.Instance));
         var provider = new SwarmCodeApiKeyProvider(new VaultApiKeyProvider(new SqliteSecretVault(Paths.SecretsDbPath, protector)), legacy, new LlmProvidersOptions());
-        var migration = provider.GetApiKeyAsync("OpenAI");
+        var migration = Task.Run(() => provider.GetApiKeyAsync("OpenAI"));
         try
         {
-            await protector.Entered.Task.WaitAsync(TimeSpan.FromSeconds(5));
+            await protector.Entered.Task.WaitAsync(SchedulingTimeout);
             File.Delete(Paths.SettingsPath);
             Directory.CreateDirectory(Paths.SettingsPath);
         }
         finally { protector.Release.TrySetResult(); }
-        Assert.Equal("synthetic-legacy-key", await migration.WaitAsync(TimeSpan.FromSeconds(5)));
+        Assert.Equal("synthetic-legacy-key", await migration.WaitAsync(SchedulingTimeout));
         Assert.Equal("synthetic-legacy-key", await new VaultApiKeyProvider(Vault()).GetApiKeyAsync("OpenAI"));
     }
 

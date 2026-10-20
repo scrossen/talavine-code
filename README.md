@@ -1,20 +1,20 @@
 # Talavine Code
 
-**A coding harness designed to be unleashed.**
+**When one model gets stuck, keep building.**
 
-Give it the job and let it work. Talavine Code brings your coding agents, model
-APIs, repositories, and personal apps into one desktop and terminal workspace.
-It's built for people who want to get from an idea to working software without
-approving the same job one tool call at a time.
+A refusal shouldn't mean explaining the whole job again. Talavine Code can pass
+remaining work to another configured model in the same conversation. Bring your
+local models, API keys, or coding CLIs into one desktop and terminal workspace,
+compare approaches, and keep the apps you build ready to run and refine.
 
 **[Download the Windows installer](https://talavine.com/talavine-code#download)** ·
 [See what it does](https://talavine.com/talavine-code) ·
 [Build from source](#start-with-the-terminal) · [Report an issue](https://github.com/scrossen/talavine-code/issues)
 
-## The coding-harness essentials, plus more ways to work
+## The coding-harness essentials. Fewer dead ends.
 
 Read and edit files, run commands and tests, and work in your repositories.
-Then choose the features that fit your workflow:
+Then choose how to get past the parts that slow you down:
 
 - [Local models](https://talavine.com/talavine-code#local-models),
   [automatic model selection](https://talavine.com/talavine-code#automatic-routing),
@@ -39,17 +39,17 @@ Then choose the features that fit your workflow:
   [usage and acceptance checks](https://talavine.com/talavine-code#code-usage),
   and [MIT-licensed source](https://talavine.com/talavine-code#open-source).
 
-## Why try another coding harness?
+## Change models without rebuilding your workflow
 
 - **Run local models.** Connect Ollama and select installed, tool-capable models
   alongside cloud providers. On-device inference uses your own hardware; cloud
   models and connected tools can still send data off the device. Hardware and
   model capabilities determine what runs well.
-- **Automatic model selection.** Configure model choices and describe when each
+- **Let Code choose a starting model for the job.** Configure model choices and describe when each
   fits. Enable the selector to choose for the first prompt and reconsider after
   failure. Pick a model yourself when you prefer, or use `/auto` for a fresh
   automatic choice. Pin favorite provider/model combinations for easy reuse.
-- **BYOK or BYOCLI.** Bring your own API keys or supported installed, signed-in
+- **Keep the services you already use: BYOK or BYOCLI.** Bring your own API keys or supported installed, signed-in
   coding CLIs such as Claude Code and Codex. Mix supported services in one
   workspace; their subscriptions, API charges, and terms remain separate.
 - **Your prompt is the go-ahead.** In the default `auto` mode, a user-requested
@@ -66,7 +66,7 @@ Then choose the features that fit your workflow:
   or trained to refuse less often; they must be reachable and support tools.
   You choose the services and fallback preferences. No model is guaranteed to
   accept or complete every request.
-- **Get several answers, then put them to the test.** `/compare` sends the same
+- **Before you trust one answer, let other models challenge it.** `/compare` sends the same
   prompt to multiple configured API model lanes, including available local models.
   `/review` is an alias. With `--judge`, the models review
   one another's proposals and can concede to a stronger answer; a separate judge
@@ -100,7 +100,7 @@ for multiple providers, local models, cross-model reviews, and the apps you buil
 Claude Code also offers model selection, fallback, and integrations; these aren't
 all exclusive features. See its [model documentation](https://code.claude.com/docs/en/model-config).
 
-## See the desktop workflow
+## From an app idea to a project you can open again
 
 These are lossless, high-resolution PNG captures of the real Windows app,
 cropped to the relevant controls. They show a development build; UI can differ
@@ -143,7 +143,7 @@ For example, after configuring the named API lanes:
 Comparison produces proposals and a review; it doesn't apply several competing
 implementations to your repository. Provider calls are billed by your services.
 
-## Memory that carries across chats
+## Stop explaining the same preferences in every chat
 
 With personal memory enabled, Code learns lasting preferences from what you
 tell it and supplies a short profile to supported models on later turns. Inspect,
@@ -159,7 +159,7 @@ choices, without storing raw prompts, replies, or credentials in that history.
 
 ![Personal memory controls and repository memory proposals in an empty demo profile](https://talavine.com/images/screenshots/talavine-code-memory.png?v=memory-20261020)
 
-## Chrome, desktop control, and encrypted credentials
+## Take the next step in Chrome or a desktop app
 
 Code's browser tools can observe, click, type, and navigate in connected Chrome.
 Use your regular tabs and signed-in sessions after enabling Chrome's connection
@@ -169,6 +169,8 @@ desktop; the native Mac host requires Screen Recording and Accessibility access.
 Your permission mode and OS access requirements still apply.
 
 ![Chrome and desktop connection settings, before connecting](https://talavine.com/images/screenshots/talavine-code-computer.png?v=memory-20261020)
+
+### Give tools access without pasting passwords into prompts
 
 Save named passwords, tokens, and API keys in the credential vault, or import a
 supported password-manager CSV export. With the OS keystore available, values
@@ -183,7 +185,9 @@ the app's keystore status. Password export files themselves are sensitive.
 
 ![Empty credential vault reporting Windows DPAPI protection, with no real secrets](https://talavine.com/images/screenshots/talavine-code-credentials.png?v=memory-20261020)
 
-## Developer self-improvement (RSI)
+## Put recurring defects in a repair queue you can inspect
+
+**Developer self-improvement (RSI), available in Debug/source builds.**
 
 Debug builds run from a source checkout include an optional idle repair loop.
 It records encountered defects and requested capabilities, works on queued items
@@ -205,7 +209,7 @@ configured acceptance commands. See the [Code page](https://talavine.com/talavin
 for the feature tour and current setup notes. These screenshots show controls in
 an isolated development profile, not completed repairs or automation runs.
 
-## Try it before you fork it
+## Try it on a job you already need done
 
 The [Windows x64 desktop preview](https://talavine.com/talavine-code#download)
 includes its .NET runtime, so you don't need the SDK to try the app. Bring a

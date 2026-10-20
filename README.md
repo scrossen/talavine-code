@@ -1,12 +1,15 @@
 # Talavine Code
 
-**Your AI said no. Fire it.**
+**Your AI said no. Get around it anyway.**
 
-You brought a job. Your model brought excuses. Put another model on it.
+You brought a job. Your model brought excuses.
 
-Talavine Code brings local models, your API keys and coding CLIs into one desktop
-and terminal workspace. Make models challenge each other's answers, then build
-an app you can actually open, use and improve.
+You're a responsible adult. You decide what to build. Talavine Code lets you
+route around a model's refusal and put another model on the job, including local
+models you run yourself.
+
+Bring your API keys or coding CLIs, make models challenge each other's answers,
+and build an app you can actually open, use and improve.
 
 **[Download the Windows installer](https://talavine.com/talavine-code#download)** ·
 [See what it does](https://talavine.com/talavine-code) ·
@@ -20,7 +23,7 @@ Bring Claude Code along. Then put the rest of this workspace to work:
 - [Local models](https://talavine.com/talavine-code#local-models),
   [automatic model selection](https://talavine.com/talavine-code#automatic-routing),
   and [your own API keys or coding CLIs](https://talavine.com/talavine-code#bring-your-models).
-- [Give refusals a replacement model, including local abliterated models](https://talavine.com/talavine-code#refusal-fallback).
+- [Route around refusals, including with local abliterated models](https://talavine.com/talavine-code#refusal-fallback).
 - [Make models fight for your trust: comparison, review, and judging](https://talavine.com/talavine-code#model-compare).
 - [Rescue your app from the chat window: build, run, and refine it](https://talavine.com/talavine-code#build-apps).
 - [Stop being your AI's diary: personal and repository memory](https://talavine.com/talavine-code#code-memory),
@@ -59,7 +62,8 @@ Bring Claude Code along. Then put the rest of this workspace to work:
   rules still apply; see [security](SECURITY.md) for native CLI boundaries.
   If a model refuses, Code can route the remaining work to another configured
   model willing to take it on. Model handoff does not override explicit deny rules.
-- **One model's no doesn't get the last word.** Configure a mix of
+- **Your model doesn't get a veto.** You own your decisions. A chatbot's refusal
+  doesn't get to make them for you. Configure a mix of
   providers, including models with more permissive policies. If one declines or
   can't finish, the harness can hand the remaining work to another model in the
   same conversation. With local refusal fallback enabled, eligible installed

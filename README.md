@@ -15,6 +15,9 @@ and build an app you can actually open, use and improve.
 [See what it does](https://talavine.com/talavine-code) ·
 [Build from source](#start-with-the-terminal) · [Report an issue](https://github.com/scrossen/talavine-code/issues)
 
+**Your coding tools should answer to you.** If that's your kind of harness,
+[give Talavine Code a star](https://github.com/scrossen/talavine-code) so you can find it again.
+
 ## The usual coding tools. With fewer excuses.
 
 Read and edit files, run commands and tests, and work in your repositories.

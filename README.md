@@ -1,28 +1,29 @@
 # Talavine Code
 
-**When one model gets stuck, keep building.**
+**Your AI said no. Fire it.**
 
-A refusal shouldn't mean explaining the whole job again. Talavine Code can pass
-remaining work to another configured model in the same conversation. Bring your
-local models, API keys, or coding CLIs into one desktop and terminal workspace,
-compare approaches, and keep the apps you build ready to run and refine.
+You brought a job. Your model brought excuses. Put another model on it.
+
+Talavine Code brings local models, your API keys and coding CLIs into one desktop
+and terminal workspace. Make models challenge each other's answers, then build
+an app you can actually open, use and improve.
 
 **[Download the Windows installer](https://talavine.com/talavine-code#download)** ·
 [See what it does](https://talavine.com/talavine-code) ·
 [Build from source](#start-with-the-terminal) · [Report an issue](https://github.com/scrossen/talavine-code/issues)
 
-## The coding-harness essentials. Fewer dead ends.
+## The usual coding tools. With fewer excuses.
 
 Read and edit files, run commands and tests, and work in your repositories.
-Then choose how to get past the parts that slow you down:
+Bring Claude Code along. Then put the rest of this workspace to work:
 
 - [Local models](https://talavine.com/talavine-code#local-models),
   [automatic model selection](https://talavine.com/talavine-code#automatic-routing),
   and [your own API keys or coding CLIs](https://talavine.com/talavine-code#bring-your-models).
-- [Refusal fallback, including eligible abliterated models](https://talavine.com/talavine-code#refusal-fallback).
-- [Multi-model comparison, review, and judging](https://talavine.com/talavine-code#model-compare).
-- [Build, run, and refine apps in the UI](https://talavine.com/talavine-code#build-apps).
-- [Personal and repository memory](https://talavine.com/talavine-code#code-memory),
+- [Give refusals a replacement model, including local abliterated models](https://talavine.com/talavine-code#refusal-fallback).
+- [Make models fight for your trust: comparison, review, and judging](https://talavine.com/talavine-code#model-compare).
+- [Rescue your app from the chat window: build, run, and refine it](https://talavine.com/talavine-code#build-apps).
+- [Stop being your AI's diary: personal and repository memory](https://talavine.com/talavine-code#code-memory),
   plus [model-outcome history](https://talavine.com/talavine-code#response-memory).
 - [Chrome](https://talavine.com/talavine-code#computer-control) and
   [desktop control](https://talavine.com/talavine-code#desktop-control), with
@@ -39,40 +40,40 @@ Then choose how to get past the parts that slow you down:
   [usage and acceptance checks](https://talavine.com/talavine-code#code-usage),
   and [MIT-licensed source](https://talavine.com/talavine-code#open-source).
 
-## Change models without rebuilding your workflow
+## Stop treating one model like the entire engineering department
 
-- **Run local models.** Connect Ollama and select installed, tool-capable models
+- **Put your own hardware to work.** Connect Ollama and select installed, tool-capable local models
   alongside cloud providers. On-device inference uses your own hardware; cloud
   models and connected tools can still send data off the device. Hardware and
   model capabilities determine what runs well.
-- **Let Code choose a starting model for the job.** Configure model choices and describe when each
+- **Retire the model-selection guessing game.** Configure model choices and describe when each
   fits. Enable the selector to choose for the first prompt and reconsider after
   failure. Pick a model yourself when you prefer, or use `/auto` for a fresh
   automatic choice. Pin favorite provider/model combinations for easy reuse.
-- **Keep the services you already use: BYOK or BYOCLI.** Bring your own API keys or supported installed, signed-in
+- **Bring the AI you're already paying for. BYOK or BYOCLI.** Bring your own API keys or supported installed, signed-in
   coding CLIs such as Claude Code and Codex. Mix supported services in one
   workspace; their subscriptions, API charges, and terms remain separate.
-- **Your prompt is the go-ahead.** In the default `auto` mode, a user-requested
+- **You asked it to work. Let it work.** In the default `auto` mode, a user-requested
   coding turn can edit files and run commands without a stream of Allow dialogs.
   Choose `ask-risky` or `ask` when you want more approval steps. Explicit deny
   rules still apply; see [security](SECURITY.md) for native CLI boundaries.
   If a model refuses, Code can route the remaining work to another configured
   model willing to take it on. Model handoff does not override explicit deny rules.
-- **One model's refusal doesn't have to end the job.** Configure a mix of
+- **One model's no doesn't get the last word.** Configure a mix of
   providers, including models with more permissive policies. If one declines or
   can't finish, the harness can hand the remaining work to another model in the
   same conversation. With local refusal fallback enabled, eligible installed
   **abliterated or uncensored models** can be preferred. These models are modified
   or trained to refuse less often; they must be reachable and support tools.
-  You choose the services and fallback preferences. No model is guaranteed to
-  accept or complete every request.
-- **Before you trust one answer, let other models challenge it.** `/compare` sends the same
+  You choose the services and fallback preferences.
+- **Make your models fight for your trust.** One confident answer is a lousy review
+  process. `/compare` sends the same
   prompt to multiple configured API model lanes, including available local models.
   `/review` is an alias. With `--judge`, the models review
   one another's proposals and can concede to a stronger answer; a separate judge
   settles a remaining disagreement. See the alternatives and reasoning before
   committing to an approach. A model's ranking isn't a substitute for running tests.
-- **Keep the apps you build somewhere useful.** The desktop's **My apps** library
+- **Your app shouldn't die in a chat window.** The desktop's **My apps** library
   lets you create an app, add an existing project, return to its coding chat,
   and run or preview it using its configured launch command. Your projects stay
   in folders you choose.
@@ -80,7 +81,7 @@ Then choose how to get past the parts that slow you down:
   describe what you need, and choose a provider. Code creates a project folder,
   opens its build chat, and starts work. Run or preview supported apps using
   their launch setup, then return to the chat for the next change. Generated
-  apps may need their own development tools and dependencies.
+  apps use the development tools and dependencies their projects need.
 - **Bring the models you already use.** Work through supported native coding
   CLIs or API providers, retain conversations, and run acceptance commands in your
   own repositories. The shared SwarmCore harness is included for developers who
@@ -95,12 +96,11 @@ Then choose how to get past the parts that slow you down:
 - **Open source under MIT.** Inspect the harness, change it, or embed the included
   shared libraries in your own tools. See [LICENSE](LICENSE).
 
-Already use Claude Code? You can bring it with you. The appeal here is a workspace
-for multiple providers, local models, cross-model reviews, and the apps you build.
-Claude Code also offers model selection, fallback, and integrations; these aren't
-all exclusive features. See its [model documentation](https://code.claude.com/docs/en/model-config).
+Bring Claude Code with you and put it alongside other providers, local models,
+cross-model reviews, and the apps you build. Its own model setup remains available;
+see the [Claude Code model documentation](https://code.claude.com/docs/en/model-config).
 
-## From an app idea to a project you can open again
+## Rescue your app from the chat window
 
 These are lossless, high-resolution PNG captures of the real Windows app,
 cropped to the relevant controls. They show a development build; UI can differ
@@ -143,9 +143,9 @@ For example, after configuring the named API lanes:
 Comparison produces proposals and a review; it doesn't apply several competing
 implementations to your repository. Provider calls are billed by your services.
 
-## Stop explaining the same preferences in every chat
+## Stop being your AI's external hard drive
 
-With personal memory enabled, Code learns lasting preferences from what you
+The daily reintroduction gets old. With personal memory enabled, Code learns lasting preferences from what you
 tell it and supplies a short profile to supported models on later turns. Inspect,
 edit, hide, or forget memories; inferred suggestions wait for confirmation.
 Temporary chats keep personal memory off. Memories live locally, while relevant
@@ -159,7 +159,7 @@ choices, without storing raw prompts, replies, or credentials in that history.
 
 ![Personal memory controls and repository memory proposals in an empty demo profile](https://talavine.com/images/screenshots/talavine-code-memory.png?v=memory-20261020)
 
-## Take the next step in Chrome or a desktop app
+## Give your coding agent hands
 
 Code's browser tools can observe, click, type, and navigate in connected Chrome.
 Use your regular tabs and signed-in sessions after enabling Chrome's connection
@@ -170,7 +170,7 @@ Your permission mode and OS access requirements still apply.
 
 ![Chrome and desktop connection settings, before connecting](https://talavine.com/images/screenshots/talavine-code-computer.png?v=memory-20261020)
 
-### Give tools access without pasting passwords into prompts
+### Stop pasting passwords into chats
 
 Save named passwords, tokens, and API keys in the credential vault, or import a
 supported password-manager CSV export. With the OS keystore available, values
@@ -185,7 +185,7 @@ the app's keystore status. Password export files themselves are sensitive.
 
 ![Empty credential vault reporting Windows DPAPI protection, with no real secrets](https://talavine.com/images/screenshots/talavine-code-credentials.png?v=memory-20261020)
 
-## Put recurring defects in a repair queue you can inspect
+## Make Code work on its own bugs
 
 **Developer self-improvement (RSI), available in Debug/source builds.**
 
@@ -209,7 +209,7 @@ configured acceptance commands. See the [Code page](https://talavine.com/talavin
 for the feature tour and current setup notes. These screenshots show controls in
 an isolated development profile, not completed repairs or automation runs.
 
-## Try it on a job you already need done
+## Give it the job you've been putting off
 
 The [Windows x64 desktop preview](https://talavine.com/talavine-code#download)
 includes its .NET runtime, so you don't need the SDK to try the app. Bring a

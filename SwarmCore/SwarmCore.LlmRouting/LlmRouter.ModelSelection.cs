@@ -2266,17 +2266,21 @@ public partial class LlmRouter
         {
             return "the provider is not available";
         }
-        if (requiresVision && !provider.SupportsVision(route.Model))
+        // Re-read the exact artifact before rejecting a capability. A custom import may have
+        // acquired its missing component since startup; cached discovery is not today's proof.
+        var metadata = requiresVision || requiresToolUse
+            ? await Services.LlmModelCapabilityEvidenceResolver.ResolveAsync(provider, route.Model,
+                options?.RequestCancellationToken ?? CancellationToken.None).ConfigureAwait(false)
+            : null;
+        if (metadata is not null) Services.LlmModelCapabilityEvidenceResolver.Apply(route, metadata);
+        if (requiresVision && !(metadata?.SupportsVision ?? provider.SupportsVision(route.Model)))
         {
             return "vision capability is not proven by the registered provider";
         }
 
         if (requiresToolUse)
         {
-            var metadata = await Services.LlmModelCapabilityEvidenceResolver.ResolveAsync(provider, route.Model,
-                options?.RequestCancellationToken ?? CancellationToken.None).ConfigureAwait(false);
-            if (metadata is not null) Services.LlmModelCapabilityEvidenceResolver.Apply(route, metadata);
-            else if (provider is ILlmModelCapabilityEvidenceProvider { RequiresModelCapabilityEvidence: true })
+            if (metadata is null && provider is ILlmModelCapabilityEvidenceProvider { RequiresModelCapabilityEvidence: true })
                 return "fresh read-only model capability metadata is unavailable";
             var toolIssue = GetToolUseSelectionIssue(route);
 

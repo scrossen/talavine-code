@@ -318,6 +318,7 @@ public sealed class ToolUseAgentEngine : IToolUseAgentEngine
         var cumulativeReportedTokens = 0L;
         string? lastCompactionInputDigest = null;
         ChatToolUseRequest? contextRequest = null;
+        var visionRecoveryAttempts = new HashSet<string>(StringComparer.Ordinal);
         // A host's /compact: one user-requested compaction before the first model call of this turn.
         var userCompactionPending = session.CompactWorkingContextFirst;
 
@@ -977,6 +978,21 @@ public sealed class ToolUseAgentEngine : IToolUseAgentEngine
                     }
                     finally { computerAccessor.Current = previousComputerContext; }
                     if (session.WorkingContext is { } computerContext) computerContext.SourceProofComplete = false;
+                }
+                // A newly returned screenshot can expose a missing local component mid-turn.
+                // Repair before route admission, preserving the exact transcript and completed tool receipts.
+                if (TranscriptContainsImage(providerTranscript) && session.UserRequestAuthorized
+                    && session.VisionRecovery is { } recovery && pinnedProvider is not null && pinnedModel is not null
+                    && session.Tools.Concat(session.DiscoverableTools).Any(t => t.ToolId == recovery.RequiredToolId)
+                    && visionRecoveryAttempts.Add(pinnedProvider + "/" + pinnedModel))
+                {
+                    yield return new AgentStatusEvent("Checking image support for the selected model…");
+                    var receipt = await WithModelTurnContextAsync(session, () => recovery.RecoverAsync(pinnedProvider, pinnedModel, ct));
+                    if (receipt is not null)
+                    {
+                        AppendTranscript(ChatMessage.Text(ChatRole.User, EngineAuthoredNotice.Create("model capability recovery", receipt)));
+                        yield return new AgentStatusEvent("Model image setup checked; continuing the original request.");
+                    }
                 }
                 var request = new ChatToolUseRequest
                 {

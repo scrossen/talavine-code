@@ -59,6 +59,12 @@ public sealed class ChromeSessionReuseTests
             });
             var originalTab = await existing.NewPageAsync();
             await originalTab.GotoAsync(origin + "/login");
+            // A real, unrelated renderer that never answers Page/Runtime initialization.
+            // Eager ConnectOverCDP used to block every tab on this renderer.
+            var sleepingTab = await existing.NewPageAsync();
+            await sleepingTab.GotoAsync("data:text/html,<title>Unresponsive unrelated fixture</title>");
+            await sleepingTab.EvaluateAsync("setTimeout(() => { for (;;) {} }, 100)");
+            await Task.Delay(200);
             var options = Options.Create(new CodingComputerOptions { PersonalChromeUserDataDirectory = root });
             string openedUrl;
             await using (var first = new ChromeComputerSession(options))
@@ -66,7 +72,13 @@ public sealed class ChromeSessionReuseTests
                 Assert.Contains(await first.ListAsync(), t => t.Url == origin + "/login");
                 var opened = await first.OpenAsync(origin + "/protected");
                 Assert.Equal("Fixture signed in", opened.Title);
-                Assert.Contains("Existing session active", (await first.ObserveAsync(opened.Id)).VisibleText);
+                var observation = await first.ObserveAsync(opened.Id);
+                Assert.Contains("Existing session active", observation.VisibleText);
+                var screenshot = observation.Screenshot;
+                var batch = new SwarmCore.Abstractions.Computer.ComputerActionBatch(screenshot.SessionId,
+                    screenshot.SurfaceId, screenshot.ObservationId, [new("screenshot")]);
+                Assert.True((await first.ActAsync(batch)).Succeeded);
+                Assert.False((await first.ActAsync(batch)).Succeeded);
                 openedUrl = opened.Url;
             }
             Assert.False(originalTab.IsClosed);

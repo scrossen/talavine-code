@@ -454,6 +454,7 @@ public sealed class AgentTurnRunner : IAgentTurnRunner
         }
         var session = new AgentSession
         {
+            VisionRecovery = request.VisionRecovery,
             DisableRouteFallback = request.DisableRouteFallback,
             CompactWorkingContextFirst = request.CompactWorkingContextFirst,
             ProcedureContext = request.ProcedureContext,

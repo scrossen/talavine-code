@@ -1,5 +1,7 @@
 using System.Text.Json;
+using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.DependencyInjection.Extensions;
 using Microsoft.Extensions.Options;
 using SwarmCore.Abstractions.LlmRouting;
 using SwarmCore.Coding.Routing;
@@ -66,11 +68,16 @@ public sealed class ModelSourcesStore(SwarmCodeDataPaths paths)
 
 public static class ModelSourcesRegistration
 {
-    public static IServiceCollection AddSwarmCodeModelSources(this IServiceCollection services, SwarmCodeDataPaths paths)
+    public static IServiceCollection AddSwarmCodeModelSources(this IServiceCollection services, SwarmCodeDataPaths paths, IConfiguration? configuration = null)
     {
         var sources = new ModelSourcesStore(paths).Read().Sources;
         services.AddSingleton<ModelSourcesStore>();
         services.AddSingleton<OllamaSetupClient>();
+        services.AddOptions<Models.OllamaVisionStorageOptions>();
+        if (configuration is not null) services.Configure<Models.OllamaVisionStorageOptions>(configuration.GetSection("Coding:OllamaVisionStorage"));
+        services.AddSingleton<SwarmCore.LlmRouting.LocalRuntime.IOllamaVisionArtifactStore, Models.OllamaVisionArtifactStore>();
+        services.AddSingleton<SwarmCore.LlmRouting.LocalRuntime.OllamaVisionRepair>();
+        services.TryAddSingleton<SwarmCore.Agent.Procedures.IAgentProcedureStore, Projects.FileAppProcedureStore>();
         services.AddSingleton<OpenModelDiscovery>();
         services.AddSingleton<OllamaCodingLaneSource>();
         var laneSource = services.LastOrDefault(d => d.ServiceType == typeof(ICodingLaneSource));

@@ -19,13 +19,6 @@ public partial class Session
             or ToolCallEntry { State: ToolCallState.Running }
             or PermissionEntry { IsPending: true });
 
-    private static readonly string[] Examples =
-    [
-        "Explain how this repository is organized and where to start reading.",
-        "Find and fix the most likely bug in the failing tests.",
-        "Add unit tests for the least-covered public class.",
-    ];
-
     internal static readonly IReadOnlyList<SlashCommand> BuiltInSlashCommands =
     [
         new("help", "List the available commands"),
@@ -131,6 +124,9 @@ public partial class Session
 
     private ChatScrollRegion? _scroll;
     private ChatComposer? _composer;
+    private Components.Shared.ComposerModelPicker? _runtimeModelPicker;
+    private string? _localRuntimeStatus;
+    private Task OpenRuntimeModelChoicesAsync() => _runtimeModelPicker?.OpenAsync() ?? Task.CompletedTask;
     private Components.Chat.AttachmentIntake? _attachmentIntake;
 
     [Parameter] public string SessionId { get; set; } = "";
@@ -177,6 +173,7 @@ public partial class Session
             Detach();
             _attachedSessionId = SessionId;
             _notes.Clear();
+            _localRuntimeStatus = null;
             _expanded.Clear();
             _draft = "";
             _openError = null;

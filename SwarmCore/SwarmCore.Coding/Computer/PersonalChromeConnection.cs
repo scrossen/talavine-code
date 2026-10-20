@@ -6,6 +6,9 @@ namespace SwarmCore.Coding.Computer;
 public static class PersonalChromeConnection
 {
     public const string SetupUrl = "chrome://inspect/#remote-debugging";
+    // Chrome's approval-only server accepts the browser prefix without a GUID and uses port 9222
+    // by default. This still requires Chrome's consent; it does not bypass the approval boundary.
+    public const string ConsentEndpoint = "ws://127.0.0.1:9222/devtools/browser/";
 
     public static string DefaultUserDataDirectory => OperatingSystem.IsWindows()
         ? Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "Google", "Chrome", "User Data")
@@ -16,9 +19,20 @@ public static class PersonalChromeConnection
     public static string GetEndpoint(string? userDataDirectory = null)
     {
         var root = string.IsNullOrWhiteSpace(userDataDirectory) ? DefaultUserDataDirectory : Path.GetFullPath(userDataDirectory);
+        return ReadEndpoint(root, string.Equals(root, DefaultUserDataDirectory,
+            OperatingSystem.IsWindows() ? StringComparison.OrdinalIgnoreCase : StringComparison.Ordinal));
+    }
+
+    internal static string ReadEndpoint(string root, bool allowConsentFallback)
+    {
         try { return ParseActivePort(File.ReadAllText(Path.Combine(root, "DevToolsActivePort"))); }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or ArgumentException)
         {
+            // macOS may withhold another app's data folder even when its loopback consent
+            // server is enabled. Do not require broad filesystem permission to control Chrome.
+            // Explicit custom profiles never fall back to a different browser instance.
+            if (allowConsentFallback && ex is (IOException or UnauthorizedAccessException))
+                return ConsentEndpoint;
             // Missing, unreadable or invalid discovery data is an environmental prerequisite, not a code defect.
             // Keep that distinction through the API/native tool error text and self-improvement capture.
             throw new IOException("Open your regular Chrome (version 144 or newer), go to " + SetupUrl +

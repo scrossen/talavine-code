@@ -121,7 +121,7 @@
                 event.preventDefault();
             } else if (target.matches(slashOpenSelector)
                 && (event.key === 'ArrowUp' || event.key === 'ArrowDown' || event.key === 'Tab')
-                && !event.shiftKey && !event.isComposing) {
+                && !event.shiftKey && !event.ctrlKey && !event.altKey && !event.metaKey && !event.isComposing) {
                 event.preventDefault();
             }
         }, true);
@@ -307,6 +307,14 @@
     })();
 
     global.chatComponents = {
+        revealSlashSelection: list => {
+            const selected = list?.querySelector('[aria-selected="true"]');
+            if (!selected) return;
+            const row = selected.getBoundingClientRect();
+            const viewport = list.getBoundingClientRect();
+            if (row.top < viewport.top) list.scrollTop -= viewport.top - row.top;
+            else if (row.bottom > viewport.bottom) list.scrollTop += row.bottom - viewport.bottom;
+        },
         dictation,
         autosize,
         scrollToBottom,

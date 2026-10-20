@@ -11,18 +11,64 @@ approving the same job one tool call at a time.
 [See what it does](https://talavine.com/talavine-code) ·
 [Build from source](#start-with-the-terminal) · [Report an issue](https://github.com/scrossen/talavine-code/issues)
 
+## The coding-harness essentials, plus more ways to work
+
+Read and edit files, run commands and tests, and work in your repositories.
+Then choose the features that fit your workflow:
+
+- [Local models](https://talavine.com/talavine-code#local-models),
+  [automatic model selection](https://talavine.com/talavine-code#automatic-routing),
+  and [your own API keys or coding CLIs](https://talavine.com/talavine-code#bring-your-models).
+- [Refusal fallback, including eligible abliterated models](https://talavine.com/talavine-code#refusal-fallback).
+- [Multi-model comparison, review, and judging](https://talavine.com/talavine-code#model-compare).
+- [Build, run, and refine apps in the UI](https://talavine.com/talavine-code#build-apps).
+- [Personal and repository memory](https://talavine.com/talavine-code#code-memory),
+  plus [model-outcome history](https://talavine.com/talavine-code#response-memory).
+- [Chrome](https://talavine.com/talavine-code#computer-control) and
+  [desktop control](https://talavine.com/talavine-code#desktop-control), with
+  [encrypted credentials](https://talavine.com/talavine-code#code-credentials).
+- [Developer self-improvement](https://talavine.com/talavine-code#code-improvement)
+  (Debug/source builds) and [harness learning](https://talavine.com/talavine-code#harness-learning).
+- [Favorite models](https://talavine.com/talavine-code#favorite-models),
+  [conversation forks and planning](https://talavine.com/talavine-code#conversation-tools),
+  and [MCP tools and repository instructions](https://talavine.com/talavine-code#code-extensions).
+- [Paired SwarmSpan hosts](https://talavine.com/talavine-code#code-peers),
+  [agents](https://talavine.com/talavine-code#code-agents), and
+  [scheduled work](https://talavine.com/talavine-code#code-schedules).
+- [Chat search and work summaries](https://talavine.com/talavine-code#code-history),
+  [usage and acceptance checks](https://talavine.com/talavine-code#code-usage),
+  and [MIT-licensed source](https://talavine.com/talavine-code#open-source).
+
 ## Why try another coding harness?
 
+- **Run local models.** Connect Ollama and select installed, tool-capable models
+  alongside cloud providers. On-device inference uses your own hardware; cloud
+  models and connected tools can still send data off the device. Hardware and
+  model capabilities determine what runs well.
+- **Automatic model selection.** Configure model choices and describe when each
+  fits. Enable the selector to choose for the first prompt and reconsider after
+  failure. Pick a model yourself when you prefer, or use `/auto` for a fresh
+  automatic choice. Pin favorite provider/model combinations for easy reuse.
+- **BYOK or BYOCLI.** Bring your own API keys or supported installed, signed-in
+  coding CLIs such as Claude Code and Codex. Mix supported services in one
+  workspace; their subscriptions, API charges, and terms remain separate.
 - **Your prompt is the go-ahead.** In the default `auto` mode, a user-requested
   coding turn can edit files and run commands without a stream of Allow dialogs.
   Choose `ask-risky` or `ask` when you want more approval steps. Explicit deny
   rules still apply; see [security](SECURITY.md) for native CLI boundaries.
+  If a model refuses, Code can route the remaining work to another configured
+  model willing to take it on. Model handoff does not override explicit deny rules.
 - **One model's refusal doesn't have to end the job.** Configure a mix of
   providers, including models with more permissive policies. If one declines or
   can't finish, the harness can hand the remaining work to another model in the
-  same conversation. You choose the services and fallback order.
+  same conversation. With local refusal fallback enabled, eligible installed
+  **abliterated or uncensored models** can be preferred. These models are modified
+  or trained to refuse less often; they must be reachable and support tools.
+  You choose the services and fallback preferences. No model is guaranteed to
+  accept or complete every request.
 - **Get several answers, then put them to the test.** `/compare` sends the same
-  prompt to multiple configured API models. With `--judge`, the models review
+  prompt to multiple configured API model lanes, including available local models.
+  `/review` is an alias. With `--judge`, the models review
   one another's proposals and can concede to a stronger answer; a separate judge
   settles a remaining disagreement. See the alternatives and reasoning before
   committing to an approach. A model's ranking isn't a substitute for running tests.
@@ -30,10 +76,63 @@ approving the same job one tool call at a time.
   lets you create an app, add an existing project, return to its coding chat,
   and run or preview it using its configured launch command. Your projects stay
   in folders you choose.
+- **Get from an idea to an app in the UI.** Choose **Create an app**, name it,
+  describe what you need, and choose a provider. Code creates a project folder,
+  opens its build chat, and starts work. Run or preview supported apps using
+  their launch setup, then return to the chat for the next change. Generated
+  apps may need their own development tools and dependencies.
 - **Bring the models you already use.** Work through supported native coding
   CLIs or API providers, retain conversations, and run acceptance commands in your
   own repositories. The shared SwarmCore harness is included for developers who
   want to adapt it or embed it in their own tools.
+- **Explore without losing your starting point.** Fork saved conversations,
+  investigate in plan mode, inspect changes, and preview undoing the last turn's
+  file changes. Connect supported MCP tool servers and use repository
+  instructions, reusable commands, and agent roles.
+- **Use a paired computer when the job belongs there.** The optional
+  [SwarmSpan](https://talavine.com/swarmspan) bridge supports peer discovery,
+  file transfers, and delegated work through separately installed, paired hosts.
+- **Open source under MIT.** Inspect the harness, change it, or embed the included
+  shared libraries in your own tools. See [LICENSE](LICENSE).
+
+Already use Claude Code? You can bring it with you. The appeal here is a workspace
+for multiple providers, local models, cross-model reviews, and the apps you build.
+Claude Code also offers model selection, fallback, and integrations; these aren't
+all exclusive features. See its [model documentation](https://code.claude.com/docs/en/model-config).
+
+## See the desktop workflow
+
+These are lossless, high-resolution PNG captures of the real Windows app,
+cropped to the relevant controls. They show a development build; UI can differ
+from the installer. They show setup, not benchmark results or completed builds.
+
+**Choose models and configure automatic selection.** The optional selector is
+off in this capture. Enable it and supply model choices to use automatic routing.
+
+![Model defaults, thinking level and automatic model selection](https://talavine.com/images/screenshots/talavine-code-routing.png?v=lossless-20261020)
+
+**Pick contenders and a judge.** The comparison dialog includes available
+configured lanes, including installed local models. `/compare` and `/review` open this workflow; the terminal
+uses `--judge` rather than a separate `/judge` command.
+
+![Compare models dialog with local contenders and judge selection](https://talavine.com/images/screenshots/talavine-code-compare.png?v=lossless-20261020)
+
+**Start building an app from the UI.** This form shows the garden-planner
+example placeholders. Describe your own app, then build and refine it in chat.
+
+![Create an app form with description, provider and Build in chat](https://talavine.com/images/screenshots/talavine-code-app-builder.png?v=lossless-20261020)
+
+**Return to an app without hunting for its folder.** In **My Apps and Projects**,
+choose **Run app** to launch it or **Work on this app** to reopen its coding chat.
+**Files & details** opens the app's files and launch setup. This real development
+build capture uses prepared demo apps; Garden planner was launched locally and
+its coding chat reopened to check the controls.
+
+![My Apps and Projects with example apps and Work on this app, Run app and Files and details controls](https://talavine.com/images/screenshots/talavine-code-app-library.png?v=apps-20261020)
+
+[See the app library on the Code page](https://talavine.com/talavine-code#app-library).
+
+[Explore the Code page and full-size screenshots](https://talavine.com/talavine-code).
 
 For example, after configuring the named API lanes:
 
@@ -43,6 +142,68 @@ For example, after configuring the named API lanes:
 
 Comparison produces proposals and a review; it doesn't apply several competing
 implementations to your repository. Provider calls are billed by your services.
+
+## Memory that carries across chats
+
+With personal memory enabled, Code learns lasting preferences from what you
+tell it and supplies a short profile to supported models on later turns. Inspect,
+edit, hide, or forget memories; inferred suggestions wait for confirmation.
+Temporary chats keep personal memory off. Memories live locally, while relevant
+recalled information is sent to your chosen model when it answers.
+
+Repository memory is separate: agents read `MEMORY.md` and topic files, then
+propose changes to lasting project conventions. You review and apply proposals
+before they change the working tree, and decide when to commit them. Model-response
+history also records scoped outcomes and request fingerprints to inform fallback
+choices, without storing raw prompts, replies, or credentials in that history.
+
+![Personal memory controls and repository memory proposals in an empty demo profile](https://talavine.com/images/screenshots/talavine-code-memory.png?v=memory-20261020)
+
+## Chrome, desktop control, and encrypted credentials
+
+Code's browser tools can observe, click, type, and navigate in connected Chrome.
+Use your regular tabs and signed-in sessions after enabling Chrome's connection
+and approving it, or choose a separate persistent Code browser profile. Desktop
+tools can observe and interact with supported native apps. Windows uses the current
+desktop; the native Mac host requires Screen Recording and Accessibility access.
+Your permission mode and OS access requirements still apply.
+
+![Chrome and desktop connection settings, before connecting](https://talavine.com/images/screenshots/talavine-code-computer.png?v=memory-20261020)
+
+Save named passwords, tokens, and API keys in the credential vault, or import a
+supported password-manager CSV export. With the OS keystore available, values
+are encrypted using Windows DPAPI or native Mac Keychain protection. Tools can
+use `{{secret:my-service}}` references that the host resolves when the operation
+runs, rather than putting the password into each model prompt. Explicit `/secret`
+intake is handled locally; prefer the credential form for entering values.
+
+This protects stored credentials and supported secret-reference workflows;
+project files, chat history, and personal memory have separate storage. Check
+the app's keystore status. Password export files themselves are sensitive.
+
+![Empty credential vault reporting Windows DPAPI protection, with no real secrets](https://talavine.com/images/screenshots/talavine-code-credentials.png?v=memory-20261020)
+
+## Developer self-improvement (RSI)
+
+Debug builds run from a source checkout include an optional idle repair loop.
+It records encountered defects and requested capabilities, works on queued items
+in isolated Git worktrees, and runs configured build and test acceptance checks.
+Verified fixes remain inspectable on branches; follow their sessions and evidence,
+pause the queue, and use the supported merge/rebuild/relaunch workflow. Automatic
+merging is a separate configuration choice. The public Release installer does
+not enable this developer loop, and a model's proposed fix alone is not verified.
+
+![Paused developer self-improvement queue in a disposable Debug profile](https://talavine.com/images/screenshots/talavine-code-self-improvement.png?v=memory-20261020)
+
+AI overview also exposes a separate harness-learning workflow with start/pause,
+measured progress, token usage, and rollback. New scopes start paused; this is
+distinct from the developer repair queue.
+
+Other available workflows include parallel agents, scheduled coding jobs,
+cross-project chat search and work summaries, usage reporting, work limits, and
+configured acceptance commands. See the [Code page](https://talavine.com/talavine-code)
+for the feature tour and current setup notes. These screenshots show controls in
+an isolated development profile, not completed repairs or automation runs.
 
 ## Try it before you fork it
 
@@ -110,7 +271,19 @@ and provisioning profile for Keychain access. The Mac host uses native AppKit
 and WKWebView with the same Blazor pages; Windows uses MAUI. Do not use someone else's signing
 credentials. See [building](docs/building.md).
 
-## Scope
+## Meet the related products
+
+- **[SwarmSpan](https://talavine.com/swarmspan)** connects trusted computers for
+  device-to-device workflows and powers Code's optional paired-peer bridge.
+- **[Talavine](https://talavine.com)** is your personal and business data hub for
+  chosen emails, documents, notes, calendars, and supported AI connections.
+- **[Talavine CRM](https://talavine.com/products/crm)** is the separate product for customer
+  relationships and business workflows, with its own accounts and permissions.
+
+Talavine Code works on its own. Links to these products don't imply their apps
+or private data are included in this MIT repository.
+
+## Repository scope
 
 This repository contains Talavine Code and the shared libraries needed to build
 it. It does not include the Talavine personal/business data application, CRM,

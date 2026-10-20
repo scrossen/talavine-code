@@ -12,6 +12,7 @@
     </button>
     <div id="@_id" class="composer-model__popover" popover="auto" role="dialog" aria-label="Provider, model and reasoning settings" @onkeydown:stopPropagation>
         <ChatReasoningPicker Efforts="Efforts" Effort="@Effort" EffortChanged="EffortChanged" Disabled="Disabled" />
+        @FavoriteControls
         <details class="composer-model__choices">
             <summary title="Choose a provider or model">@DisplayModel <span aria-hidden="true">›</span></summary>
             <div class="composer-model__fields">@ChildContent</div>
@@ -30,6 +31,7 @@
     [Parameter] public bool Disabled { get; set; }
     [Parameter] public string? AssistanceSummary { get; set; }
     [Parameter] public RenderFragment? AssistanceControls { get; set; }
+    [Parameter] public RenderFragment? FavoriteControls { get; set; }
     [Parameter] public RenderFragment? ChildContent { get; set; }
     private readonly string _id = "composer-model-" + Guid.NewGuid().ToString("N");
     private ElementReference _root;
@@ -41,6 +43,10 @@
         if (!firstRender) return;
         _module = await JS.InvokeAsync<IJSObjectReference>("import", "./_content/SwarmCore.Chat.Components/composerModelPicker.js");
         await _module.InvokeVoidAsync("initialize", _root);
+    }
+    public async Task OpenAsync()
+    {
+        if (_module is not null) await _module.InvokeVoidAsync("open", _root);
     }
     public async ValueTask DisposeAsync()
     {

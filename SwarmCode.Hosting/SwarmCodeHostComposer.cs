@@ -247,7 +247,7 @@ public static class SwarmCodeHostComposer
         services.PostConfigure<CodingOptions>(coding => coding.AdditionalInstructions = string.IsNullOrWhiteSpace(coding.AdditionalInstructions)
             ? SwarmCore.Coding.Interaction.UserQuestionPrompts.Guidance
             : coding.AdditionalInstructions.Trim() + Environment.NewLine + SwarmCore.Coding.Interaction.UserQuestionPrompts.Guidance);
-        services.AddSwarmCodeModelSources(options.DataPaths);
+        services.AddSwarmCodeModelSources(options.DataPaths, configuration);
         var learningOptions = new SwarmCore.HarnessLearning.HarnessLearningOptions();
         configuration.GetSection("HarnessLearning").Bind(learningOptions);
         SwarmCore.Agent.Learning.HarnessLearningRegistration.AddHarnessLearning(services,

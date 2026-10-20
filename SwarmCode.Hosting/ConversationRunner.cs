@@ -105,6 +105,10 @@ public sealed class ConversationRunner : IDisposable, IAsyncDisposable
     }
     public IReadOnlyList<QueuedTurn> QueuedMessages { get { lock (_gate) return _queue.ToList(); } }
 
+    public Task<LocalLlmRuntimeQueueSnapshot> ReadLocalRuntimeQueueAsync(CancellationToken ct)
+        => _services.GetService<ILocalLlmRuntimeManager>()?.GetQueueSnapshotAsync(ct)
+            ?? Task.FromResult(new LocalLlmRuntimeQueueSnapshot([], true));
+
     public ConversationRunner(IServiceProvider services, string conversationId)
     {
         _services = services;
@@ -939,6 +943,7 @@ public sealed class ConversationRunner : IDisposable, IAsyncDisposable
         var reassessModel = true;
         var producer = Task.Run(async () =>
         {
+            using var runtimeOwner = LocalLlmRuntimeOwnerScope.Enter(ConversationId, "Talavine Code");
             // Ambient for everything the orchestrator runs on this flow: recall injectors, memory tools, native host context.
             using var memoryScope = memoryTurn is null ? null : memoryTurns!.Begin(memoryTurn);
             try

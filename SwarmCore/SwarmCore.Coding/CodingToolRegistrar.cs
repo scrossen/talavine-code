@@ -15,6 +15,8 @@ public sealed class CodingToolRegistrar(IServiceProvider services) : IHostedServ
         GitStatusTool.ToolId, GitDiffTool.ToolId, GitCommitTool.ToolId, GitLogTool.ToolId,
         CredentialsListTool.ToolId, HarnessDeclineTool.ToolId,
         NotebookReadTool.ToolId, NotebookEditTool.ToolId,
+        "models.inspect", "models.test_vision",
+        ModelVisionRecovery.ToolId,
     ];
 
     /// <summary>For hosts that do not run hosted services. Safe to call repeatedly.</summary>
@@ -32,6 +34,7 @@ public sealed class CodingToolRegistrar(IServiceProvider services) : IHostedServ
         catalog.Register(services.GetRequiredService<GitCommitTool>().Descriptor);
         catalog.Register(services.GetRequiredService<GitLogTool>().Descriptor);
         catalog.Register(services.GetRequiredService<CredentialsListTool>().Descriptor);
+        foreach (var descriptor in services.GetRequiredService<ModelCapabilityTools>().Descriptors) catalog.Register(descriptor);
         catalog.Register(services.GetRequiredService<HarnessDeclineTool>().Descriptor);
         // The task list belongs to the calling turn's conversation; the model never names one.
         if (services.GetService<Planning.IConversationPlanStore>() is { } plans

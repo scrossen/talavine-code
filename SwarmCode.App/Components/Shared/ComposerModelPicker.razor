@@ -1,9 +1,11 @@
 @using SwarmCore.Abstractions.LlmRouting
 @using SwarmCore.LlmRouting.Providers
-<ChatModelControl Model="@BaseModel" ProviderLabel="@(Lane?.SelectionLabel ?? "Provider")" Effort="@Effort" Efforts="Efforts" EffortChanged="ChangedAsync" Disabled="Disabled" AssistanceSummary="@AssistanceSummary" AssistanceControls="AssistanceControls">
+<ChatModelControl @ref="_control" Model="@BaseModel" ProviderLabel="@(Lane?.SelectionLabel ?? "Provider")" Effort="@Effort" Efforts="Efforts" EffortChanged="ChangedAsync" Disabled="Disabled" AssistanceSummary="@AssistanceSummary" AssistanceControls="AssistanceControls" FavoriteControls="FavoriteControls" OnOpening="OnOpening">
     @ChildContent
 </ChatModelControl>
 @code {
+    private ChatModelControl? _control;
+    public Task OpenAsync() => _control?.OpenAsync() ?? Task.CompletedTask;
     [Parameter] public string Model { get; set; } = "";
     [Parameter] public EventCallback<string> ModelChanged { get; set; }
     [Parameter] public CodingLane? Lane { get; set; }
@@ -11,6 +13,8 @@
     [Parameter] public bool Disabled { get; set; }
     [Parameter] public string? AssistanceSummary { get; set; }
     [Parameter] public RenderFragment? AssistanceControls { get; set; }
+    [Parameter] public RenderFragment? FavoriteControls { get; set; }
+    [Parameter] public EventCallback OnOpening { get; set; }
     [Parameter] public RenderFragment? ChildContent { get; set; }
     [Parameter] public IReadOnlyDictionary<string, IReadOnlyList<string>>? CatalogEfforts { get; set; }
     private string BaseModel => ModelReasoningSelection.Split(Model).Model;

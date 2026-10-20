@@ -72,6 +72,12 @@ public sealed class LocalLlmRuntimePreemptedException : OperationCanceledExcepti
 }
 
 /// <summary>
+/// Admission expired before inference began. This is local scheduling pressure,
+/// not provider failure evidence or authority to switch providers.
+/// </summary>
+public sealed class LocalLlmRuntimeBusyException(string message) : TimeoutException(message);
+
+/// <summary>
 /// Process-wide coordinator for local LLM work, with a shared cross-process
 /// machine lease for every Talavine host running as the same OS user. It
 /// owns both admission control and provider execution policy, so local models
@@ -111,4 +117,8 @@ public interface ILocalLlmRuntimeManager
     int HighPriorityPending { get; }
 
     LocalLlmRuntimeSnapshot GetSnapshot();
+
+    /// <summary>Best-effort live scheduling metadata. Older/unreadable hosts may be absent.</summary>
+    Task<LocalLlmRuntimeQueueSnapshot> GetQueueSnapshotAsync(CancellationToken ct = default)
+        => Task.FromResult(new LocalLlmRuntimeQueueSnapshot([], true));
 }

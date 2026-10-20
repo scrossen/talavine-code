@@ -1,12 +1,14 @@
 <div class="@RootClass">
     @if (PopupOpen)
     {
-        <div class="chat-slash" role="listbox" aria-label="Commands">
+        <div class="chat-slash">
+            <div class="chat-slash__hint">Commands · ↑ ↓ browse · Tab or Enter insert · Esc close</div>
+            <div @ref="_slashList" id="@_slashId" role="listbox" aria-label="Commands" class="chat-slash__list">
             @for (var i = 0; i < _matches.Count; i++)
             {
                 var index = i;
                 var command = _matches[i];
-                <button type="button" role="option" aria-selected="@(index == _slashIndex ? "true" : "false")"
+                <button type="button" role="option" id="@($"{_slashId}-{index}")" tabindex="-1" aria-selected="@(index == _slashIndex ? "true" : "false")"
                         class="chat-slash__item @(index == _slashIndex ? " chat-slash__item--active" : "")"
                         @onmousedown:preventDefault="true"
                         @onclick="() => AcceptSlashAsync(command)">
@@ -14,6 +16,7 @@
                     <span class="chat-slash__desc">@command.Description</span>
                 </button>
             }
+            </div>
         </div>
     }
     <textarea @ref="_textarea"
@@ -22,14 +25,25 @@
               data-sm-autosize="true"
               data-sm-enter-submits="true"
               data-chat-slash-open="@(PopupOpen ? "true" : null)"
+              aria-autocomplete="@(SlashCommands?.Count > 0 ? "list" : null)"
+              aria-controls="@(PopupOpen ? _slashId : null)"
+              aria-activedescendant="@(PopupOpen ? $"{_slashId}-{_slashIndex}" : null)"
               aria-label="@(Placeholder ?? "Message")"
               placeholder="@Placeholder"
               disabled="@Disabled"
               value="@_value"
               @oninput="OnInputAsync"
-              @onkeydown="OnKeyDownAsync"></textarea>
+              @onkeydown="OnKeyDownAsync" @onkeydown:stopPropagation="true"></textarea>
     <div class="chat-composer__bar @(Compact ? "chat-composer-surface__bar" : "")">
-        <div class="chat-composer__toolbar @(Compact ? "chat-composer-surface__toolbar" : "")">@Toolbar</div>
+        <div class="chat-composer__toolbar @(Compact ? "chat-composer-surface__toolbar" : "")">
+            @if (SlashCommands?.Count > 0)
+            {
+                <button type="button" class="chat-composer__commands" title="Browse commands (or type /)" aria-label="Browse slash commands"
+                        aria-expanded="@(PopupOpen ? "true" : "false")" aria-controls="@(PopupOpen ? _slashId : null)"
+                        disabled="@Disabled" @onclick="BrowseCommandsAsync">/</button>
+            }
+            @Toolbar
+        </div>
         <div class="chat-composer-surface__actions">
         @if (IsRunning)
         {
@@ -71,6 +85,10 @@
     [Parameter] public IReadOnlyList<SlashCommand>? SlashCommands { get; set; }
 
     private ElementReference _textarea;
+    private ElementReference _slashList;
+    private readonly string _slashId = "chat-commands-" + Guid.NewGuid().ToString("N");
+    private bool _slashBrowsing;
+    private string? _lastVisibleChoice;
     private string _value = "";
     private string? _lastParameterValue;
     private int _slashIndex;
@@ -84,6 +102,25 @@
     public async Task FocusAsync()
     {
         await ChatJs.InvokeVoidAsync(JS, "focus", _textarea);
+    }
+
+    protected override async Task OnAfterRenderAsync(bool firstRender)
+    {
+        var choice = PopupOpen ? _matches[_slashIndex].Name : null;
+        if (choice != _lastVisibleChoice)
+        {
+            _lastVisibleChoice = choice;
+            if (choice is not null) await ChatJs.InvokeVoidAsync(JS, "revealSlashSelection", _slashList);
+        }
+    }
+
+    private async Task BrowseCommandsAsync()
+    {
+        _slashBrowsing = !PopupOpen;
+        _slashDismissed = !_slashBrowsing;
+        _slashIndex = 0;
+        RefreshMatches();
+        await FocusAsync();
     }
 
     protected override void OnParametersSet()
@@ -107,15 +144,15 @@
     private void RefreshMatches()
     {
         var commands = SlashCommands;
-        if (commands is null || commands.Count == 0 || _value.Length == 0 || _value[0] != '/'
-            || _value.AsSpan(1).IndexOfAny(" \t\r\n") >= 0)
+        if (commands is null || commands.Count == 0 || (!_slashBrowsing && (_value.Length == 0 || _value[0] != '/'
+            || _value.AsSpan(1).IndexOfAny(" \t\r\n") >= 0)))
         {
             _matches = Array.Empty<SlashCommand>();
             _slashIndex = 0;
             return;
         }
 
-        var prefix = _value[1..];
+        var prefix = _slashBrowsing ? "" : _value[1..];
         _matches = commands
             .Where(c => NormalizeName(c.Name).StartsWith(prefix, StringComparison.OrdinalIgnoreCase))
             .Concat(commands.Where(c => !NormalizeName(c.Name).StartsWith(prefix, StringComparison.OrdinalIgnoreCase)
@@ -137,6 +174,7 @@
 
     private async Task OnInputAsync(ChangeEventArgs e)
     {
+        _slashBrowsing = false;
         _slashDismissed = false;
         _slashIndex = 0;
         await SetValueAsync(e.Value?.ToString() ?? "");
@@ -144,8 +182,16 @@
 
     private async Task AcceptSlashAsync(SlashCommand command)
     {
+        // Browsing the catalog must not discard an existing prompt or command arguments.
+        var suffix = _slashBrowsing ? _value : "";
+        if (suffix.StartsWith('/'))
+        {
+            var space = suffix.IndexOfAny([' ', '\t', '\r', '\n']);
+            suffix = space < 0 ? "" : suffix[(space + 1)..];
+        }
+        _slashBrowsing = false;
         _slashDismissed = false;
-        await SetValueAsync("/" + NormalizeName(command.Name) + " ");
+        await SetValueAsync("/" + NormalizeName(command.Name) + " " + suffix);
         await FocusAsync();
     }
 
@@ -160,19 +206,20 @@
         {
             switch (e.Key)
             {
-                case "ArrowDown":
+                case "ArrowDown" when !e.ShiftKey && !e.CtrlKey && !e.AltKey && !e.MetaKey:
                     _slashIndex = (_slashIndex + 1) % _matches.Count;
                     return;
-                case "ArrowUp":
+                case "ArrowUp" when !e.ShiftKey && !e.CtrlKey && !e.AltKey && !e.MetaKey:
                     _slashIndex = (_slashIndex - 1 + _matches.Count) % _matches.Count;
                     return;
-                case "Tab":
+                case "Tab" when !e.ShiftKey && !e.CtrlKey && !e.AltKey && !e.MetaKey:
                     await AcceptSlashAsync(_matches[_slashIndex]);
                     return;
                 case "Enter" when !e.ShiftKey:
                     await AcceptSlashAsync(_matches[_slashIndex]);
                     return;
                 case "Escape":
+                    _slashBrowsing = false;
                     _slashDismissed = true;
                     return;
             }
@@ -199,6 +246,7 @@
         }
 
         _slashDismissed = false;
+        _slashBrowsing = false;
         await SetValueAsync(string.Empty);
         await OnSend.InvokeAsync(text);
     }

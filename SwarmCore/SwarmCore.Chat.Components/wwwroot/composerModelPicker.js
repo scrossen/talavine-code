@@ -31,3 +31,9 @@ export function initialize(root) {
     });
 }
 export function dispose(root) { instances.get(root)?.(); instances.delete(root); }
+export function open(root) {
+    const panel = root.querySelector('[popover]');
+    panel.querySelector('details').open = true;
+    panel.showPopover();
+    panel.querySelector('select, input, button')?.focus();
+}

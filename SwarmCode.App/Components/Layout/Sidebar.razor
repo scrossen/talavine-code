@@ -7,7 +7,7 @@
 
     <RepositoryPicker />
 
-    <a class="sc-sidebar__item @(_activePath.StartsWith("apps", StringComparison.Ordinal) ? "sc-sidebar__item--active" : "")" href="/apps">My apps</a>
+    <a class="sc-sidebar__item @(_activePath.Length == 0 || _activePath.StartsWith("apps", StringComparison.Ordinal) ? "sc-sidebar__item--active" : "")" href="/apps">My Apps and Projects</a>
     <a class="sc-sidebar__item" href="/history">Search session history</a>
     <a class="sc-sidebar__item" href="/peers">Peers</a>
     <a class="sc-sidebar__item @(_activePath == "overview" ? "sc-sidebar__item--active" : "")" href="/overview">AI overview</a>

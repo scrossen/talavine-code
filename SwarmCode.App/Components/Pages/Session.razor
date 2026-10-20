@@ -87,19 +87,7 @@ else
                     }
                     @if (entries.Count == 0 && _notes.Count == 0)
                     {
-                        <div class="sess-welcome">
-                            <div class="sess-card">
-                                <h2>@(App.HasProject ? "What should I build?" : "How can I help?")</h2>
-                                <p>@(App.HasProject ? "Describe a change, a bug, or a question about this project." : "Ask a question or describe what you want to work on.")</p>
-                                <div class="sess-examples">
-                                    @foreach (var example in (App.HasProject ? Examples : new[] { "Help me think through an idea.", "Explain a programming concept.", "Help me plan a new project." }))
-                                    {
-                                        var text = example;
-                                        <button type="button" class="sess-example" @onclick="() => UseExampleAsync(text)">@text</button>
-                                    }
-                                </div>
-                            </div>
-                        </div>
+                        <SessionWelcome HasProject="App.HasProject" OnChoose="UseExampleAsync" />
                     }
                     @{
                         _recoveryNoticeId = FindRecoveryNotice(entries, _runner.IsRunning);
@@ -117,7 +105,7 @@ else
                     }
                     @if (_runner.IsRunning && ShowWorkingIndicator(entries))
                     {
-                        <div class="sess-working"><span class="sc-spinner"></span> Working…</div>
+                        <div class="sess-working"><span class="sc-spinner"></span> @(_localRuntimeStatus ?? "Working…")</div>
                     }
                     @foreach (var note in _notes)
                     {
@@ -127,12 +115,13 @@ else
             </div>
 
             <div class="sess-footer">
+                <div class="sess-footer-activity">
                 @if (_runner.JobState != "Idle")
                 {
                     <div class="sess-job-status" role="status">
                         <span class="sess-job-status__label">
                             @if (_runner.IsRunning) { <span class="sc-spinner" aria-hidden="true"></span> }
-                            @JobStateLabel(_runner.JobState)
+                            @(_runner.IsRunning ? _localRuntimeStatus ?? JobStateLabel(_runner.JobState) : JobStateLabel(_runner.JobState))
                         </span>
                         @if (_runner.ActiveLane is { } activeLane) { <span class="sess-muted">@activeLane</span> }
                         <span class="sess-muted">@_runner.CompletedToolCalls tools · @ToolCallSummary.FormatElapsed(_runner.Elapsed)</span>
@@ -157,7 +146,11 @@ else
                     </div>
                 }
                 <PlanChecklist Plan="_runner.Plan" AwaitingApproval="_runner.PlanAwaitingApproval" OnApprove="ApprovePlanAsync" />
+                <LocalRuntimeQueue @key="SessionId" OwnerId="@SessionId" IsRunning="_runner.IsRunning"
+                    ReadQueue="_runner.ReadLocalRuntimeQueueAsync" OnStop="StopAsync" OnChooseModel="OpenRuntimeModelChoicesAsync"
+                    OnStatusChanged="status => _localRuntimeStatus = status" />
                 <QueuedMessages Items="_runner.QueuedMessages" IsRunning="_runner.IsRunning" OnRemove="RemoveQueued" OnEdit="EditQueuedAsync" OnSteer="SteerQueuedAsync" />
+                </div>
                 <AttachmentIntake @ref="_attachmentIntake" Compact="true" PickerId="@("session-attachments-" + SessionId)" @key="SessionId" SessionId="@SessionId" @bind-Files="_attachments" BusyChanged="value => _attachmentsBusy = value" OnOpen="OpenArtifact">
                 <ChatComposer Compact="true" @ref="_composer"
                               HasAttachments="@(_attachments.Count > 0)"
@@ -178,7 +171,7 @@ else
                                 title="@(Settings.ModeNote(permissionMode)) Click to change; allow and deny rules are in Settings.">
                             @(permissionMode switch { CodingPermissionMode.AskRisky => "Ask risky", CodingPermissionMode.Ask => "Ask", _ => "Auto" })
                         </button>
-                        <ComposerModelPicker Model="@_model" ModelChanged="SaveModelAsync" Lane="@Lanes.FirstOrDefault(l => l.Name == _lane)" Workspace="@App.Workspace" Disabled="_modelsLoading" CatalogEfforts="_catalogEfforts" AssistanceSummary="@_session?.Assistance.Summary">
+                        <ComposerModelPicker @ref="_runtimeModelPicker" Model="@_model" ModelChanged="SaveModelAsync" Lane="@Lanes.FirstOrDefault(l => l.Name == _lane)" Workspace="@App.Workspace" Disabled="@(_modelsLoading || _favoriteBusy)" CatalogEfforts="_catalogEfforts" AssistanceSummary="@_session?.Assistance.Summary" OnOpening="LoadModelFavoritesAsync">
                         <ChildContent>
                         <label class="sess-lane-label" for="session-lane">Provider</label>
                         <select id="session-lane" class="sess-lane-select" aria-label="Provider for next message" value="@_lane" @onchange="OnLaneChanged">
@@ -206,6 +199,9 @@ else
                             </select>
                         }
                         </ChildContent>
+                        <FavoriteControls>
+                            <ChatModelFavorites Current="CurrentModelFavorite" Favorites="_modelFavorites" OnChange="ChangeModelFavoriteAsync" OnSelect="SelectModelFavoriteAsync" IsAvailable="FavoriteAvailable" Disabled="@(_modelsLoading || _favoriteBusy)" Error="@_favoriteError" />
+                        </FavoriteControls>
                         <AssistanceControls>
                             <ChatAssistanceControl @key="SessionId" Revision="@(_session?.AssistanceRevision ?? 0)" OnEditing="BeginAssistanceEdit" Value="@(_session?.Assistance ?? new())" ValueChanged="SaveAssistanceAsync" Choices="AssistanceChoices" OnOpening="LoadAssistanceChoicesAsync" Disabled="_runner.IsRunning" />
                         </AssistanceControls>

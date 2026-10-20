@@ -19,6 +19,9 @@ public partial class OllamaLlmProvider : ILlmModelCapabilityEvidenceProvider
         if (capabilities.Count > 32 || capabilities.Any(c => string.IsNullOrWhiteSpace(c) || c.Length > 64))
             return null;
         var declared = capabilities.Distinct(StringComparer.Ordinal).Order(StringComparer.Ordinal).ToArray();
+        // A component repair can change this exact tag while the provider remains alive.
+        // Fresh, artifact-bound metadata replaces the discovery-time vision verdict.
+        _visionCapabilityCache[model.Trim()] = declared.Contains("vision", StringComparer.Ordinal);
         int? maximumContext = null;
         if (metadata.ModelInfo is { ValueKind: JsonValueKind.Object } info)
             foreach (var item in info.EnumerateObject())

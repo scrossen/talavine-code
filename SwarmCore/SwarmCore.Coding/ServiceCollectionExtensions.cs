@@ -77,6 +77,8 @@ public static class ServiceCollectionExtensions
         services.TryAddSingleton<GitCommitTool>();
         services.TryAddSingleton<GitLogTool>();
         services.TryAddSingleton<CredentialsListTool>();
+        services.TryAddSingleton<ModelCapabilityTools>();
+        services.TryAddSingleton<ModelVisionRecovery>();
         services.TryAddSingleton<HarnessDeclineTool>();
         services.TryAddSingleton<NotebookReadTool>();
         services.TryAddSingleton<NotebookEditTool>();

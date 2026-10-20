@@ -60,8 +60,6 @@
         catch (Exception ex) when (ex is JSException or InvalidOperationException) { }
     }
 
-    private static string RelativePath(string uri) => uri.Split('?', '#')[0].Trim('/');
-
     private async Task RestoreLastWorkspaceAsync()
     {
         if (State.Workspace is not null || State.IsOpeningWorkspace) return;
@@ -69,14 +67,9 @@
         var last = prefs.LastRepositoryRoot;
         if (string.IsNullOrWhiteSpace(last) || !Directory.Exists(last)) return;
 
-        var atHome = RelativePath(Nav.ToBaseRelativePath(Nav.Uri)).Length == 0;
-        if (!await State.OpenWorkspaceAsync(last) || !atHome) return;
-
-        var sessionId = prefs.LastSessionId;
-        if (string.IsNullOrEmpty(sessionId)) return;
-        var session = await State.Sessions.GetAsync(sessionId);
-        if (session is not null && string.Equals(session.RepositoryRoot.TrimEnd('\\', '/'), State.RepositoryRoot?.TrimEnd('\\', '/'), StringComparison.OrdinalIgnoreCase))
-            Nav.NavigateTo(AppNavigation.SessionUrl(session.Id));
+        // Restore the sidebar workspace without replacing the chosen landing page
+        // (or an explicit deep link) with the last conversation.
+        await State.OpenWorkspaceAsync(last);
     }
 
     [JSInvokable]

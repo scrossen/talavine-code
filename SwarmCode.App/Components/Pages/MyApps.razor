@@ -1,3 +1,4 @@
+@page "/"
 @page "/apps"
 @page "/apps/{AppId}"
 @implements IDisposable
@@ -7,17 +8,19 @@
 @inject IFolderPickerService Picker
 @inject NavigationManager Nav
 @inject IdeIntegration Ide
+@inject AppState State
 
-<PageTitle>My apps - Talavine Code</PageTitle>
+<PageTitle>My Apps and Projects - Talavine Code</PageTitle>
 
 <div class="sc-page sc-apps" data-testid="my-apps">
     <header class="sc-topbar">
         <div>
-            <h1 class="sc-topbar__title">My apps</h1>
-            <p class="sc-topbar__copy">Build, run, and return to your apps. Work on any app in chat.</p>
+            <h1 class="sc-topbar__title">My Apps and Projects</h1>
+            <p class="sc-topbar__copy">Apps are created and managed by Talavine Code. Projects are folders for code, documents, and one or more apps.</p>
         </div>
         <div class="sc-topbar__actions">
-            <button type="button" class="sc-btn" @onclick="AddAsync">Add an app…</button>
+            <button type="button" class="sc-btn" @onclick="AddAsync">Add project…</button>
+            <a class="sc-btn" href="/new-project">New project…</a>
             <button type="button" class="sc-btn sc-btn--primary" @onclick="ShowCreate">Create an app</button>
         </div>
     </header>
@@ -32,8 +35,8 @@
     }
     @if (_library is null)
     {
-        @if (_loadFailed) { <button type="button" class="sc-btn" @onclick="LoadAsync">Reload app library</button> }
-        else { <p class="sc-muted">Loading your apps…</p> }
+        @if (_loadFailed) { <button type="button" class="sc-btn" @onclick="LoadAsync">Reload apps and projects</button> }
+        else { <p class="sc-muted">Loading your apps and projects…</p> }
     }
     else
     {
@@ -65,19 +68,29 @@
         {
             var status = Apps.Runtime.Status(selected.Id);
             <section class="sc-card sc-apps__detail">
-                <a href="/apps">← All apps</a>
+                <a href="/apps">← All apps and projects</a>
                 <div class="sc-row sc-row--between">
                     <div><h2 class="sc-card__title">@selected.Name</h2><p class="sc-card__copy">@selected.Description</p></div>
-                    <span class="sc-chip @(status.State == CodingAppRunState.Running ? "sc-chip--accent" : "")">@status.State</span>
+                    <span class="sc-chip">@(selected.Kind == CodingProjectKind.Project ? "Project" : "Managed app")</span>
                 </div>
                 <div class="sc-muted sc-mono sc-apps__path">@selected.Root</div>
-                <p role="status">@status.Message @if (status.Replayed) { <span class="sc-muted">· Saved launch steps</span> }</p>
+                @if (selected.Kind == CodingProjectKind.ManagedApp)
+                {
+                    <p role="status">@status.Message @if (status.Replayed) { <span class="sc-muted">· Saved launch steps</span> }</p>
+                }
+                else
+                {
+                    <p class="sc-muted">A project keeps code, documents, and shared libraries together. It can contain several apps.</p>
+                }
                 <div class="sc-row sc-apps__actions">
-                    <button type="button" class="sc-btn sc-btn--primary" @onclick="() => WorkAsync(selected.Id)">Work on this app</button>
+                    <button type="button" class="sc-btn sc-btn--primary" @onclick="() => WorkAsync(selected.Id)">@(selected.Kind == CodingProjectKind.Project ? "Open project" : "Work on this app")</button>
+                    @if (selected.Kind == CodingProjectKind.ManagedApp)
+                    {
                     <button type="button" class="sc-btn" @onclick="() => RunAsync(selected.Id)">Run app</button>
                     @if (Apps.Runtime.IsBusy(selected.Id)) { <button type="button" class="sc-btn" @onclick="() => StopAsync(selected.Id)">Stop app</button> }
                     @if (status.Url is { } url) { <button type="button" class="sc-btn" @onclick="() => OpenPreviewAsync(url)">Open app ↗</button> }
                     <button type="button" class="sc-btn" @onclick="() => SetupAsync(selected.Id)">Set up Run app</button>
+                    }
                     <button type="button" class="sc-btn" @onclick="() => WorkAsync(selected.Id, true)">New chat</button>
                 </div>
                 <details class="sc-apps__files" @ontoggle="FilesToggled">
@@ -108,20 +121,24 @@
                     </div>
                 </details>
                 <details class="sc-apps__manage">
-                    <summary>Manage app</summary>
-                    <p class="sc-muted">Remove the library entry and stop its running app. Your project files and chat history are kept.</p>
-                    <button type="button" class="sc-btn sc-btn--danger" @onclick="() => RemoveAsync(selected.Id)">Remove from My apps</button>
+                    <summary>Manage entry</summary>
+                    <p class="sc-muted">Remove the saved library entry and stop its running app. Files and chat history are kept; folders with history can still appear under Projects.</p>
+                    <button type="button" class="sc-btn sc-btn--danger" @onclick="() => RemoveAsync(selected.Id)">Remove saved entry</button>
                 </details>
             </section>
         }
         else
         {
-            <label class="sc-field"><span class="sc-field__label">Find an app</span><input class="sc-input" type="search" @bind="_search" @bind:event="oninput" placeholder="Search your apps" /></label>
+            <label class="sc-field"><span class="sc-field__label">Find an app or project</span><input class="sc-input" type="search" @bind="_search" @bind:event="oninput" placeholder="Search your apps and projects" /></label>
             @if (_library.Apps.Count == 0)
             {
-                <section class="sc-card sc-empty"><h2 class="sc-empty__title">Your next idea starts here</h2><p>Create an app from a description, or add a project you already have.</p></section>
+                <p class="sc-muted">Create an app from a description, or add a project folder you already have.</p>
             }
-            else if (!FilteredApps.Any()) { <p class="sc-muted">No apps match this search.</p> }
+            else if (!FilteredApps.Any() && !FilteredProjects.Any()) { <p class="sc-muted">No apps or projects match this search.</p> }
+            <section class="sc-apps__group" aria-label="Apps">
+            <h2 class="sc-card__title">Apps</h2>
+            <p class="sc-card__copy">Created and managed by Talavine Code, with their own build chat and launch setup.</p>
+            @if (!FilteredApps.Any()) { <p class="sc-muted">No managed apps to show.</p> }
             <div class="sc-apps__grid">
                 @foreach (var app in FilteredApps)
                 {
@@ -140,6 +157,26 @@
                     </article>
                 }
             </div>
+            </section>
+            <section class="sc-apps__group" aria-label="Projects">
+            <h2 class="sc-card__title">Projects</h2>
+            <p class="sc-card__copy">Folders for repositories, documents, and shared code. One project can contain multiple apps.</p>
+            @if (!FilteredProjects.Any()) { <p class="sc-muted">Add a project folder, or create a new project.</p> }
+            <div class="sc-apps__grid">
+                @foreach (var project in FilteredProjects)
+                {
+                    <article class="sc-card sc-apps__tile">
+                        <div class="sc-row sc-row--between"><strong class="sc-apps__name">@project.Name</strong><span class="sc-chip">@(_projectAvailable.Contains(project.Root) ? "Project" : "Folder missing")</span></div>
+                        <div class="sc-muted sc-mono sc-apps__path">@project.Root</div>
+                        <div class="sc-row sc-apps__actions">
+                            <button type="button" class="sc-btn sc-btn--primary" @onclick="() => OpenProjectAsync(project)">Open project</button>
+                            <button type="button" class="sc-btn sc-btn--sm" @onclick="() => ProjectDetailsAsync(project)">Files &amp; details</button>
+                        </div>
+                    </article>
+                }
+            </div>
+            </section>
+            <a href="/workspace">Current workspace and recent sessions</a>
         }
     }
 
@@ -168,15 +205,21 @@
     private string _progress = "", _name = "", _description = "", _search = "", _directory = ".";
     private string? _error, _file, _fileText;
     private IReadOnlyList<CodingAppFile> _files = [];
-    private IEnumerable<CodingAppProject> FilteredApps => (_library?.Apps ?? []).Where(a => string.IsNullOrWhiteSpace(_search)
-        || a.Name.Contains(_search, StringComparison.OrdinalIgnoreCase) || a.Description.Contains(_search, StringComparison.OrdinalIgnoreCase)).OrderBy(a => a.Name, StringComparer.OrdinalIgnoreCase);
+    private IReadOnlyList<CodingProjectFolder> _projects = [];
+    private HashSet<string> _projectAvailable = [];
+    private bool Matches(string name, string detail) => string.IsNullOrWhiteSpace(_search)
+        || name.Contains(_search, StringComparison.OrdinalIgnoreCase) || detail.Contains(_search, StringComparison.OrdinalIgnoreCase);
+    private IEnumerable<CodingProjectFolder> FilteredProjects => _projects.Where(p => Matches(p.Name, p.Root));
+    private IEnumerable<CodingAppProject> FilteredApps => (_library?.Apps ?? [])
+        .Where(a => a.Kind == CodingProjectKind.ManagedApp && Matches(a.Name, a.Description + " " + a.Root))
+        .OrderBy(a => a.Name, StringComparer.OrdinalIgnoreCase);
     private static string AppUrl(string id) => "/apps/" + Uri.EscapeDataString(id);
     protected override void OnInitialized() => Apps.Runtime.Changed += OnRuntimeChanged;
     protected override async Task OnParametersSetAsync()
     {
         await LoadAsync();
         _selected = _library?.Apps.FirstOrDefault(a => a.Id == AppId);
-        if (AppId is not null && _selected is null) _error = "This app is no longer in your library.";
+        if (AppId is not null && _selected is null) _error = "This app or project is no longer in your library.";
         _directory = "."; _files = []; _file = null; _fileText = null;
         if (_selected is not null) await LoadFilesAsync(".");
     }
@@ -185,10 +228,21 @@
     {
         try
         {
-            var loaded = await Task.Run(() => { var library = Apps.Library.Read(); return (Library: library, Available: library.Apps.Where(a => Directory.Exists(a.Root)).Select(a => a.Id).ToHashSet()); });
-            _library = loaded.Library; _available = loaded.Available; _loadFailed = false;
+            var loaded = await Task.Run(async () =>
+            {
+                var library = Apps.Library.Read();
+                var roots = await State.Sessions.RecentRepositoriesAsync();
+                if (State.HasProject && State.RepositoryRoot is { } current) roots = roots.Append(current).ToArray();
+                var projects = CodingProjectFolders.List(library, roots,
+                    [State.Paths.WorktreesDirectory, State.Paths.ChatWorkspaceDirectory]);
+                return (Library: library, Projects: projects,
+                    Available: library.Apps.Where(a => Directory.Exists(a.Root)).Select(a => a.Id).ToHashSet(),
+                    ProjectAvailable: projects.Where(p => Directory.Exists(p.Root)).Select(p => p.Root).ToHashSet());
+            });
+            _library = loaded.Library; _projects = loaded.Projects; _available = loaded.Available;
+            _projectAvailable = loaded.ProjectAvailable; _loadFailed = false;
         }
-        catch (Exception ex) { _loadFailed = true; _error = "Your app library could not be read. Your project files have been kept. " + ex.Message; }
+        catch (Exception ex) { _loadFailed = true; _error = "Your apps and projects could not be read. Your project files have been kept. " + ex.Message; }
     }
     private async Task PerformAsync(string progress, Func<Task> action)
     {
@@ -205,9 +259,9 @@
         var chosen = await Picker.PickFolderAsync(new("Choose your apps folder", expected));
         if (chosen is not null) await Task.Run(() => Apps.Library.SetFolder(chosen, expected));
     });
-    private Task AddAsync() => PerformAsync("Adding your app…", async () =>
+    private Task AddAsync() => PerformAsync("Adding your project…", async () =>
     {
-        var chosen = await Picker.PickFolderAsync(new("Add an existing app", _library?.AppsFolder));
+        var chosen = await Picker.PickFolderAsync(new("Add an existing project folder", _library?.AppsFolder));
         if (chosen is null) return;
         var app = await Task.Run(() => Apps.Library.Add(chosen));
         Nav.NavigateTo(AppUrl(app.Id));
@@ -218,10 +272,21 @@
         var session = await Apps.CreateAsync(_name, _description, folder, _buildSelection);
         Nav.NavigateTo(AppNavigation.SessionUrl(session.Id));
     });
-    private Task WorkAsync(string id, bool newChat = false) => PerformAsync("Opening your app's chat…", async () =>
+    private Task WorkAsync(string id, bool newChat = false) => PerformAsync("Opening your chat…", async () =>
     {
         var session = await Apps.WorkAsync(id, newSession: newChat);
         Nav.NavigateTo(AppNavigation.SessionUrl(session.Id));
+    });
+    private Task OpenProjectAsync(CodingProjectFolder project) => PerformAsync("Opening your project…", async () =>
+    {
+        var entry = await Task.Run(() => Apps.Library.Add(project.Root));
+        var session = await Apps.WorkAsync(entry.Id);
+        Nav.NavigateTo(AppNavigation.SessionUrl(session.Id));
+    });
+    private Task ProjectDetailsAsync(CodingProjectFolder project) => PerformAsync("Opening project files…", async () =>
+    {
+        var entry = await Task.Run(() => Apps.Library.Add(project.Root));
+        Nav.NavigateTo(AppUrl(entry.Id));
     });
     private Task SetupAsync(string id) => PerformAsync("Opening launch setup in chat…", async () =>
     {

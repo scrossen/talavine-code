@@ -1,0 +1,38 @@
+<section class="sess-welcome" aria-label="Getting started with Talavine Code">
+    <div class="sess-card sess-guide">
+        <h2>Get more from Talavine Code</h2>
+        <p>@(HasProject ? "Describe what you want changed in this project. Talavine Code can inspect files, edit code, and run checks." : "Chat here, or open a project folder to let Talavine Code inspect files, edit code, and run checks.")</p>
+        <div class="sess-guide__features">
+            <div><h3>Choose and compare AI</h3><p>Use the model button below to choose a provider, model, and thinking level where supported. Enable automatic model selection in Settings to choose a starting model from your configured options.</p></div>
+            <div><h3>Plan, check, and recover</h3><p>Use <code>/plan</code> to investigate before edits. Inspect file changes with <code>/diff</code>, or use <code>/undo</code> to preview restoring the last turn’s file changes.</p></div>
+            <div><h3>Bring your tools and memory</h3><p>Attach files with +, connect tool servers with <code>/mcp</code>, and manage personal memory with <code>/memory</code>. Temporary chats keep personal memory off.</p></div>
+            <div><h3>Keep work moving</h3><p>Ask for parallel agents on separate parts of a task; follow them with <code>/agents</code>. Use <code>/fork</code> to explore another approach with this chat’s saved history.</p></div>
+        </div>
+        <h3>Try a slash command</h3>
+        <p>Type <code>/</code> in the prompt or click its <strong>/</strong> button to browse built-in and custom commands. Keep typing to filter; use ↑ ↓ to browse, Tab or Enter to insert, and Enter again to run. Clicking a command below only fills your draft.</p>
+        <div class="sess-guide__commands">
+            @foreach (var command in QuickCommands)
+            {
+                <button type="button" class="sess-example" @onclick="() => OnChoose.InvokeAsync(command.Draft)">
+                    <code>@command.Label</code><span>@command.Description</span>
+                </button>
+            }
+        </div>
+        <p class="sess-guide__footnote"><code>/auto</code> requests a fresh model choice when automatic selection is enabled. <code>/bug description</code> records a local defect. Add reusable prompts as Markdown files in <code>.swarmcode/commands/</code>; they appear in the same command menu.</p>
+    </div>
+</section>
+
+@code {
+    [Parameter] public bool HasProject { get; set; }
+    [Parameter] public EventCallback<string> OnChoose { get; set; }
+
+    private static readonly (string Label, string Draft, string Description)[] QuickCommands =
+    [
+        ("/help", "/help ", "Explain every command"),
+        ("/compare", "/compare ", "Pick models to answer and review each other"),
+        ("/plan", "/plan ", "Investigate first, then propose a plan"),
+        ("/history words", "/history ", "Search chats across your projects"),
+        ("/compact", "/compact ", "Condense context before the next message"),
+        ("/cost", "/cost ", "See reported token usage and cost"),
+    ];
+}

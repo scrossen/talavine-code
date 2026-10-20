@@ -41,6 +41,9 @@ public sealed class AppPreferences
     /// <summary>Explicit model copied into newly created sessions for DefaultLane; existing sessions are unchanged.</summary>
     public string? DefaultModel { get; set; }
 
+    /// <summary>App-wide model shortcuts, independent of each session's active model and assistance pins.</summary>
+    public List<SwarmCore.Abstractions.LlmRouting.ModelFavorite> FavoriteModels { get; set; } = [];
+
     public bool ShowReasoning { get; set; }
 
     /// <summary>The sidebar lists sessions from every repository (with a project chip) instead of only the open one.</summary>
@@ -110,6 +113,21 @@ public sealed class AppPreferencesStore
             return true;
         });
         Changed?.Invoke();
+    }
+
+    public void SetModelFavorite(SwarmCore.Abstractions.LlmRouting.ModelFavorite favorite, bool pinned)
+    {
+        ArgumentNullException.ThrowIfNull(favorite);
+        if (string.IsNullOrWhiteSpace(favorite.Provider) || string.IsNullOrWhiteSpace(favorite.Model))
+            throw new ArgumentException("A favorite needs a provider and model.", nameof(favorite));
+        // Update reads fresh preferences under the existing cross-process lease. Only this
+        // exact membership changes; independent adds/removals and unrelated settings survive.
+        Update(p =>
+        {
+            p.FavoriteModels ??= [];
+            if (!pinned) p.FavoriteModels.RemoveAll(f => f == favorite);
+            else if (!p.FavoriteModels.Contains(favorite)) p.FavoriteModels.Add(favorite);
+        });
     }
 
 }

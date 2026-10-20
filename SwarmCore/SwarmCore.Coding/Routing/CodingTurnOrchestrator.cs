@@ -328,9 +328,7 @@ public sealed partial class CodingTurnOrchestrator(
                     IReadOnlyList<TurnFileAttachment> files = [];
                     try
                     {
-                        if (request.Attachments.Any(a => a.IsImage)
-                            && scope.ServiceProvider.GetService<ILlmCapabilitiesService>()?.SupportsVision(lane.Provider, lane.Model) != true)
-                            throw new InvalidDataException($"{lane.Model} does not support image input. Choose a vision model or a native provider; your images will not be silently omitted.");
+                        // Image capability is admitted after host-authorized setup recovery in the engine.
                         (images, files) = await Files.CodingAttachments.ForApiAsync(request.Attachments, attemptCt, codingOptions.Value.AttachmentLimits).ConfigureAwait(false);
                     }
                     catch (Exception ex) when (ex is not OperationCanceledException) { attachmentError = ex.Message; }
@@ -339,6 +337,10 @@ public sealed partial class CodingTurnOrchestrator(
                         scopeAuthority, profileId, message, continuation, limits, reportedTokens, images, files,
                         finishingCommit is not null ? NativeCommitFinishing.Metadata(request.Metadata)
                             : request.PlanMode ? Planning.CodingPlanMode.Metadata(request.Metadata) : request.Metadata);
+                    if (!request.PlanMode && !request.UnattendedAgentTurn && scopeAuthority.UserInitiated
+                        && scope.ServiceProvider.GetService<ModelVisionRecovery>() is { } recovery)
+                        engineRequest = engineRequest with { VisionRecovery = new(ModelVisionRecovery.ToolId,
+                            (provider, model, token) => recovery.AutomaticallyAsync(request, profileId, provider, model, token)) };
                     using (credentialIntake?.Enter(intake))
                         stream = finishingCommit is null ? runner.RunAsync(engineRequest, attemptCt)
                             : NativeCommitFinishing.RunAsync(runner, engineRequest, finishingCommit, attemptCt);
@@ -842,6 +844,7 @@ public sealed partial class CodingTurnOrchestrator(
              + $"{progress}\n{scope}"
              + "A tool call without a saved result has an uncertain outcome. Do not repeat an uncertain external action; verify it through a read-only check first.\n"
              + "Evaluate the original request on its own terms. Prior model assumptions are not user requirements or verified facts. Do not substitute an unrelated task for the requested outcome.\n"
+             + "Treat recoverable environment or capability setup failures as part of completing this request. Use available tools and fresh evidence to repair ordinary prerequisites within the current authority, or complete the work with your supported capabilities. Preserve the selected model's artifact and settings during any candidate repair, verify actual behavior before activation, and never invent capability proof. Ask the user only for a genuinely missing decision or required human action.\n"
              + "If you also cannot do part of it, call harness.decline (or say so in one plain sentence first) and complete the rest.\n\n"
              + "Original request:\n" + original;
     }

@@ -1,5 +1,9 @@
 using Microsoft.Extensions.Logging;
 using SwarmCore.Abstractions.LlmRouting;
+using SwarmCore.Abstractions.Processes;
+using System.Diagnostics;
+using System.Security.Cryptography;
+using System.Text;
 
 namespace SwarmCore.LlmRouting.Services;
 
@@ -21,6 +25,13 @@ public sealed class LocalLlmRuntimeManager : ILocalLlmRuntimeManager
     private static readonly TimeSpan MachineLeaseRetryDelay = TimeSpan.FromMilliseconds(120);
     private readonly ILogger<LocalLlmRuntimeManager>? _logger;
     private readonly string _machineLeaseMutexName;
+    private readonly string _foregroundWorkKey;
+    private readonly LocalLlmRuntimeQueueJournal _queueJournal;
+    // Scheduling only: old hosts may ignore the hint, and a crashed waiter
+    // must delay background work for seconds rather than strand it.
+    internal ForegroundWorkPendingSignal ForegroundPendingSignal { get; set; } =
+        new(timeToLive: TimeSpan.FromSeconds(3));
+    internal TimeSpan UserWaitingAdmissionTimeout { get; set; } = TimeSpan.FromMinutes(2);
     private readonly SemaphoreSlim _slot = new(1, 1);
     private readonly object _priorityGate = new();
     private readonly object _stateGate = new();
@@ -44,6 +55,9 @@ public sealed class LocalLlmRuntimeManager : ILocalLlmRuntimeManager
         _machineLeaseMutexName = string.IsNullOrWhiteSpace(machineLeaseMutexName)
             ? DefaultMachineLeaseMutexName
             : machineLeaseMutexName;
+        _foregroundWorkKey = "local-llm-" + Convert.ToHexString(
+            SHA256.HashData(Encoding.UTF8.GetBytes(_machineLeaseMutexName)))[..32];
+        _queueJournal = new(_machineLeaseMutexName);
     }
 
     public int HighPriorityPending => Volatile.Read(ref _highPending);
@@ -63,16 +77,40 @@ public sealed class LocalLlmRuntimeManager : ILocalLlmRuntimeManager
             return nestedLease;
         }
 
-        var processLease = await AcquirePrioritySlotAsync(request.Interactivity, ct).ConfigureAwait(false);
+        // Bound admission, not inference. A helper in a different process can
+        // own the machine mutex indefinitely; the engine's inference deadline
+        // does not necessarily cover this wait. Keep Stop as cancellation.
+        var queueEntry = _queueJournal.Begin(request);
+        using var admission = CancellationTokenSource.CreateLinkedTokenSource(ct);
+        if (request.Interactivity == LlmInteractivity.UserWaiting)
+        {
+            queueEntry.SetDeadline(DateTimeOffset.UtcNow + UserWaitingAdmissionTimeout);
+            admission.CancelAfter(UserWaitingAdmissionTimeout);
+        }
+        IDisposable? processLease = null;
         try
         {
-            var machineLease = await AcquireMachineLeaseAsync(ct).ConfigureAwait(false);
+            processLease = await AcquirePrioritySlotAsync(request.Interactivity, admission.Token).ConfigureAwait(false);
+            queueEntry.SetPhase(LocalLlmRuntimeQueuePhase.WaitingForDevice);
+            var machineLease = await AcquireMachineLeaseAsync(request.Interactivity, admission.Token).ConfigureAwait(false);
+            queueEntry.SetPhase(LocalLlmRuntimeQueuePhase.UsingModel);
             RecordAdmission(request);
-            return new CompositeLease(processLease, machineLease);
+            return new CompositeLease(new CompositeLease(processLease, machineLease), queueEntry);
+        }
+        catch (OperationCanceledException) when (!ct.IsCancellationRequested && admission.IsCancellationRequested)
+        {
+            processLease?.Dispose();
+            queueEntry.Dispose();
+            var error = new LocalLlmRuntimeBusyException(
+                $"The local AI runtime is busy with another request and could not start within {UserWaitingAdmissionTimeout.TotalSeconds:g} seconds. " +
+                "No prompt was sent for this attempt. Wait for the other local AI work to finish, then retry, or choose another provider.");
+            _logger?.LogWarning("{Message}", error.Message);
+            throw error;
         }
         catch
         {
-            processLease.Dispose();
+            processLease?.Dispose();
+            queueEntry.Dispose();
             throw;
         }
     }
@@ -87,14 +125,17 @@ public sealed class LocalLlmRuntimeManager : ILocalLlmRuntimeManager
 
         // Exclusive sessions are background maintenance. Let any already-pending
         // interactive request win before reserving the one physical local slot.
-        var slotLease = await AcquirePrioritySlotAsync(LlmInteractivity.Background, ct)
-            .ConfigureAwait(false);
+        IDisposable slotLease = NoOpReleaser.Instance;
+        var queueEntry = _queueJournal.Begin(request);
         ExclusiveSession? session = null;
         IDisposable? activityLease = null;
         try
         {
-            var machineLease = await AcquireMachineLeaseAsync(ct).ConfigureAwait(false);
-            slotLease = new CompositeLease(slotLease, machineLease);
+            slotLease = await AcquirePrioritySlotAsync(LlmInteractivity.Background, ct).ConfigureAwait(false);
+            queueEntry.SetPhase(LocalLlmRuntimeQueuePhase.WaitingForDevice);
+            var machineLease = await AcquireMachineLeaseAsync(LlmInteractivity.Background, ct).ConfigureAwait(false);
+            queueEntry.SetPhase(LocalLlmRuntimeQueuePhase.UsingModel);
+            slotLease = new CompositeLease(new CompositeLease(slotLease, machineLease), queueEntry);
             RecordAdmission(request);
             activityLease = TrackActivity(activity);
             session = new ExclusiveSession(
@@ -136,6 +177,7 @@ public sealed class LocalLlmRuntimeManager : ILocalLlmRuntimeManager
             }
             activityLease?.Dispose();
             slotLease.Dispose();
+            queueEntry.Dispose();
             throw;
         }
     }
@@ -172,6 +214,9 @@ public sealed class LocalLlmRuntimeManager : ILocalLlmRuntimeManager
                 Volatile.Read(ref _activeRequests));
         }
     }
+
+    public Task<LocalLlmRuntimeQueueSnapshot> GetQueueSnapshotAsync(CancellationToken ct = default)
+        => Task.Run(_queueJournal.Read, ct);
 
     private async Task<IDisposable> AcquirePrioritySlotAsync(LlmInteractivity interactivity, CancellationToken ct)
     {
@@ -239,9 +284,10 @@ public sealed class LocalLlmRuntimeManager : ILocalLlmRuntimeManager
         }
     }
 
-    private async Task<IDisposable> AcquireMachineLeaseAsync(CancellationToken ct)
+    private async Task<IDisposable> AcquireMachineLeaseAsync(LlmInteractivity interactivity, CancellationToken ct)
     {
-        var lease = await MachineMutexLease.AcquireAsync(_machineLeaseMutexName, ct).ConfigureAwait(false);
+        var lease = await MachineMutexLease.AcquireAsync(
+            _machineLeaseMutexName, interactivity, ForegroundPendingSignal, _foregroundWorkKey, ct).ConfigureAwait(false);
         _logger?.LogTrace("Local LLM machine lease acquired");
         return lease;
     }
@@ -452,11 +498,13 @@ public sealed class LocalLlmRuntimeManager : ILocalLlmRuntimeManager
             new(TaskCreationOptions.RunContinuationsAsynchronously);
         private int _disposed;
 
-        public static async Task<MachineMutexLease> AcquireAsync(string mutexName, CancellationToken ct)
+        public static async Task<MachineMutexLease> AcquireAsync(
+            string mutexName, LlmInteractivity interactivity,
+            ForegroundWorkPendingSignal foregroundPending, string foregroundWorkKey, CancellationToken ct)
         {
             var lease = new MachineMutexLease(mutexName);
             _ = Task.Factory.StartNew(
-                () => lease.OwnMutex(ct),
+                () => lease.OwnMutex(interactivity, foregroundPending, foregroundWorkKey, ct),
                 CancellationToken.None,
                 TaskCreationOptions.LongRunning,
                 TaskScheduler.Default);
@@ -470,16 +518,31 @@ public sealed class LocalLlmRuntimeManager : ILocalLlmRuntimeManager
             _mutexName = mutexName;
         }
 
-        private void OwnMutex(CancellationToken ct)
+        private void OwnMutex(LlmInteractivity interactivity,
+            ForegroundWorkPendingSignal foregroundPending, string foregroundWorkKey, CancellationToken ct)
         {
-            using var mutex = new Mutex(initiallyOwned: false, _mutexName);
             var acquired = false;
+            Mutex? mutex = null;
 
             try
             {
+                mutex = new Mutex(initiallyOwned: false, _mutexName);
+                var isForeground = interactivity == LlmInteractivity.UserWaiting;
+                var lastSignal = Stopwatch.StartNew();
+                if (isForeground) foregroundPending.Raise(foregroundWorkKey);
                 while (!acquired)
                 {
                     ct.ThrowIfCancellationRequested();
+                    if (isForeground && lastSignal.Elapsed >= TimeSpan.FromSeconds(1))
+                    {
+                        foregroundPending.Raise(foregroundWorkKey);
+                        lastSignal.Restart();
+                    }
+                    if (!isForeground && foregroundPending.IsPending(foregroundWorkKey))
+                    {
+                        ct.WaitHandle.WaitOne(MachineLeaseRetryDelay);
+                        continue;
+                    }
                     try
                     {
                         acquired = mutex.WaitOne(MachineLeaseRetryDelay);
@@ -490,8 +553,16 @@ public sealed class LocalLlmRuntimeManager : ILocalLlmRuntimeManager
                         // to this waiter so it can safely resume local inference.
                         acquired = true;
                     }
+                    // A foreground waiter may have published while WaitOne
+                    // was blocked. Give back the slot before running inference.
+                    if (acquired && !isForeground && foregroundPending.IsPending(foregroundWorkKey))
+                    {
+                        mutex.ReleaseMutex();
+                        acquired = false;
+                    }
                 }
 
+                ct.ThrowIfCancellationRequested();
                 _ready.TrySetResult(this);
                 _released.Task.GetAwaiter().GetResult();
             }
@@ -507,8 +578,9 @@ public sealed class LocalLlmRuntimeManager : ILocalLlmRuntimeManager
             {
                 if (acquired)
                 {
-                    mutex.ReleaseMutex();
+                    mutex!.ReleaseMutex();
                 }
+                mutex?.Dispose();
             }
         }
 

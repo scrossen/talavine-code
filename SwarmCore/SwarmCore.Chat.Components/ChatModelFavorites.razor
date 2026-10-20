@@ -1,0 +1,59 @@
+@using SwarmCore.Abstractions.LlmRouting
+<div class="chat-model-favorites">
+    @if (Current is { } current)
+    {
+        var pinned = Favorites.Contains(current);
+        <button type="button" class="chat-model-favorites__pin" aria-pressed="@(pinned ? "true" : "false")"
+                disabled="@(Disabled || _busy)" @onclick="() => ChangeAsync(current, !pinned)">
+            <span aria-hidden="true">@(pinned ? "★" : "☆")</span> @(pinned ? "Unpin this model" : "Pin this model")
+        </button>
+    }
+    @if (Favorites.Count > 0)
+    {
+        <span class="chat-model-favorites__heading">Pinned models</span>
+        <div class="chat-model-favorites__list" aria-label="Pinned models">
+            @foreach (var favorite in Favorites)
+            {
+                var available = IsAvailable?.Invoke(favorite) ?? true;
+                <div class="chat-model-favorites__row" @key="favorite">
+                    <button type="button" class="chat-model-favorites__choice" disabled="@(Disabled || _busy || !available)"
+                            aria-pressed="@(favorite == Current ? "true" : "false")" title="@(available ? favorite.Model : "Provider unavailable")"
+                            @onclick="() => SelectAsync(favorite)">
+                        <span>@favorite.Model</span><small>@(favorite.RouteName ?? favorite.Provider)@(!available ? " · unavailable" : "")</small>
+                    </button>
+                    <button type="button" class="chat-model-favorites__remove" disabled="@(Disabled || _busy)"
+                            aria-label="@($"Unpin {favorite.Model} ({favorite.RouteName ?? favorite.Provider})")"
+                            title="Unpin model" @onclick="() => ChangeAsync(favorite, false)">★</button>
+                </div>
+            }
+        </div>
+    }
+    @if (_error is not null || Error is not null) { <span role="alert">@(_error ?? Error)</span> }
+</div>
+@code {
+    [Parameter] public ModelFavorite? Current { get; set; }
+    [Parameter] public IReadOnlyList<ModelFavorite> Favorites { get; set; } = [];
+    [Parameter] public EventCallback<ModelFavoriteChange> OnChange { get; set; }
+    [Parameter] public EventCallback<ModelFavorite> OnSelect { get; set; }
+    [Parameter] public Func<ModelFavorite, bool>? IsAvailable { get; set; }
+    [Parameter] public bool Disabled { get; set; }
+    [Parameter] public string? Error { get; set; }
+    private bool _busy;
+    private string? _error;
+    private async Task ChangeAsync(ModelFavorite favorite, bool pinned)
+    {
+        if (Disabled || _busy) return;
+        _busy = true; _error = null;
+        try { await OnChange.InvokeAsync(new ModelFavoriteChange(favorite, pinned)); }
+        catch (Exception) { _error = "Could not save pinned models. Try again."; }
+        finally { _busy = false; }
+    }
+    private async Task SelectAsync(ModelFavorite favorite)
+    {
+        if (Disabled || _busy || IsAvailable?.Invoke(favorite) == false) return;
+        _busy = true; _error = null;
+        try { await OnSelect.InvokeAsync(favorite); }
+        catch (Exception) { _error = "Could not select this pinned model. Try again."; }
+        finally { _busy = false; }
+    }
+}

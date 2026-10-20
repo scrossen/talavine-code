@@ -399,6 +399,10 @@ code, pre, kbd { font-family: var(--sc-font-mono); }
 
 /* Optional project library. Chat remains the primary workspace. */
 .sc-apps__folder { display: flex; align-items: center; gap: 1.5rem; }
+.sc-apps .sc-topbar { flex-wrap: wrap; align-items: flex-start; }
+.sc-apps .sc-topbar > :first-child { flex: 1 1 22rem; }
+.sc-apps .sc-topbar__actions { flex-wrap: wrap; }
+.sc-apps__group { margin-top: 1.5rem; }
 .sc-apps__grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(min(100%, 25rem), 1fr)); gap: 1rem; }
 .sc-apps__tile { display: flex; flex-direction: column; gap: 0.8rem; margin: 0; }
 .sc-apps__name { font-size: 1.1rem; font-weight: 600; }

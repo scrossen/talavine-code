@@ -167,6 +167,8 @@ public interface IAgentTurnRunner
 /// </summary>
 public sealed record AgentTurnRequest
 {
+    [System.Text.Json.Serialization.JsonIgnore]
+    public AgentVisionRecovery? VisionRecovery { get; init; }
     /// <summary>Explicit host-selected limits also apply to attended work; null preserves the profile/default policy.</summary>
     public AgentTurnExecutionLimits? ExecutionLimits { get; init; }
     /// <summary>Trusted host contract for verified reusable execution; never supplied by model arguments.</summary>

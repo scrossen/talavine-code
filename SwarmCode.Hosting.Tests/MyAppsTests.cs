@@ -37,6 +37,8 @@ public sealed class MyAppsTests : TempDirTest
         var outside = Path.Combine(Tmp, "existing"); Directory.CreateDirectory(outside);
         File.WriteAllText(Path.Combine(outside, "notes.txt"), "Keep me");
         var added = Store.Add(outside);
+        Assert.Equal(CodingProjectKind.ManagedApp, app.Kind);
+        Assert.Equal(CodingProjectKind.Project, added.Kind);
         Assert.Equal(added.Id, Store.Add(outside + Path.DirectorySeparatorChar).Id);
         var nextFolder = Path.Combine(Tmp, "Next apps"); Directory.CreateDirectory(nextFolder);
         Store.SetFolder(nextFolder, folder);
@@ -46,6 +48,53 @@ public sealed class MyAppsTests : TempDirTest
         Assert.Equal("Keep me", File.ReadAllText(Path.Combine(outside, "notes.txt")));
         Assert.Throws<InvalidOperationException>(() => Store.Get(added.Id));
         Assert.Single(Store.Read().Apps);
+    }
+
+    [Fact]
+    public void Legacy_imports_are_projects_and_created_apps_keep_identity_without_rewriting_catalog()
+    {
+        var folder = Folder();
+        var created = Store.Create("Managed", "Created here", folder);
+        var existing = Directory.CreateDirectory(Path.Combine(Tmp, "repository")).FullName;
+        var imported = Store.Add(existing);
+        var file = Path.Combine(Paths.RootDirectory, "apps.json");
+        var json = System.Text.Json.Nodes.JsonNode.Parse(File.ReadAllText(file))!;
+        foreach (var row in json["apps"]!.AsArray()) row!.AsObject().Remove("kind");
+        json["apps"]![1]!["description"] = "Existing project";
+        var legacy = json.ToJsonString();
+        File.WriteAllText(file, legacy);
+
+        Assert.Equal(CodingProjectKind.ManagedApp, Store.Get(created.Id).Kind);
+        Assert.Equal(CodingProjectKind.Project, Store.Get(imported.Id).Kind);
+        Assert.Equal(legacy, File.ReadAllText(file));
+        Assert.Equal(imported.Id, Store.Add(existing).Id);
+        Assert.Null(System.Text.Json.Nodes.JsonNode.Parse(File.ReadAllText(file))!["apps"]![1]!["kind"]);
+        Store.Remove(imported.Id);
+        Assert.Throws<InvalidOperationException>(() => Store.Get(imported.Id));
+        Assert.True(Directory.Exists(existing));
+    }
+
+    [Fact]
+    public void Project_listing_merges_history_without_duplicating_apps_or_registered_folders()
+    {
+        var app = App();
+        var root = Directory.CreateDirectory(Path.Combine(Tmp, "repository")).FullName;
+        var project = Store.Add(root);
+        var recent = Directory.CreateDirectory(Path.Combine(Tmp, "recent")).FullName;
+        var alias = Path.Combine(Tmp, "repository-alias");
+        Directory.CreateSymbolicLink(alias, root);
+        var internalRoot = Directory.CreateDirectory(Path.Combine(Paths.WorktreesDirectory, "repo", "agent")).FullName;
+        var outsideInternalRoot = Directory.CreateDirectory(Paths.WorktreesDirectory + "-user-project").FullName;
+        var projects = CodingProjectFolders.List(Store.Read(), [root, alias, app.Root, recent, recent, internalRoot], [Paths.WorktreesDirectory]);
+        Assert.Equal(2, projects.Count);
+        Assert.Equal(project.Id, projects.Single(p => p.Root == root).LibraryId);
+        Assert.Null(projects.Single(p => p.Root == recent).LibraryId);
+        Assert.DoesNotContain(projects, p => p.Root == app.Root);
+        Assert.DoesNotContain(projects, p => p.Root == internalRoot);
+        Assert.Single(CodingProjectFolders.List(new(null, []), [outsideInternalRoot], [Paths.WorktreesDirectory]));
+        var registered = Store.Add(internalRoot);
+        Assert.Contains(CodingProjectFolders.List(Store.Read(), [internalRoot], [Paths.WorktreesDirectory]), p => p.LibraryId == registered.Id);
+        Assert.Equal(3, Store.Read().Apps.Count); // Listing is not a persistence writer.
     }
 
     [Fact]

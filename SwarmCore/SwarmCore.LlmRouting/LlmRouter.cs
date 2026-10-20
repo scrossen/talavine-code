@@ -724,6 +724,7 @@ public partial class LlmRouter : ILlmRouter
             }
             return response.Content;
         }
+        catch (LocalLlmRuntimeBusyException) { throw; }
         catch (RoutingAuditPersistenceException)
         {
             throw;
@@ -927,6 +928,7 @@ public partial class LlmRouter : ILlmRouter
             }
             return response.Content;
         }
+        catch (LocalLlmRuntimeBusyException) { throw; }
         catch (RoutingAuditPersistenceException)
         {
             throw;
@@ -1337,6 +1339,7 @@ public partial class LlmRouter : ILlmRouter
                 localSlot?.Dispose();
             }
         }
+        catch (LocalLlmRuntimeBusyException) { throw; }
         catch (RoutingAuditPersistenceException)
         {
             throw;
@@ -1484,6 +1487,7 @@ public partial class LlmRouter : ILlmRouter
                 {
                     return await HandleFallbackAsync(functionType, cleanedPrompt, selectedModel, stopwatch, options, "primary_exception", requestId);
                 }
+                catch (LocalLlmRuntimeBusyException) { throw; }
                 catch (RoutingAuditPersistenceException)
                 {
                     throw;
@@ -1788,6 +1792,7 @@ public partial class LlmRouter : ILlmRouter
                 localSlot?.Dispose();
             }
         }
+        catch (LocalLlmRuntimeBusyException) { throw; }
         catch (RoutingAuditPersistenceException)
         {
             throw;
@@ -1912,6 +1917,7 @@ public partial class LlmRouter : ILlmRouter
                 {
                     return await HandleVisionFallbackAsync(functionType, prompt, imageBase64, selectedModel, stopwatch, options, "primary_exception", requestId);
                 }
+                catch (LocalLlmRuntimeBusyException) { throw; }
                 catch (RoutingAuditPersistenceException)
                 {
                     throw;

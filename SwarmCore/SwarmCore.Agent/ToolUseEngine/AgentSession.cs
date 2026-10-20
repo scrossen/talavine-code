@@ -11,6 +11,7 @@ namespace SwarmCore.Agent.ToolUseEngine;
 /// </summary>
 public sealed class AgentSession
 {
+    public AgentVisionRecovery? VisionRecovery { get; init; }
     /// <summary>Host research may require one exact route with no fallback attribution.</summary>
     public bool DisableRouteFallback { get; init; }
     /// <summary>The person asked for the working context to be compacted before this turn's first model call.</summary>

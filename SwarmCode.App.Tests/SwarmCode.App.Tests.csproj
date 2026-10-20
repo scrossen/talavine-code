@@ -7,6 +7,7 @@
     <IsTestProject>true</IsTestProject>
   </PropertyGroup>
   <ItemGroup>
+    <RazorComponent Include="../SwarmCode.App/Components/Chat/LocalRuntimeQueue.razor" Link="Components/LocalRuntimeQueue.razor" />
     <FrameworkReference Include="Microsoft.AspNetCore.App" />
     <ProjectReference Include="../SwarmCode.Hosting/SwarmCode.Hosting.csproj" />
     <ProjectReference Include="../SwarmCore/SwarmCore.Chat.Components/SwarmCore.Chat.Components.csproj" />
@@ -27,5 +28,11 @@
     <RazorComponent Include="../SwarmCode.App/Components/Shared/ReasoningPicker.razor" Link="Components/ReasoningPicker.razor" />
     <RazorComponent Include="../SwarmCode.App/Components/Shared/ProviderPicker.razor" Link="Components/ProviderPicker.razor" />
     <RazorComponent Include="../SwarmCode.App/Components/Pages/AiOverview.razor" Link="Components/AiOverview.razor" />
+    <RazorComponent Include="../SwarmCode.App/Components/Pages/MyApps.razor" Link="Components/MyApps.razor" />
+    <RazorComponent Include="../SwarmCode.App/Components/Shared/BuildModelPicker.razor" Link="Components/BuildModelPicker.razor" />
+    <RazorComponent Include="../SwarmCode.App/Components/Shared/ModelPicker.razor" Link="Components/ModelPicker.razor" />
+    <Compile Include="../SwarmCode.App/Services/MyAppsService.cs" Link="Services/MyAppsService.cs" />
+    <Compile Include="../SwarmCode.App/Services/IdeIntegration.cs" Link="Services/IdeIntegration.cs" />
+    <Compile Include="../SwarmCode.App/Services/IFolderPickerService.cs" Link="Services/IFolderPickerService.cs" />
   </ItemGroup>
 </Project>

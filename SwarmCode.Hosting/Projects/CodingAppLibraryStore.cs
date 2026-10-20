@@ -12,8 +12,19 @@ public sealed class CodingAppLibraryStore(SwarmCodeDataPaths paths)
     public CodingAppLibrary Read()
     {
         var json = SettingsJsonFile.Read(FilePath);
-        return new(json["appsFolder"]?.GetValue<string>(), json["apps"]?.Deserialize<CodingAppProject[]>(SettingsJsonFile.Json) ?? []);
+        return new(json["appsFolder"]?.GetValue<string>(), ReadEntries(json["apps"]));
     }
+
+    // Older catalogs marked imported folders with this exact description. Read the
+    // legacy shape in place; do not rewrite a snapshot over another window's edits.
+    private static CodingAppProject[] ReadEntries(JsonNode? rows) => rows is null ? []
+        : rows.AsArray().Select(row =>
+        {
+            if (row is null) throw new InvalidDataException("The app library contains an invalid entry.");
+            var entry = row.Deserialize<CodingAppProject>(SettingsJsonFile.Json)!;
+            return row["kind"] is null && entry.Description == "Existing project"
+                ? entry with { Kind = CodingProjectKind.Project } : entry;
+        }).ToArray();
 
     public void SetFolder(string folder, string? expectedFolder)
     {
@@ -40,7 +51,7 @@ public sealed class CodingAppLibraryStore(SwarmCodeDataPaths paths)
             if (!string.Equals(folder, expectedFolder, CodingAppPaths.Comparison)) throw new InvalidOperationException("Your apps folder changed. Reload before creating an app.");
             if (folder is null || !Directory.Exists(folder)) throw new DirectoryNotFoundException("Choose your apps folder first.");
             var root = CodingAppPaths.Within(folder, name);
-            if (Directory.Exists(root) || File.Exists(root)) throw new InvalidOperationException("That folder already exists. Choose another app name or use Add an app.");
+            if (Directory.Exists(root) || File.Exists(root)) throw new InvalidOperationException("That folder already exists. Choose another app name or use Add project.");
             var apps = Apps(json);
             Directory.CreateDirectory(root);
             var app = new CodingAppProject(Guid.NewGuid().ToString("N"), name, description.Trim(), root, DateTime.UtcNow);
@@ -52,21 +63,21 @@ public sealed class CodingAppLibraryStore(SwarmCodeDataPaths paths)
     public CodingAppProject Add(string folder)
     {
         var root = CodingAppPaths.Normalize(folder);
-        if (!Directory.Exists(root)) throw new DirectoryNotFoundException("This app folder is missing. Choose its current location.");
+        if (!Directory.Exists(root)) throw new DirectoryNotFoundException("This project folder is missing. Choose its current location.");
         return SettingsJsonFile.Mutate(FilePath, json =>
         {
             var apps = Apps(json);
-            var existing = apps.Deserialize<CodingAppProject[]>(SettingsJsonFile.Json)!.FirstOrDefault(a => CodingAppPaths.Same(a.Root, root));
+            var existing = ReadEntries(apps).FirstOrDefault(a => CodingAppPaths.Same(a.Root, root));
             if (existing is not null) return existing;
             var name = Path.GetFileName(root);
-            var app = new CodingAppProject(Guid.NewGuid().ToString("N"), string.IsNullOrWhiteSpace(name) ? root : name, "Existing project", root, DateTime.UtcNow);
+            var app = new CodingAppProject(Guid.NewGuid().ToString("N"), string.IsNullOrWhiteSpace(name) ? root : name, "Project folder", root, DateTime.UtcNow, CodingProjectKind.Project);
             apps.Add(JsonSerializer.SerializeToNode(app, SettingsJsonFile.Json));
             return app;
         });
     }
 
     public CodingAppProject Get(string id) => Read().Apps.SingleOrDefault(a => a.Id == id)
-        ?? throw new InvalidOperationException("This app is no longer in your library. Refresh My apps.");
+        ?? throw new InvalidOperationException("This entry is no longer in your library. Refresh My Apps and Projects.");
 
     public void Remove(string id) => SettingsJsonFile.Mutate(FilePath, json =>
     {

@@ -136,6 +136,7 @@ public partial class LlmRouter
                 throw new MalformedToolUseReplyException(replyIssue);
             }
         }
+        catch (LocalLlmRuntimeBusyException) { throw; }
         catch (RoutingAuditPersistenceException)
         {
             throw;
@@ -631,6 +632,7 @@ public partial class LlmRouter
             }
             return response;
         }
+        catch (LocalLlmRuntimeBusyException) { throw; }
         catch (RoutingAuditPersistenceException)
         {
             throw;
@@ -818,6 +820,7 @@ public partial class LlmRouter
                 fallbackOptions.ExecutionSettings,
                 ct: ct);
         }
+        catch (LocalLlmRuntimeBusyException) { throw; }
         catch (OperationCanceledException) when (ct.IsCancellationRequested)
         {
             throw;
@@ -851,6 +854,7 @@ public partial class LlmRouter
             fallbackExecutionStarted = true;
             enumerator = fallbackTranslator.StreamAsync(fallbackRequest, ct).GetAsyncEnumerator(ct);
         }
+        catch (LocalLlmRuntimeBusyException) { throw; }
         catch (RoutingAuditPersistenceException)
         {
             throw;
@@ -1601,7 +1605,9 @@ public partial class LlmRouter
             return "the model is a dedicated embedding model, not a chat/tool-use model";
         }
 
-        if (ModelWorkloadFamilies.IsVisionOnly(selection.Provider, selection.Model))
+        // Names are a cold-start hint. An exact positive tool declaration/proof can
+        // establish that a multimodal artifact is also a tool-use assistant.
+        if (selection.SupportsToolUse != true && ModelWorkloadFamilies.IsVisionOnly(selection.Provider, selection.Model))
         {
             return "the model is a dedicated vision-lane model, not a text tool-use assistant";
         }

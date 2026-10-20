@@ -5,7 +5,10 @@ using SwarmCore.Coding.Permissions;
 
 namespace SwarmCore.Coding.Projects;
 
-public sealed record CodingAppProject(string Id, string Name, string Description, string Root, DateTime CreatedUtc);
+public enum CodingProjectKind { ManagedApp, Project }
+
+public sealed record CodingAppProject(string Id, string Name, string Description, string Root, DateTime CreatedUtc,
+    CodingProjectKind Kind = CodingProjectKind.ManagedApp);
 
 /// <summary>The host owns the catalog; project identity is independent of chats and launch revisions.</summary>
 public sealed record CodingAppLibrary(string? AppsFolder, IReadOnlyList<CodingAppProject> Apps);

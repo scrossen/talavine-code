@@ -6,13 +6,20 @@ using SwarmCore.Coding.Projects;
 namespace SwarmCode.Hosting.Projects;
 
 /// <summary>App-local metadata only. Field-owned mutations under a cross-process lease; no project data is deleted.</summary>
-public sealed class CodingAppLibraryStore(SwarmCodeDataPaths paths)
+public sealed class CodingAppLibraryStore
 {
+    private readonly SwarmCodeDataPaths paths;
+    private readonly string _defaultAppsFolder;
+    public CodingAppLibraryStore(SwarmCodeDataPaths paths) : this(paths, ProjectFolders.DefaultParentDirectory) { }
+    internal CodingAppLibraryStore(SwarmCodeDataPaths paths, string defaultAppsFolder)
+    { this.paths = paths; _defaultAppsFolder = CodingAppPaths.Normalize(defaultAppsFolder); }
+
     private string FilePath => Path.Combine(paths.RootDirectory, "apps.json");
+    private string Folder(JsonObject json) => json["appsFolder"]?.GetValue<string>() ?? _defaultAppsFolder;
     public CodingAppLibrary Read()
     {
         var json = SettingsJsonFile.Read(FilePath);
-        return new(json["appsFolder"]?.GetValue<string>(), ReadEntries(json["apps"]));
+        return new(Folder(json), ReadEntries(json["apps"]));
     }
 
     // Older catalogs marked imported folders with this exact description. Read the
@@ -33,7 +40,10 @@ public sealed class CodingAppLibraryStore(SwarmCodeDataPaths paths)
         if (!Directory.Exists(full)) throw new DirectoryNotFoundException("Choose an existing folder for your apps.");
         SettingsJsonFile.Mutate(FilePath, json =>
         {
-            if (!string.Equals(json["appsFolder"]?.GetValue<string>(), expectedFolder, CodingAppPaths.Comparison))
+            // A legacy caller may have observed the raw unset value. Current UI sees
+            // the computed default; neither path replaces a newer explicit choice.
+            if (!(expectedFolder is null && json["appsFolder"] is null)
+                && !string.Equals(Folder(json), expectedFolder, CodingAppPaths.Comparison))
                 throw new InvalidOperationException("Your apps folder changed in another window. Reload before changing it.");
             json["appsFolder"] = full;
             return true;
@@ -47,9 +57,12 @@ public sealed class CodingAppLibraryStore(SwarmCodeDataPaths paths)
         expectedFolder = CodingAppPaths.Normalize(expectedFolder);
         return SettingsJsonFile.Mutate(FilePath, json =>
         {
-            var folder = json["appsFolder"]?.GetValue<string>();
+            var folder = Folder(json);
             if (!string.Equals(folder, expectedFolder, CodingAppPaths.Comparison)) throw new InvalidOperationException("Your apps folder changed. Reload before creating an app.");
-            if (folder is null || !Directory.Exists(folder)) throw new DirectoryNotFoundException("Choose your apps folder first.");
+            // Only the implicit default may be created automatically. A missing custom
+            // location must remain a visible error rather than silently switching folders.
+            if (json["appsFolder"] is null) Directory.CreateDirectory(folder);
+            if (!Directory.Exists(folder)) throw new DirectoryNotFoundException("Your apps folder is missing. Restore it or choose another folder.");
             var root = CodingAppPaths.Within(folder, name);
             if (Directory.Exists(root) || File.Exists(root)) throw new InvalidOperationException("That folder already exists. Choose another app name or use Add project.");
             var apps = Apps(json);
@@ -59,6 +72,10 @@ public sealed class CodingAppLibraryStore(SwarmCodeDataPaths paths)
             return app;
         });
     }
+
+    /// <summary>Create at the chosen new-project location, provisioning only the default parent.</summary>
+    public string CreateProject(string parent, string name)
+        => ProjectFolders.Create(parent, name, CodingAppPaths.Same(parent, _defaultAppsFolder));
 
     public CodingAppProject Add(string folder)
     {

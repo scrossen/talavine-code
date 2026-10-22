@@ -66,6 +66,12 @@
             }
         </div>
         <p class="sc-muted">New sessions start with this model. Existing sessions keep their selection. @if (!AvailableLanes().Any()) { <span>Open a repository to detect installed models, or add a model route below.</span> }</p>
+        <div class="sc-settings-model-favorites">
+            <ChatModelFavorites Current="DefaultModelFavorite" Favorites="_defaultFavorites" OnChange="ChangeDefaultFavoriteAsync"
+                                OnSelect="ChooseDefaultFavoriteAsync" IsAvailable="DefaultFavoriteAvailable" Disabled="_defaultModelsLoading" Error="@_defaultFavoritesError" />
+            <p class="sc-muted">Pins save immediately and also appear in the chat model popup. Choose a pinned model here, then use Save defaults to make it the starting model for new sessions.</p>
+            @if (DefaultModelFavorite is null) { <p class="sc-muted">Choose a provider and model above to pin it.</p> }
+        </div>
     </section>
 <DecisionSelectionSettingsPanel />
     </SettingsDialog>
@@ -766,6 +772,7 @@
         State.Changed += OnChanged;
         LoadLanes();
         LoadDefaultModel();
+        await LoadDefaultFavoritesAsync();
         await SourcesChangedAsync();
         await Task.Run(LoadRuntimeSettings);
         await Task.Run(LoadSelfImprovement);
@@ -778,7 +785,7 @@
         await RefreshModelHistoryAsync();
     }
 
-    private void OnChanged() => _ = InvokeAsync(async () => { await RefreshReturnDestinationAsync(); await RefreshKeysAsync(); StateHasChanged(); });
+    private void OnChanged() => _ = InvokeAsync(async () => { await RefreshReturnDestinationAsync(); await RefreshKeysAsync(); await LoadDefaultFavoritesAsync(); StateHasChanged(); });
 
     private IReadOnlyList<CodingLane> _sourceLanes = [];
     private async Task SourcesChangedAsync()

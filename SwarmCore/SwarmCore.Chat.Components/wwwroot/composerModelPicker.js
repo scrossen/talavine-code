@@ -16,16 +16,23 @@ export function initialize(root) {
         trigger.setAttribute('aria-expanded', String(panel.matches(':popover-open')));
         place();
     };
+    const close = event => {
+        if (!event.target.closest('[data-model-close]')) return;
+        panel.hidePopover();
+        trigger.focus({ preventScroll: true });
+    };
     trigger.setAttribute('aria-expanded', 'false');
     trigger.setAttribute('aria-controls', panel.id);
     const observer = new ResizeObserver(place);
     observer.observe(panel);
     panel.addEventListener('toggle', toggle);
+    panel.addEventListener('click', close);
     window.addEventListener('resize', place);
     window.addEventListener('scroll', place, true);
     instances.set(root, () => {
         observer.disconnect();
         panel.removeEventListener('toggle', toggle);
+        panel.removeEventListener('click', close);
         window.removeEventListener('resize', place);
         window.removeEventListener('scroll', place, true);
     });
@@ -35,5 +42,5 @@ export function open(root) {
     const panel = root.querySelector('[popover]');
     panel.querySelector('details').open = true;
     panel.showPopover();
-    panel.querySelector('select, input, button')?.focus();
+    panel.querySelector('select, input, button:not([data-model-close])')?.focus();
 }

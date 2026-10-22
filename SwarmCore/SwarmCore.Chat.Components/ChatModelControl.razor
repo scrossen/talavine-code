@@ -11,6 +11,13 @@
         @if (!string.IsNullOrEmpty(AssistanceSummary)) { <span title="@AssistanceSummary" aria-label="@AssistanceSummary">&#9678;</span> }<span aria-hidden="true">⌄</span>
     </button>
     <div id="@_id" class="composer-model__popover" popover="auto" role="dialog" aria-label="Provider, model and reasoning settings" @onkeydown:stopPropagation>
+        <div class="composer-model__actions">
+            <span>Choices apply immediately</span>
+            <button type="button" class="composer-model__done" popovertarget="@_id" popovertargetaction="hide"
+                    data-model-close title="Done — close and keep your choices" aria-label="Done: close and keep model choices"><span aria-hidden="true">✓</span> Done</button>
+            <button type="button" class="composer-model__close" popovertarget="@_id" popovertargetaction="hide"
+                    data-model-close title="Close — keep your choices" aria-label="Close model settings; keep choices"><span aria-hidden="true">×</span></button>
+        </div>
         <ChatReasoningPicker Efforts="Efforts" Effort="@Effort" EffortChanged="EffortChanged" Disabled="Disabled" />
         @FavoriteControls
         <details class="composer-model__choices">

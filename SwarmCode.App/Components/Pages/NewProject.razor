@@ -2,6 +2,7 @@
 @inject AppState State
 @inject IFolderPickerService Picker
 @inject NavigationManager Nav
+@inject CodingAppLibraryStore Library
 @using SwarmCode.Hosting.Projects
 
 <PageTitle>New Project - Talavine Code</PageTitle>
@@ -28,10 +29,18 @@
 
 @code {
     private string _name = "";
-    private string _location = Environment.GetFolderPath(Environment.SpecialFolder.MyDocuments);
+    private string _location = "";
     private string? _createdRoot;
     private string? _error;
     private bool _busy;
+
+    protected override async Task OnInitializedAsync()
+    {
+        _busy = true;
+        try { _location = await Task.Run(() => Library.Read().AppsFolder ?? ProjectFolders.DefaultParentDirectory); }
+        catch (Exception ex) { _error = ex.Message; }
+        finally { _busy = false; }
+    }
 
     private async Task BrowseAsync()
     {
@@ -49,7 +58,7 @@
             // Keep a successfully created folder for retry if runtime activation fails.
             var requestedRoot = Path.Combine(Path.GetFullPath(_location), _name.Trim());
             if (_createdRoot != requestedRoot)
-                _createdRoot = await Task.Run(() => ProjectFolders.Create(_location, _name));
+                _createdRoot = await Task.Run(() => Library.CreateProject(_location, _name));
             if (!await State.OpenWorkspaceAsync(_createdRoot)) { _error = State.LastError; return; }
             var session = await State.NewSessionAsync();
             Nav.NavigateTo(AppNavigation.SessionUrl(session.Id));

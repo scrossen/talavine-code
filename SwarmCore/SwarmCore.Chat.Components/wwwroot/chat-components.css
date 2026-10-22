@@ -45,7 +45,7 @@
 
 /* ---- private resolved tokens (declared on every component root) ---- */
 .chat-md, .chat-msg, .reasoning-block, .tool-call, .perm-req, .perm-req__result, .chat-msg__error-inline, .chat-notice, .chat-diff,
-.composer-model, .composer-model__popover, .chat-composer-surface, .chat-feature-links, .chat-composer, .chat-scroll-host, .chat-slash, .chat-history, .chat-history-backdrop, .chat-changes, .chat-lane-chip {
+.chat-model-favorites, .composer-model, .composer-model__popover, .chat-composer-surface, .chat-feature-links, .chat-composer, .chat-scroll-host, .chat-slash, .chat-history, .chat-history-backdrop, .chat-changes, .chat-lane-chip {
     --_accent: var(--chat-accent, var(--sc-accent, var(--sm-accent, #2563eb)));
     --_accent-fg: var(--chat-accent-contrast, var(--sc-accent-contrast, #ffffff));
     --_text: var(--chat-text, var(--sc-text, var(--sm-ink, #1f2430)));
@@ -70,7 +70,7 @@
 
 @media (prefers-color-scheme: dark) {
     .chat-md, .chat-msg, .reasoning-block, .tool-call, .perm-req, .perm-req__result, .chat-msg__error-inline, .chat-notice, .chat-diff,
-    .composer-model, .composer-model__popover, .chat-composer-surface, .chat-feature-links, .chat-composer, .chat-scroll-host, .chat-slash, .chat-history, .chat-history-backdrop, .chat-changes, .chat-lane-chip {
+    .chat-model-favorites, .composer-model, .composer-model__popover, .chat-composer-surface, .chat-feature-links, .chat-composer, .chat-scroll-host, .chat-slash, .chat-history, .chat-history-backdrop, .chat-changes, .chat-lane-chip {
         --_accent: var(--chat-accent, var(--sc-accent, var(--sm-accent, #3b6fd8)));
         --_accent-fg: var(--chat-accent-contrast, var(--sc-accent-contrast, #ffffff));
         --_text: var(--chat-text, var(--sc-text, var(--sm-ink, #e6e8ee)));
@@ -86,7 +86,7 @@
 }
 
 :is([data-theme="dark"], .dark-theme, .dark) :is(.chat-md, .chat-msg, .reasoning-block, .tool-call, .perm-req, .perm-req__result, .chat-msg__error-inline, .chat-notice, .chat-diff,
-    .composer-model, .composer-model__popover, .chat-composer-surface, .chat-feature-links, .chat-composer, .chat-scroll-host, .chat-slash, .chat-history, .chat-history-backdrop, .chat-changes, .chat-lane-chip) {
+    .chat-model-favorites, .composer-model, .composer-model__popover, .chat-composer-surface, .chat-feature-links, .chat-composer, .chat-scroll-host, .chat-slash, .chat-history, .chat-history-backdrop, .chat-changes, .chat-lane-chip) {
     --_accent: var(--chat-accent, var(--sc-accent, var(--sm-accent, #3b6fd8)));
     --_accent-fg: var(--chat-accent-contrast, var(--sc-accent-contrast, #ffffff));
     --_text: var(--chat-text, var(--sc-text, var(--sm-ink, #e6e8ee)));
@@ -978,6 +978,11 @@
 .composer-model__provider { min-width: 0; max-width: 7rem; overflow: hidden; text-overflow: ellipsis; }
 .composer-model__effort { text-transform: capitalize; }
 .composer-model__popover { position: fixed; inset: auto; margin: 0; width: 18rem; max-width: calc(100vw - 1rem); box-sizing: border-box; padding: 0.75rem; border: 1px solid var(--_border); border-radius: 1.25rem; background: var(--_surface); color: var(--_text); box-shadow: 0 8px 24px rgb(0 0 0 / 14%); overflow: auto; font-size: 0.85rem; }
+.composer-model__actions { display: flex; align-items: center; gap: 0.25rem; position: sticky; top: -0.75rem; z-index: 2; background: var(--_surface); padding: 0.25rem 0 0.4rem; margin-bottom: 0.25rem; border-bottom: 1px solid var(--_border); }
+.composer-model__actions > span { flex: 1; min-width: 0; font-size: 0.72rem; color: var(--_muted); }
+.composer-model__actions > button { display: inline-flex; align-items: center; justify-content: center; gap: 0.2rem; min-height: 1.75rem; padding: 0.2rem 0.35rem; flex-shrink: 0; border: 0; border-radius: 0.4rem; font: inherit; background: transparent; color: var(--_text); cursor: pointer; }
+.composer-model__actions > button:hover { background: var(--_sunken); }
+.composer-model__actions > .composer-model__close { width: 1.75rem; font-size: 1.2rem; padding: 0; }
 .composer-model__choices > summary { text-align: center; list-style: none; cursor: pointer; color: var(--_muted); padding: 0.4rem; overflow-wrap: anywhere; }
 .composer-model__choices > summary::-webkit-details-marker { display: none; }
 .composer-model__fields { display: flex; flex-direction: column; align-items: stretch; gap: 0.6rem; padding-top: 0.75rem; border-top: 1px solid var(--_border); }

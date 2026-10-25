@@ -7,8 +7,10 @@ public static class BusinessAdapterProtocol
     public static readonly string[] RoutedChannels = ["shared-email", "sms", "social-follow", "social-post", "social-message", "browser", "device", "carrier"];
     public static string CapabilityFor(string channel) => channel switch
     {
-        "email" or "shared-email" or "sms" => BusinessDispatchContract.SendCapability,
+        // "invoice" is an issued-invoice email whose body the host transport rebuilds from the immutable record.
+        "email" or "shared-email" or "sms" or "invoice" => BusinessDispatchContract.SendCapability,
         "calendar" => "business.book", "proposal" => "business.propose",
+        "onboarding" => BusinessDispatchContract.SendCapability, // H4 client welcome; its transport appends the intake link.
         "social-post" => "business.publish", "social-message" => "business.message",
         "social-follow" => "business.follow",
         "browser" => "business.browser", "device" => "business.delegate", "carrier" => "business.ship",

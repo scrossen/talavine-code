@@ -109,4 +109,14 @@ public interface ICrmReadConnector
     Task<CrmReadResult<CrmTelemetrySummary>> GetTelemetrySummaryAsync(
         CrmConnection connection, int sinceHours = 24, CancellationToken ct = default)
         => Task.FromResult(CrmReadResult<CrmTelemetrySummary>.Fail("Telemetry summaries are not supported by this connector."));
+
+    /// <summary>
+    /// Read the connected tenant's business-cycle counts (<c>GET api/crm/business/cycle</c>) for the
+    /// Today strip. Counts follow the caller's CRM visibility; money totals are present only for a
+    /// full-tenant role. Succeeds with no item when the CRM predates the endpoint (404). Default
+    /// fails closed for older connectors.
+    /// </summary>
+    Task<CrmReadResult<CrmBusinessCycleSummary>> GetBusinessCycleAsync(
+        CrmConnection connection, CancellationToken ct = default)
+        => Task.FromResult(CrmReadResult<CrmBusinessCycleSummary>.Fail("Business cycle counts are not supported by this connector."));
 }

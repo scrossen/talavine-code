@@ -101,7 +101,7 @@ public static class InteractionCompletionCanonicalizer
     public static bool IsSensitiveField(string name, IReadOnlyList<InteractionFormField> fields)
     {
         var field = fields.FirstOrDefault(f => string.Equals(f.Name, name, StringComparison.OrdinalIgnoreCase));
-        return ContainsSensitiveLabel($"{name} {field?.Label} {field?.Kind}");
+        return field?.IsSecret == true || ContainsSensitiveLabel($"{name} {field?.Label} {field?.Kind}");
     }
 
     public static bool ContainsSensitiveText(string? text)

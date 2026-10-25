@@ -34,7 +34,8 @@ public static class BusinessDispatchContract
 {
     public const string SendCapability = "business.send";
     public static string Hash(object value) => Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(JsonSerializer.Serialize(value))));
-    public static string NormalizeTarget(string value) => value.Trim().ToLowerInvariant();
+    /// <summary>Exact target identity; delegates to the shared client identity rule.</summary>
+    public static string NormalizeTarget(string value) => Business.ClientIdentity.NormalizeAddress(value);
     public static void Validate(BusinessDispatchRequest request)
     {
         if (request.PolicyId == Guid.Empty || string.IsNullOrWhiteSpace(request.ObjectiveId) || request.ObjectiveId.Length > 200

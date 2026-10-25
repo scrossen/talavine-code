@@ -80,12 +80,23 @@ public readonly record struct InteractionRequestCursor(long Sequence)
 
 public sealed record InteractionChoice(string Id, string Label, string? Description = null);
 
+/// <summary>One requested input. Optional members are additive: existing positional callers are unchanged.</summary>
 public sealed record InteractionFormField(
     string Name,
     string Label,
     string Kind = "text",
     bool Required = true,
-    string? HelpText = null);
+    string? HelpText = null)
+{
+    /// <summary>Optional closed set of answers; null means free entry.</summary>
+    public IReadOnlyList<InteractionChoice>? Choices { get; init; }
+
+    /// <summary>Optional suggested value the person may accept or change. Never set on a secret field.</summary>
+    public string? Default { get; init; }
+
+    /// <summary>True when the answer is transient secret material that must be redacted from storage.</summary>
+    public bool IsSecret { get; init; }
+}
 
 public sealed record InteractionRequestCreate
 {

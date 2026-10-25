@@ -8,6 +8,7 @@ public sealed record AppsListInput;
 public sealed record AppsConnectInput(string Target, string? Name = null, string? TokenSecret = null, string? Scope = null);
 public sealed record AppsFindInput(string App, string? Query = null, int Skip = 0);
 public sealed record AppsCallInput(string App, string Tool, JsonObject? Input, string Request, string? OperationId = null);
+public sealed record AppsOperationIdInput(string Deliverable, string App, string Effect);
 public sealed record AppsAskInput(string App, string Request, string? ConversationId = null);
 
 /// <summary>
@@ -23,7 +24,7 @@ public static class ConnectedAppsTools
         + "an app by name (\"talavine\") or a server URL (a CRM's https://host/mcp; the person approves in their browser); "
         + "apps.find_tools finds what the app can do; apps.call_tool runs one tool with the person's request; apps.ask asks the "
         + "app's own assistant, which is best for why-questions about what the app did. Read the source only when the person asks "
-        + "how the app is built.";
+        + "how the app is built.\n" + DeliverableHandback.Guidance;
 
     public static IReadOnlyList<ToolDescriptor> Create(ConnectedApps apps) =>
     [
@@ -48,6 +49,12 @@ public static class ConnectedAppsTools
             ToolCostClass.Moderate, ToolSideEffect.ExternalSend,
             (input, ct) => apps.CallToolAsync(input.App, input.Tool, input.Input ?? new JsonObject(), input.Request, input.OperationId, ct),
             keywords: ["call", "run", "talavine", "crm", "create", "update"], dataAccess: ToolDataAccessClass.UnclassifiedExternal),
+        ToolDescriptor.Create<AppsOperationIdInput, string>("apps.operation_id", "apps",
+            "Get the stable operation_id for one effect of a finished deliverable in one app (for example deliverable \"landing page\", app \"talavine\", effect \"task\"). "
+            + "Pass it as operation_id to apps.call_tool; the same inputs always return the same id, so a retry never duplicates a task or note.",
+            ToolCostClass.Cheap, ToolSideEffect.ReadOnly,
+            (input, _) => Task.FromResult(DeliverableHandback.OperationId(input.Deliverable, input.App, input.Effect).ToString()),
+            keywords: ["operation", "id", "idempotent", "deliverable", "hand-back", "retry"]),
         ToolDescriptor.Create<AppsAskInput, string>("apps.ask", "apps",
             "Ask a connected app's own assistant (Talavine, the CRM) in plain words. Best for \"why did it do X\", what its records show, or multi-step work it knows how to do.",
             ToolCostClass.Expensive, ToolSideEffect.ExternalSend,

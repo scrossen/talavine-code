@@ -106,8 +106,10 @@ public static class BusinessLifecycleRules
             .Select(e => System.Text.Json.JsonSerializer.Serialize(e.Facts.Order(StringComparer.Ordinal))).Distinct(StringComparer.Ordinal).Count() > 1))
             return new(false, "Different observations share the latest source timestamp. Refresh or resolve that uncertainty before qualification.", []);
         // Reference research about a separate organization is attributed context only; it can never
-        // satisfy a criterion for this customer even if its literal text repeats a criterion.
+        // satisfy a criterion for this customer even if its literal text repeats a criterion. A sender's
+        // submitted inquiry text (form or captured message) is likewise attributed context only.
         var matches = brief.QualificationCriteria.Where(c => current.Any(e => !BusinessPublicReferencePolicy.IsReference(e)
+            && !BusinessInquiryCapturePolicy.IsSubmittedText(e)
             && e.Facts.Any(f => string.Equals(c, f, StringComparison.OrdinalIgnoreCase)))).ToArray();
         return new(matches.Length == brief.QualificationCriteria.Length,
             matches.Length == brief.QualificationCriteria.Length ? "Every configured criterion has current attributed evidence." : "Missing or stale evidence; no qualified opportunity is inferred.", matches);

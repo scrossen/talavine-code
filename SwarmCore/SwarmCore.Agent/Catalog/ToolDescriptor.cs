@@ -69,6 +69,15 @@ public sealed record ToolDescriptor
     public IReadOnlyList<string> UserInvocationPhrases { get; init; } = [];
 
     /// <summary>
+    /// Optional host-owned descriptive tags (for example the business-cycle stage a tool serves).
+    /// Metadata never grants authority, changes approval, or affects invocation.
+    /// </summary>
+    public IReadOnlyDictionary<string, string> Metadata { get; init; } = EmptyMetadata;
+
+    private static readonly IReadOnlyDictionary<string, string> EmptyMetadata =
+        new System.Collections.ObjectModel.ReadOnlyDictionary<string, string>(new Dictionary<string, string>());
+
+    /// <summary>
     /// Declares whether invoking this descriptor can read user data outside
     /// the supplied prompt/current view. Trusted built-in tools default to
     /// <see cref="ToolDataAccessClass.None"/>; external/generic gateways must

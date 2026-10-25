@@ -8,7 +8,9 @@ public enum OptionalHostCapability
     ExternalBrowserBridge = 2,
     ManagedBrowser = 4,
     ExternalMcpServer = 8,
-    All = LocalSidecars | ExternalBrowserBridge | ManagedBrowser | ExternalMcpServer
+    /// <summary>Looking at and driving native desktop windows (accessibility trees, screenshots, injected input).</summary>
+    DesktopControl = 16,
+    All = LocalSidecars | ExternalBrowserBridge | ManagedBrowser | ExternalMcpServer | DesktopControl
 }
 
 /// <summary>

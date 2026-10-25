@@ -43,7 +43,8 @@ public sealed class TurnEventMapper : ITurnEventMapper
                     // A provider can hand back a call with no input object at
                     // all; the event must still map rather than fault the turn.
                     Input: start.Input?.DeepClone() as System.Text.Json.Nodes.JsonObject
-                           ?? new System.Text.Json.Nodes.JsonObject());
+                           ?? new System.Text.Json.Nodes.JsonObject())
+                { SideEffect = start.DispatchPlan?.SideEffect };
                 break;
 
             case ToolCallCompletedEvent completed:
@@ -57,7 +58,8 @@ public sealed class TurnEventMapper : ITurnEventMapper
                     // the turn-elapsed fallback for third-party/older event
                     // producers that have not populated it yet.
                     Elapsed: completed.Elapsed ?? DateTime.UtcNow - context.TurnStartUtc)
-                { WasDispatched = completed.WasDispatched, LocalProcessCompleted = completed.LocalProcessCompleted };
+                { WasDispatched = completed.WasDispatched, LocalProcessCompleted = completed.LocalProcessCompleted,
+                    SideEffect = completed.DispatchPlan?.SideEffect };
                 break;
 
             case SteeringDeliveryChangedEvent changed:

@@ -10,6 +10,11 @@ Restore and build `TalavineCode.Cli.slnx`; it excludes the native desktop applic
 Run `dotnet run --project SwarmCode -- --help` to verify the executable starts
 without contacting a model or opening a user profile.
 
+The CLI solution also builds seven test projects. Run the seven `dotnet test`
+commands in `.github/workflows/ci.yml` after building. The RemoteControl suites
+cover command/session behavior, agent procedures and portable macOS mapping;
+native platform interaction requires separate acceptance.
+
 For a local framework-dependent CLI distribution:
 
 ```sh

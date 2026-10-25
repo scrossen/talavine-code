@@ -14,7 +14,8 @@ namespace SwarmCode.Hosting.Improvement;
 /// carries the build and test commands as acceptance checks (so the harness verifies, and repairs once, before the turn
 /// ends), the person's lane and preferences, and, only when the host sees changed files plus passing checks, one commit
 /// on that branch. The person merges the branch; <see cref="SelfImprovementOptions.MergeVerifiedFixes"/> fast-forwards a
-/// clean checkout for them. A failed cycle's worktree is removed (the session transcript keeps the evidence).
+/// clean checkout for them. A failed cycle's worktree is removed (the session transcript keeps the evidence), but
+/// an interrupted cycle retains its unverified files and branch as a recoverable checkpoint.
 /// </summary>
 public sealed class SwarmCodeSelfImprovementCycleHost(
     WorkspaceSessionCatalog sessions,
@@ -33,8 +34,14 @@ public sealed class SwarmCodeSelfImprovementCycleHost(
 
     public string? ResolveRepositoryRoot() => SwarmCodeSourceRepository.Resolve(options().RepositoryRoot, baseDirectory);
 
+    public async Task<bool> CanRunAsync(SelfImprovementItem item, CancellationToken ct = default)
+        => item.GoalRepair is not { } link || await new Goals.FileCodingGoalStore(paths).GetAsync(link.GoalId, ct).ConfigureAwait(false) is { } goal
+            && link.CanResume(goal, DateTimeOffset.UtcNow);
+
     public async Task<SelfImprovementCycleResult> RunAsync(SelfImprovementItem item, SelfImprovementCycleContext context, CancellationToken ct)
     {
+        if (!await CanRunAsync(item, ct).ConfigureAwait(false))
+            return SelfImprovementCycleResult.Cancelled("The original goal changed or is paused; no repair was started.");
         var settings = context.Options;
         var checks = settings.Checks.Count > 0 ? settings.Checks : SelfImprovementChecks.Discover(context.RepositoryRoot);
         if (checks.Count == 0)
@@ -87,7 +94,7 @@ public sealed class SwarmCodeSelfImprovementCycleHost(
             }
 
             if (result.Cancelled || ct.IsCancellationRequested)
-                return SelfImprovementCycleResult.Cancelled("Stopped before the cycle finished.", session.Id);
+                return Cancelled(session.Id, Evidence(acceptance, result));
 
             var evidence = Evidence(acceptance, result);
             if (result.Error is { } error)
@@ -120,7 +127,7 @@ public sealed class SwarmCodeSelfImprovementCycleHost(
         }
         catch (OperationCanceledException) when (ct.IsCancellationRequested)
         {
-            return SelfImprovementCycleResult.Cancelled("Stopped before the cycle finished.", sessionId);
+            return Cancelled(sessionId);
         }
         catch (Exception ex)
         {
@@ -129,7 +136,7 @@ public sealed class SwarmCodeSelfImprovementCycleHost(
         }
         finally
         {
-            if (!keepWorktree && !settings.KeepFailedWorktrees)
+            if (!keepWorktree && !ct.IsCancellationRequested && !settings.KeepFailedWorktrees)
             {
                 try
                 {
@@ -143,6 +150,15 @@ public sealed class SwarmCodeSelfImprovementCycleHost(
         SelfImprovementCycleResult Failed(string note, string? evidence, string? session)
             => new(SelfImprovementCycleOutcome.Failed, note, evidence, SessionId: session,
                 WorktreePath: settings.KeepFailedWorktrees ? worktree.Path : null);
+
+        SelfImprovementCycleResult Cancelled(string? session, string? evidence = null)
+        {
+            keepWorktree = true;
+            var checkpoint = $"Interrupted cycle checkpoint retained at {worktree.Path} (branch {worktree.Branch}). These files are not a verified repair.";
+            return new(SelfImprovementCycleOutcome.Cancelled, "Stopped before the cycle finished. " + checkpoint,
+                string.IsNullOrWhiteSpace(evidence) ? checkpoint : checkpoint + Environment.NewLine + evidence,
+                Branch: worktree.Branch, WorktreePath: worktree.Path, SessionId: session);
+        }
     }
 
     private static string Evidence(CodingAcceptanceResult? acceptance, TurnResult result)

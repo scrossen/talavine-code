@@ -1,0 +1,736 @@
+@namespace SwarmCode.App.Components.Chat
+@using SwarmCore.Agent.Communication
+@using SwarmCore.Chat.Components
+@using SwarmCore.Coding.Goals
+@implements IDisposable
+
+<section class="sc-goals" aria-label="Agent inbox">
+    @if (_error is not null) { <div class="sc-notice sc-notice--error" role="alert">@_error</div> }
+    <div class="sc-goals__columns">
+        <nav class="sc-goals__contacts" aria-label="Named agents">
+            @if (_loading) { <p class="sc-muted" role="status">Loading agents…</p> }
+            @if (!_loading && _contacts.Count == 0) { <p class="sc-muted">Start ongoing work with /goal in a chat. Its agent will appear here.</p> }
+            @foreach (var contact in _contacts)
+            {
+                <button type="button" class="sc-goals__contact @(contact.GoalId == _selected ? "sc-goals__contact--active" : "")"
+                        aria-pressed="@(contact.GoalId == _selected ? "true" : "false")" @onclick="() => SelectAsync(contact.GoalId)">
+                    <strong>@contact.Name</strong><span>@("@" + contact.Handle)</span><span class="sc-muted">@contact.Status</span>
+                </button>
+            }
+        </nav>
+        <div class="sc-goals__thread">
+            @if (_contact is not { } selected)
+            {
+                <div class="sc-empty"><div class="sc-empty__title">Choose an agent</div><p>Send an idea or question without interrupting its work.</p></div>
+            }
+            else
+            {
+                var items = Items().ToArray();
+                <header class="sc-goals__header">
+                    <div><h2>@selected.Name</h2><span class="sc-muted">@("@" + selected.Handle) · @selected.Status</span></div>
+                    <div class="sc-row"><a class="sc-btn" href="@SwarmCode.App.Services.AppNavigation.SessionUrl(selected.ConversationId)">Open work</a>
+                    <button type="button" class="sc-btn" @onclick="BeginRename">Rename agent</button></div>
+                </header>
+                @if (_renaming)
+                {
+                    <div class="sc-card sc-goals__rename">
+                        <label class="sc-field">Name<input class="sc-input" aria-label="Agent name" maxlength="100" @bind="_name" /></label>
+                        <label class="sc-field">Handle<input class="sc-input" aria-label="Agent handle" maxlength="40" @bind="_handle" /></label>
+                        <p class="sc-muted">Use a letter, then lowercase letters, numbers, - or _. Renaming keeps the same agent and work.</p>
+                        <div class="sc-row"><button type="button" class="sc-btn sc-btn--primary" @onclick="RenameAsync">Save name</button>
+                        <button type="button" class="sc-btn" @onclick="() => _renaming = false">Cancel</button></div>
+                        @if (_renameError is not null) { <p class="sc-notice sc-notice--error" role="alert">@_renameError</p> }
+                    </div>
+                }
+                @if (Ledger is not null || Results is not null || Reports is not null)
+                {
+                    <div class="sc-goals__views" role="group" aria-label="Agent views">
+                        <button type="button" class="sc-goals__view @(_view == PanelView.Messages ? "sc-goals__view--active" : "")"
+                                aria-pressed="@(_view == PanelView.Messages ? "true" : "false")" @onclick="() => ShowAsync(PanelView.Messages)">Messages</button>
+                        @if (Reports is not null)
+                        {
+                            <button type="button" class="sc-goals__view @(_view == PanelView.Reports ? "sc-goals__view--active" : "")"
+                                    aria-pressed="@(_view == PanelView.Reports ? "true" : "false")" @onclick="() => ShowAsync(PanelView.Reports)">Daily reports</button>
+                        }
+                        @if (Results is not null)
+                        {
+                            <button type="button" class="sc-goals__view @(_view == PanelView.Results ? "sc-goals__view--active" : "")"
+                                    aria-pressed="@(_view == PanelView.Results ? "true" : "false")" @onclick="() => ShowAsync(PanelView.Results)">What's been done</button>
+                        }
+                        @if (Ledger is not null)
+                        {
+                            <button type="button" class="sc-goals__view @(_view == PanelView.Ledger ? "sc-goals__view--active" : "")"
+                                    aria-pressed="@(_view == PanelView.Ledger ? "true" : "false")" @onclick="() => ShowAsync(PanelView.Ledger)">@(Results is null ? "What's been done" : "All activity")</button>
+                        }
+                    </div>
+                }
+                @if (!string.IsNullOrWhiteSpace(selected.StatusDetail))
+                {
+                    <p class="sc-notice" role="status">@selected.StatusDetail</p>
+                }
+                @if (!string.IsNullOrWhiteSpace(selected.Blocker)) { <p class="sc-muted">Last recorded blocker: @selected.Blocker</p> }
+                @if (_view == PanelView.Messages)
+                {
+                <p class="sc-muted">Received means saved; Delivered means handed to the worker. Read and Incorporated require its acknowledgment. Status notices explain held work; only Resume restarts paused work.</p>
+                <div class="sc-goals__scroll">
+                    <ChatScrollRegion ConversationKey="@selected.GoalId.ToString()" JumpLabel="@(_hasMore ? "Jump to latest loaded" : "Jump to latest")" ContentRevision="@((items.Length, items.Select(i => i.Sequence).DefaultIfEmpty().Max()))">
+                        <div class="sc-goals__messages" role="list" aria-label="Messages and replies" aria-live="polite">
+                            @foreach (var item in items)
+                            {
+                                <article class="sc-goals__message @(item.Reply ? "sc-goals__message--reply" : "")" role="listitem" @key="item.Id">
+                                    <div class="sc-goals__message-meta"><strong>@item.Label</strong><span class="sc-chip">@item.State</span><time>@item.At.ToLocalTime().ToString("g")</time></div>
+                                    <p>@item.Text</p>
+                                    @foreach (var file in item.Attachments)
+                                    {
+                                        <p class="sc-muted sc-goals__attachment">Attached file: @file.FileName · @file.MediaType · @file.Length bytes (local to Code)</p>
+                                    }
+                                    @if (!string.IsNullOrWhiteSpace(item.Detail)) { <p class="sc-muted">@item.Detail</p> }
+                                </article>
+                            }
+                        </div>
+                    </ChatScrollRegion>
+                </div>
+                @if (_messages.Count == 0 && _replies.Count == 0) { <p class="sc-muted">No messages yet.</p> }
+                @if (_hasMore) { <div class="sc-row"><span class="sc-muted">Showing latest loaded messages.</span><button type="button" class="sc-btn" @onclick="LoadMoreAsync">Load more messages</button></div> }
+                @if (Draft is { } draft)
+                {
+                    <div class="sc-goals__composer">
+                        @if (selected.IsClosed) { <p class="sc-muted" role="status">This goal is closed. Its messages and replies remain available. Start another goal in a chat to continue.</p> }
+                        <label class="sc-field">Message to @("@" + selected.Handle)
+                            <textarea class="sc-textarea" aria-label="Message to agent" rows="4" maxlength="8000" disabled="@selected.IsClosed" @bind="draft.Text" @bind:event="oninput"></textarea>
+                        </label>
+                        <div class="sc-row">
+                            <select class="sc-select sc-goals__kind" aria-label="Message kind" disabled="@selected.IsClosed" @bind="draft.Kind">
+                                @foreach (var kind in Enum.GetValues<GoalMessageKind>()) { <option value="@kind">@kind</option> }
+                            </select>
+                            <button type="button" class="sc-btn sc-btn--primary" disabled="@(selected.IsClosed || draft.IsSending)" @onclick="SendAsync">@(draft.IsSending ? "Saving…" : "Send to agent inbox")</button>
+                            <button type="button" class="sc-btn" @onclick="RefreshAsync">Refresh</button>
+                        </div>
+                        @if (draft.Error is not null) { <p class="sc-notice sc-notice--error" role="alert">@draft.Error</p> }
+                        @if (draft.Pending is not null)
+                        {
+                            <div class="sc-goals__pending"><span class="sc-muted">Pending message: @draft.Pending.Text</span>
+                            <button type="button" class="sc-btn" @onclick="RetryAsync">Retry same message</button></div>
+                        }
+                        @if (draft.Saved is { } saved) { <p class="sc-muted" role="status">Message saved · @saved.State</p> }
+                    </div>
+                }
+                }
+                else if (_view == PanelView.Reports)
+                {
+                    <p class="sc-muted">What the agent achieved toward the goal each day, newest first, and anything you asked for that it held or could not do.</p>
+                    <div class="sc-row sc-goals__ledger-controls">
+                        <button type="button" class="sc-btn" @onclick="() => RefreshReportsAsync(reset: false)">Refresh</button>
+                        @if (_reportsLoading) { <span class="sc-spinner" aria-hidden="true"></span> }
+                        @if (_reports is { } reportCounts) { <span class="sc-muted">Showing @_reportEntries.Count of @reportCounts.Total</span> }
+                    </div>
+                    @if (_reportsError is not null) { <div class="sc-notice sc-notice--error" role="alert">@_reportsError</div> }
+                    @if (_reports is null)
+                    {
+                        <p class="sc-muted" role="status">Loading daily reports…</p>
+                    }
+                    else if (_reportEntries.Count == 0)
+                    {
+                        <div class="sc-empty"><div class="sc-empty__title">No daily report yet</div>
+                            <p>The agent writes one for each day it works and keeps it current through the day: what moved the goal forward, and anything you asked for that it held or could not do.</p>
+                        </div>
+                    }
+                    else
+                    {
+                        <div class="sc-goals__scroll sc-goals__scroll--ledger">
+                            <div class="sc-reports" role="list" aria-label="Daily reports">
+                                @foreach (var report in _reportEntries.OrderByDescending(entry => entry.Day).ThenByDescending(entry => entry.Sequence))
+                                {
+                                    var quiet = string.IsNullOrWhiteSpace(report.Achieved);
+                                    <article class="sc-report @(report.Held.Count > 0 ? "sc-report--held" : quiet ? "sc-report--clear sc-report--quiet" : "sc-report--clear")" role="listitem" @key="report.Id">
+                                        <header class="sc-report__head">
+                                            <h3 class="sc-report__day" title="@report.Day.ToString("D")">@SwarmCode.App.Services.AppNavigation.DayLabel(report.Day.ToDateTime(TimeOnly.MinValue))</h3>
+                                            <time class="sc-report__updated" datetime="@report.RecordedUtc.ToString("o")" title="@UpdatedTitle(report)">Updated @UpdatedLabel(report)</time>
+                                        </header>
+                                        <div class="sc-report__body">
+                                            <h4 class="sc-report__headline">@report.Headline</h4>
+                                            <div class="sc-report__achieved">
+                                                @if (quiet)
+                                                {
+                                                    <p class="sc-muted">Nothing moved the goal forward this day.</p>
+                                                }
+                                                else
+                                                {
+                                                    @foreach (var paragraph in Paragraphs(report.Achieved!))
+                                                    {
+                                                        <p>@foreach (var segment in Segments(paragraph))
+                                                        {
+                                                            if (segment.Url is { } url) { <a href="@url" target="_blank" rel="noopener noreferrer" title="@url">@segment.Text</a> }
+                                                            else { @segment.Text }
+                                                        }</p>
+                                                    }
+                                                }
+                                            </div>
+                                            @if (report.Metrics.Count > 0)
+                                            {
+                                                <div class="sc-report__metrics" aria-label="Measured movement">
+                                                    @foreach (var (name, value) in report.Metrics) { <span class="sc-chip"><span class="sc-report__metric-name">@name</span> <span class="sc-report__metric-value">@value</span></span> }
+                                                </div>
+                                            }
+                                            @if (report.Held.Count > 0)
+                                            {
+                                                <div class="sc-report__held" role="group" aria-label="Held requests">
+                                                    <div class="sc-report__held-label"><span class="sc-chip sc-chip--danger">Held</span><span>@(report.Held.Count == 1 ? "You asked for this; the agent did not do it" : "You asked for these; the agent did not do them")</span></div>
+                                                    <ul>
+                                                        @foreach (var item in report.Held)
+                                                        {
+                                                            <li><strong>@item.Request</strong><span class="sc-report__reason">@item.Reason</span>
+                                                            @if (!string.IsNullOrWhiteSpace(item.Unblock)) { <span class="sc-report__unblock"><span class="sc-report__lead">To unblock:</span> @item.Unblock</span> }</li>
+                                                        }
+                                                    </ul>
+                                                </div>
+                                            }
+                                            @if (report.NextActions.Count > 0)
+                                            {
+                                                <div class="sc-report__next">
+                                                    <span class="sc-report__label">Next</span>
+                                                    <ul>@foreach (var action in report.NextActions) { <li>@action</li> }</ul>
+                                                </div>
+                                            }
+                                            @if (report.ResultIds.Count > 0)
+                                            {
+                                                var recorded = report.ResultIds.Count + (report.ResultIds.Count == 1 ? " result recorded" : " results recorded");
+                                                <div class="sc-report__footer">
+                                                    @if (Results is not null) { <button type="button" class="sc-report__results" title="Show them under What's been done" @onclick="() => ShowAsync(PanelView.Results)">@recorded</button> }
+                                                    else { <span class="sc-muted">@recorded</span> }
+                                                </div>
+                                            }
+                                        </div>
+                                    </article>
+                                }
+                            </div>
+                        </div>
+                        @if (_reports.HasMore) { <div class="sc-row"><button type="button" class="sc-btn" @onclick="LoadMoreReportsAsync">Show earlier (@(_reports.Total - _reportEntries.Count) more)</button></div> }
+                    }
+                }
+                else if (_view == PanelView.Results)
+                {
+                    <p class="sc-muted">What this agent has delivered toward the goal, newest first: posts, messages, emails, submissions and releases, with links.</p>
+                    <div class="sc-row sc-goals__ledger-controls">
+                        <button type="button" class="sc-btn" @onclick="() => RefreshResultsAsync(reset: false)">Refresh</button>
+                        @if (_resultsLoading) { <span class="sc-spinner" aria-hidden="true"></span> }
+                        @if (_results is { } resultCounts) { <span class="sc-muted">Showing @_resultEntries.Count of @resultCounts.Total</span> }
+                    </div>
+                    @if (_resultsError is not null) { <div class="sc-notice sc-notice--error" role="alert">@_resultsError</div> }
+                    @if (_results is null)
+                    {
+                        <p class="sc-muted" role="status">Loading results…</p>
+                    }
+                    else if (_resultEntries.Count == 0)
+                    {
+                        <div class="sc-empty"><div class="sc-empty__title">Nothing delivered yet</div>
+                            <p>The agent records each post, message, email, submission or release here as it happens, with a link. Its step-by-step activity is under All activity.</p>
+                        </div>
+                    }
+                    else
+                    {
+                        <div class="sc-goals__scroll sc-goals__scroll--ledger">
+                            <ol class="sc-ledger" aria-label="What's been done">
+                                @foreach (var day in _resultEntries.GroupBy(result => result.OccurredAtUtc.ToLocalTime().Date))
+                                {
+                                    <li class="sc-ledger__day" @key="day.Key">
+                                        <h3 class="sc-ledger__date" title="@day.Key.ToString("D")">@SwarmCode.App.Services.AppNavigation.DayLabel(day.Key)</h3>
+                                        <ol class="sc-ledger__entries">
+                                            @foreach (var result in day)
+                                            {
+                                                <li class="sc-ledger__entry sc-ledger__entry--result sc-ledger__entry--@result.State.ToString().ToLowerInvariant()" @key="result.Id">
+                                                    <div class="sc-ledger__meta">
+                                                        @if (result.Kind != GoalResultKind.Other) { <span class="sc-chip">@ResultKindLabel(result.Kind)</span> }
+                                                        @if (!string.IsNullOrWhiteSpace(result.Audience)) { <span class="sc-ledger__audience" title="@result.Audience">@result.Audience</span> }
+                                                        @if (result.State != GoalResultState.Done) { <span class="sc-chip @ResultStateChip(result.State)" title="@ResultStateTitle(result.State)">@ResultStateLabel(result.State)</span> }
+                                                        <time datetime="@result.OccurredAtUtc.ToString("o")" title="@result.OccurredAtUtc.ToLocalTime().ToString("f")">@result.OccurredAtUtc.ToLocalTime().ToString("t")</time>
+                                                    </div>
+                                                    <div class="sc-ledger__title">
+                                                        @if (!string.IsNullOrWhiteSpace(result.Url)) { <a href="@result.Url" target="_blank" rel="noopener noreferrer" title="@result.Url">@result.Title</a> <span class="sc-ledger__domain">@Host(result.Url)</span> }
+                                                        else { @result.Title }
+                                                    </div>
+                                                    @if (!string.IsNullOrWhiteSpace(result.Summary)) { <p class="sc-muted sc-ledger__summary">@result.Summary</p> }
+                                                </li>
+                                            }
+                                        </ol>
+                                    </li>
+                                }
+                            </ol>
+                        </div>
+                        @if (_results.HasMore) { <div class="sc-row"><button type="button" class="sc-btn" @onclick="LoadMoreResultsAsync">Show earlier (@(_results.Total - _resultEntries.Count) more)</button></div> }
+                    }
+                }
+                else
+                {
+                    var spansAttempts = _ledgerEntries.Select(entry => entry.Attempt).Distinct().Skip(1).Any();
+                    <p class="sc-muted">Everything this agent has done, newest first, with links to what it published and the files it changed.</p>
+                    <div class="sc-row sc-goals__ledger-controls">
+                        <label class="sc-toggle"><input type="checkbox" checked="@_includeObservations" @onchange="ToggleObservationsAsync" /><span class="sc-toggle__track" aria-hidden="true"></span><span>Also show what it looked at</span></label>
+                        <button type="button" class="sc-btn" @onclick="() => RefreshLedgerAsync(reset: false)">Refresh</button>
+                        @if (_ledgerLoading) { <span class="sc-spinner" aria-hidden="true"></span> }
+                        @if (_ledger is { } counts) { <span class="sc-muted">Showing @_ledgerEntries.Count of @counts.Total</span> }
+                    </div>
+                    @if (_ledgerError is not null) { <div class="sc-notice sc-notice--error" role="alert">@_ledgerError</div> }
+                    @if (_ledger is null)
+                    {
+                        <p class="sc-muted" role="status">Loading what's been done…</p>
+                    }
+                    else if (_ledgerEntries.Count == 0)
+                    {
+                        <div class="sc-empty"><div class="sc-empty__title">Nothing done yet</div>
+                            @if (_includeObservations) { <p>This agent hasn't recorded any work yet.</p> }
+                            else { <p>What it publishes, changes, runs and replies will show up here as it works. Turn on "Also show what it looked at" to include reading and searching.</p> }
+                        </div>
+                    }
+                    else
+                    {
+                        <div class="sc-goals__scroll sc-goals__scroll--ledger">
+                            <ol class="sc-ledger" aria-label="What's been done">
+                                @foreach (var day in _ledgerEntries.GroupBy(entry => entry.AtUtc.ToLocalTime().Date))
+                                {
+                                    <li class="sc-ledger__day" @key="day.Key">
+                                        <h3 class="sc-ledger__date" title="@day.Key.ToString("D")">@SwarmCode.App.Services.AppNavigation.DayLabel(day.Key)</h3>
+                                        <ol class="sc-ledger__entries">
+                                            @foreach (var entry in day)
+                                            {
+                                                <li class="sc-ledger__entry sc-ledger__entry--@entry.Kind.ToString().ToLowerInvariant()" @key="entry.Key">
+                                                    <div class="sc-ledger__meta">
+                                                        <span class="sc-chip @KindChip(entry.Kind)">@KindLabel(entry.Kind)</span>
+                                                        @if (entry.HostVerified) { <span class="sc-chip sc-chip--ok" title="Code checked this result itself">Verified</span> }
+                                                        @if (spansAttempts) { <span class="sc-ledger__attempt" title="@("The agent was restarted; this happened during its run " + entry.Attempt)">Attempt @entry.Attempt</span> }
+                                                        <time datetime="@entry.AtUtc.ToString("o")" title="@entry.AtUtc.ToLocalTime().ToString("f")">@entry.AtUtc.ToLocalTime().ToString("t")</time>
+                                                    </div>
+                                                    <div class="sc-ledger__title">@entry.Title</div>
+                                                    @if (!string.IsNullOrWhiteSpace(entry.Summary)) { <p class="sc-muted sc-ledger__summary">@entry.Summary</p> }
+                                                    else if (entry.Kind == CodingGoalLedgerKind.Uncertain) { <p class="sc-muted sc-ledger__summary">Started in an earlier attempt and never reported back. Check before repeating it.</p> }
+                                                    @if (entry.Links.Count > 0)
+                                                    {
+                                                        <ul class="sc-ledger__links" aria-label="Links">
+                                                            @foreach (var link in entry.Links) { <li><a href="@link.Url" target="_blank" rel="noopener noreferrer" title="Opens in your browser">@link.Label</a></li> }
+                                                        </ul>
+                                                    }
+                                                    @if (entry.Files.Count > 0)
+                                                    {
+                                                        <ul class="sc-ledger__files" aria-label="Files">
+                                                            @foreach (var file in entry.Files)
+                                                            {
+                                                                <li><code title="@file">@FileLabel(file)</code>
+                                                                @if (_openableFiles.Contains(file)) { <button type="button" class="sc-btn sc-btn--sm sc-btn--ghost" aria-label="@("Open " + FileLabel(file))" @onclick="() => OpenFileAsync(file)">Open</button> }</li>
+                                                            }
+                                                        </ul>
+                                                    }
+                                                </li>
+                                            }
+                                        </ol>
+                                    </li>
+                                }
+                            </ol>
+                        </div>
+                        @if (_ledger.HasMore) { <div class="sc-row"><button type="button" class="sc-btn" @onclick="LoadMoreLedgerAsync">Show earlier (@(_ledger.Total - _ledgerEntries.Count) more)</button></div> }
+                    }
+                }
+            }
+        </div>
+    </div>
+</section>
+
+@code {
+    [Parameter, EditorRequired] public IGoalMailbox Mailbox { get; set; } = default!;
+    [Parameter] public Guid? InitialGoalId { get; set; }
+    [Parameter] public bool Poll { get; set; } = true;
+    /// <summary>Optional host ledger; without it the panel shows messages only.</summary>
+    [Parameter] public ICodingGoalLedger? Ledger { get; set; }
+    /// <summary>Optional host results ledger: what the agent delivered (posts, messages, emails, submissions).</summary>
+    [Parameter] public IGoalResultLedger? Results { get; set; }
+    /// <summary>Optional host daily reports: what the agent achieved each day and what it held or could not do.</summary>
+    [Parameter] public IGoalReportLedger? Reports { get; set; }
+    /// <summary>"reports" opens Daily reports; "done" opens What's been done (results, or the activity ledger when no results ledger is wired); "activity" opens the activity ledger.</summary>
+    [Parameter] public string? InitialView { get; set; }
+    private enum PanelView { Messages, Ledger, Results, Reports }
+    private const int ReportsPage = 30;
+    private GoalReportPage? _reports;
+    private List<GoalReport> _reportEntries = [];
+    private bool _reportsLoading, _reportsRefreshAgain;
+    private string? _reportsError;
+    private const int ResultsPage = 50;
+    private GoalResultPage? _results;
+    private List<GoalResult> _resultEntries = [];
+    private bool _resultsLoading, _resultsRefreshAgain;
+    private string? _resultsError;
+    private const int LedgerPage = 50;
+    private PanelView _view;
+    private string? _appliedInitialView;
+    private CodingGoalLedgerPage? _ledger;
+    private List<CodingGoalLedgerEntry> _ledgerEntries = [];
+    private HashSet<string> _openableFiles = new(StringComparer.Ordinal);
+    private bool _includeObservations, _ledgerLoading, _ledgerRefreshAgain;
+    private string? _ledgerError;
+    private IReadOnlyList<GoalContact> _contacts = [];
+    private IReadOnlyList<GoalInboxMessage> _messages = [];
+    private IReadOnlyList<GoalReply> _replies = [];
+    private GoalContact? _contact;
+    private Guid? _selected, _appliedInitial;
+    private bool _loading = true, _refreshing, _refreshAgain, _hasMore, _renaming, _renameBusy, _disposed;
+    private long _cursor;
+    private string? _error;
+    private string? _renameError;
+    private string _name = "", _handle = "";
+    private long _renameRevision;
+    private Guid _renameGoal;
+    private readonly CancellationTokenSource _lifetime = new();
+    private GoalInboxDraft? Draft => _selected is { } id ? GoalInboxDraft.For(Mailbox, "goal:" + id) : null;
+    protected override async Task OnInitializedAsync()
+    {
+        await RefreshAsync();
+        if (Poll) _ = PollAsync();
+    }
+    protected override async Task OnParametersSetAsync()
+    {
+        if (_appliedInitialView != InitialView)
+        {
+            _appliedInitialView = InitialView;
+            _view = string.Equals(InitialView, "reports", StringComparison.OrdinalIgnoreCase) && Reports is not null ? PanelView.Reports
+                : string.Equals(InitialView, "done", StringComparison.OrdinalIgnoreCase)
+                ? Results is not null ? PanelView.Results : Ledger is not null ? PanelView.Ledger : PanelView.Messages
+                : string.Equals(InitialView, "activity", StringComparison.OrdinalIgnoreCase) && Ledger is not null ? PanelView.Ledger
+                : PanelView.Messages;
+        }
+        if (_appliedInitial != InitialGoalId)
+        {
+            _appliedInitial = InitialGoalId;
+            if (InitialGoalId is { } id) await SelectAsync(id);
+        }
+    }
+    private async Task PollAsync()
+    {
+        try
+        {
+            using var timer = new PeriodicTimer(TimeSpan.FromSeconds(3));
+            while (await timer.WaitForNextTickAsync(_lifetime.Token))
+                await InvokeAsync(async () => { await RefreshAsync(); if (!_disposed) StateHasChanged(); });
+        }
+        catch (OperationCanceledException) { }
+    }
+    private async Task SelectAsync(Guid id)
+    {
+        _selected = id; _contact = null; _cursor = 0; _messages = []; _replies = []; _renaming = false;
+        _ledger = null; _ledgerEntries = []; _openableFiles = new(StringComparer.Ordinal); _ledgerError = null;
+        _results = null; _resultEntries = []; _resultsError = null;
+        _reports = null; _reportEntries = []; _reportsError = null;
+        await RefreshAsync();
+    }
+    private async Task RefreshAsync()
+    {
+        if (_disposed || _lifetime.IsCancellationRequested) return;
+        if (_refreshing) { _refreshAgain = true; return; }
+        _refreshing = true;
+        var selected = _selected; var cursor = _cursor;
+        try
+        {
+            var data = await Task.Run(async () =>
+            {
+                var contacts = await Mailbox.ListAsync(_lifetime.Token);
+                var messages = new List<GoalInboxMessage>(); var replies = new List<GoalReply>();
+                GoalContact? contact = contacts.SingleOrDefault(c => c.GoalId == selected);
+                var more = false; var next = cursor;
+                if (contact is not null)
+                {
+                    var thread = await Mailbox.ReadAsync(contact.GoalId, cursor, 200, _lifetime.Token);
+                    contact = thread.Contact; messages.AddRange(thread.Messages); replies.AddRange(thread.Replies);
+                    more = thread.HasMore; next = thread.NextSequence;
+                    if (more && next <= cursor) throw new InvalidOperationException("The inbox page cursor did not advance.");
+                }
+                return (contacts, contact, messages, replies, more, next);
+            });
+            if (selected != _selected) return;
+            _contacts = data.contacts; _contact = data.contact;
+            _messages = _messages.Concat(data.messages).GroupBy(m => m.Id).Select(group => group.MaxBy(m => m.Sequence)!).ToArray();
+            _replies = _replies.Concat(data.replies).GroupBy(r => r.Id).Select(group => group.MaxBy(r => r.Sequence)!).ToArray();
+            _hasMore = data.more; _cursor = data.next;
+            _error = null;
+            if (_view == PanelView.Ledger) await RefreshLedgerAsync(reset: false);
+            else if (_view == PanelView.Results) await RefreshResultsAsync(reset: false);
+            else if (_view == PanelView.Reports) await RefreshReportsAsync(reset: false);
+        }
+        catch (OperationCanceledException) when (_lifetime.IsCancellationRequested) { }
+        catch (Exception) { _error = "The agent inbox could not refresh. Your drafts are kept. Try Refresh again."; }
+        finally
+        {
+            _refreshing = false; _loading = false;
+            if (_refreshAgain) { _refreshAgain = false; await RefreshAsync(); }
+        }
+    }
+    private Task LoadMoreAsync() => RefreshAsync();
+    private async Task ShowAsync(PanelView view)
+    {
+        if (_view == view) return;
+        _view = view;
+        if (view == PanelView.Ledger) await RefreshLedgerAsync(reset: true);
+        else if (view == PanelView.Results) await RefreshResultsAsync(reset: true);
+        else if (view == PanelView.Reports) await RefreshReportsAsync(reset: true);
+    }
+    private async Task RefreshResultsAsync(bool reset)
+    {
+        if (Results is not { } ledger || _selected is not { } goal || _disposed) return;
+        if (_resultsLoading) { _resultsRefreshAgain = true; return; }
+        _resultsLoading = true;
+        var take = reset ? ResultsPage : Math.Max(ResultsPage, _resultEntries.Count);
+        try
+        {
+            var page = await Task.Run(() => ledger.ListAsync(goal, 0, take, _lifetime.Token));
+            if (goal != _selected) return;
+            _results = page; _resultEntries = page.Results.ToList(); _resultsError = null;
+        }
+        catch (OperationCanceledException) when (_lifetime.IsCancellationRequested) { }
+        catch (Exception) { _resultsError = "Results could not refresh. Try Refresh again."; }
+        finally
+        {
+            _resultsLoading = false;
+            if (_resultsRefreshAgain) { _resultsRefreshAgain = false; await RefreshResultsAsync(reset: false); }
+        }
+    }
+    private async Task LoadMoreResultsAsync()
+    {
+        if (Results is not { } ledger || _selected is not { } goal || _results is not { HasMore: true } || _resultsLoading) return;
+        _resultsLoading = true;
+        var offset = _resultEntries.Count;
+        try
+        {
+            var page = await Task.Run(() => ledger.ListAsync(goal, offset, ResultsPage, _lifetime.Token));
+            if (goal != _selected) return;
+            var known = _resultEntries.Select(result => result.Id).ToHashSet(StringComparer.Ordinal);
+            _resultEntries.AddRange(page.Results.Where(result => known.Add(result.Id)));
+            _results = page;
+        }
+        catch (OperationCanceledException) when (_lifetime.IsCancellationRequested) { }
+        catch (Exception) { _resultsError = "Earlier results could not load. Try again."; }
+        finally { _resultsLoading = false; }
+    }
+    private async Task RefreshReportsAsync(bool reset)
+    {
+        if (Reports is not { } ledger || _selected is not { } goal || _disposed) return;
+        if (_reportsLoading) { _reportsRefreshAgain = true; return; }
+        _reportsLoading = true;
+        var take = reset ? ReportsPage : Math.Max(ReportsPage, _reportEntries.Count);
+        try
+        {
+            var page = await Task.Run(() => ledger.ListAsync(goal, 0, take, _lifetime.Token));
+            if (goal != _selected) return;
+            _reports = page; _reportEntries = page.Reports.ToList(); _reportsError = null;
+        }
+        catch (OperationCanceledException) when (_lifetime.IsCancellationRequested) { }
+        catch (Exception) { _reportsError = "Daily reports could not refresh. Try Refresh again."; }
+        finally
+        {
+            _reportsLoading = false;
+            if (_reportsRefreshAgain) { _reportsRefreshAgain = false; await RefreshReportsAsync(reset: false); }
+        }
+    }
+    private async Task LoadMoreReportsAsync()
+    {
+        if (Reports is not { } ledger || _selected is not { } goal || _reports is not { HasMore: true } || _reportsLoading) return;
+        _reportsLoading = true;
+        var offset = _reportEntries.Count;
+        try
+        {
+            var page = await Task.Run(() => ledger.ListAsync(goal, offset, ReportsPage, _lifetime.Token));
+            if (goal != _selected) return;
+            var known = _reportEntries.Select(report => report.Id).ToHashSet(StringComparer.Ordinal);
+            _reportEntries.AddRange(page.Reports.Where(report => known.Add(report.Id)));
+            _reports = page;
+        }
+        catch (OperationCanceledException) when (_lifetime.IsCancellationRequested) { }
+        catch (Exception) { _reportsError = "Earlier reports could not load. Try again."; }
+        finally { _reportsLoading = false; }
+    }
+    /// <summary>Local time of the record, with its date when that differs from the report's day, and the revision after a same-day rewrite.</summary>
+    private static string UpdatedLabel(GoalReport report)
+    {
+        var recorded = report.RecordedUtc.ToLocalTime();
+        var when = DateOnly.FromDateTime(recorded.DateTime) == report.Day ? recorded.ToString("t") : SwarmCode.App.Services.AppNavigation.DateAndTime(report.RecordedUtc.UtcDateTime);
+        return report.Revision > 1 ? when + " · revision " + report.Revision : when;
+    }
+    /// <summary>Tooltip for the Updated stamp: the full local time, and which rewrite of the day's report this is.</summary>
+    private static string UpdatedTitle(GoalReport report)
+    {
+        var recorded = report.RecordedUtc.ToLocalTime().ToString("f");
+        return report.Revision > 1 ? "Revision " + report.Revision + " of this day's report, recorded " + recorded : "Recorded " + recorded;
+    }
+    /// <summary>Paragraphs of report prose: blank lines separate them; single line breaks stay inside one.</summary>
+    private static IEnumerable<string> Paragraphs(string text)
+        => System.Text.RegularExpressions.Regex.Split(text.Replace("\r\n", "\n"), "\n[ \t]*\n+").Select(paragraph => paragraph.Trim()).Where(paragraph => paragraph.Length > 0);
+    private static readonly System.Text.RegularExpressions.Regex LinkPattern = new("https?://[^\\s<>\"]+", System.Text.RegularExpressions.RegexOptions.IgnoreCase | System.Text.RegularExpressions.RegexOptions.Compiled);
+    /// <summary>
+    /// Splits prose into text and link segments. A link's Text is its host and trimmed path (about 60 characters) and its Url the full
+    /// address; plain segments carry a null Url. Only absolute http(s) addresses become links; everything else stays literal text.
+    /// </summary>
+    private static IEnumerable<(string Text, string? Url)> Segments(string text)
+    {
+        var position = 0;
+        foreach (System.Text.RegularExpressions.Match match in LinkPattern.Matches(text))
+        {
+            if (match.Index < position) continue;
+            var candidate = TrimLink(match.Value);
+            if (!Uri.TryCreate(candidate, UriKind.Absolute, out var uri) || uri.Scheme is not ("http" or "https") || string.IsNullOrEmpty(uri.Host)) continue;
+            if (match.Index > position) yield return (text[position..match.Index], null);
+            yield return (LinkLabel(candidate, uri), candidate);
+            position = match.Index + candidate.Length;
+        }
+        if (position < text.Length) yield return (text[position..], null);
+    }
+    /// <summary>Drops sentence punctuation that follows a link, and a closing bracket the link never opened.</summary>
+    private static string TrimLink(string candidate)
+    {
+        while (candidate.Length > 0)
+        {
+            var last = candidate[^1];
+            if (last is '.' or ',' or ';' or ':' or '!' or '?' or '\'' or '"') candidate = candidate[..^1];
+            else if (last is ')' && candidate.Count(c => c == ')') > candidate.Count(c => c == '(')) candidate = candidate[..^1];
+            else if (last is ']' && candidate.Count(c => c == ']') > candidate.Count(c => c == '[')) candidate = candidate[..^1];
+            else break;
+        }
+        return candidate;
+    }
+    private static string LinkLabel(string url, Uri uri)
+    {
+        var label = Host(url) + uri.AbsolutePath.TrimEnd('/');
+        return label.Length > 60 ? label[..59] + "…" : label;
+    }
+    private static string ResultKindLabel(GoalResultKind kind) => kind switch
+    {
+        GoalResultKind.Post => "Posted", GoalResultKind.Message => "Message sent", GoalResultKind.Email => "Email sent",
+        GoalResultKind.Submission => "Submitted", GoalResultKind.Commit => "Committed", GoalResultKind.Release => "Released",
+        GoalResultKind.Document => "Shared", _ => "Other",
+    };
+    private static string ResultStateLabel(GoalResultState state) => state switch
+    {
+        GoalResultState.Pending => "Pending", GoalResultState.Verified => "Confirmed", GoalResultState.Failed => "Failed",
+        GoalResultState.Withdrawn => "Withdrawn", _ => "",
+    };
+    private static string Host(string url)
+        => Uri.TryCreate(url, UriKind.Absolute, out var uri) ? uri.Host.StartsWith("www.", StringComparison.OrdinalIgnoreCase) ? uri.Host[4..] : uri.Host : "";
+    private static string ResultStateChip(GoalResultState state) => state switch
+    {
+        GoalResultState.Verified => "sc-chip--ok", GoalResultState.Failed => "sc-chip--danger", GoalResultState.Withdrawn => "sc-chip--warn", _ => "",
+    };
+    private static string ResultStateTitle(GoalResultState state) => state switch
+    {
+        GoalResultState.Pending => "Sent or submitted; waiting to be accepted", GoalResultState.Verified => "The agent went back and saw it live where it was published",
+        GoalResultState.Failed => "It did not go through", GoalResultState.Withdrawn => "The agent took it back down", _ => "",
+    };
+    private async Task ToggleObservationsAsync(ChangeEventArgs args)
+    {
+        _includeObservations = args.Value is true || string.Equals(args.Value?.ToString(), "true", StringComparison.OrdinalIgnoreCase);
+        await RefreshLedgerAsync(reset: true);
+    }
+    /// <summary>Reloads the visible range from the start; a poll keeps what "Show earlier" already loaded.</summary>
+    private async Task RefreshLedgerAsync(bool reset)
+    {
+        if (Ledger is not { } ledger || _selected is not { } goal || _disposed) return;
+        if (_ledgerLoading) { _ledgerRefreshAgain = true; return; }
+        _ledgerLoading = true;
+        var take = reset ? LedgerPage : Math.Max(LedgerPage, _ledgerEntries.Count);
+        var include = _includeObservations;
+        try
+        {
+            var page = await Task.Run(() => ledger.ReadAsync(goal, 0, take, include, _lifetime.Token));
+            var openable = await Task.Run(() => Openable(page));
+            if (goal != _selected || include != _includeObservations) return;
+            _ledger = page; _ledgerEntries = page?.Entries.ToList() ?? []; _openableFiles = openable; _ledgerError = null;
+        }
+        catch (OperationCanceledException) when (_lifetime.IsCancellationRequested) { }
+        catch (Exception) { _ledgerError = "What's been done could not refresh. Try Refresh again."; }
+        finally
+        {
+            _ledgerLoading = false;
+            // A filter change that arrived while a poll was loading must not be lost.
+            if (_ledgerRefreshAgain) { _ledgerRefreshAgain = false; await RefreshLedgerAsync(reset: true); }
+        }
+    }
+    private async Task LoadMoreLedgerAsync()
+    {
+        if (Ledger is not { } ledger || _selected is not { } goal || _ledger is not { HasMore: true } || _ledgerLoading) return;
+        _ledgerLoading = true;
+        var include = _includeObservations; var offset = _ledgerEntries.Count;
+        try
+        {
+            var page = await Task.Run(() => ledger.ReadAsync(goal, offset, LedgerPage, include, _lifetime.Token));
+            var openable = await Task.Run(() => Openable(page));
+            if (goal != _selected || include != _includeObservations || page is null) return;
+            var known = _ledgerEntries.Select(entry => entry.Key).ToHashSet(StringComparer.Ordinal);
+            _ledgerEntries.AddRange(page.Entries.Where(entry => known.Add(entry.Key)));
+            _openableFiles.UnionWith(openable);
+            _ledger = page;
+        }
+        catch (OperationCanceledException) when (_lifetime.IsCancellationRequested) { }
+        catch (Exception) { _ledgerError = "Earlier entries could not load. Try again."; }
+        finally { _ledgerLoading = false; }
+    }
+    private static HashSet<string> Openable(CodingGoalLedgerPage? page)
+    {
+        var files = new HashSet<string>(StringComparer.Ordinal);
+        if (page is null) return files;
+        foreach (var file in page.Entries.SelectMany(entry => entry.Files))
+            if (System.IO.Path.IsPathRooted(file) && System.IO.File.Exists(file)) files.Add(file);
+        return files;
+    }
+    private string FileLabel(string file)
+    {
+        var root = _ledger?.RepositoryRoot?.TrimEnd('/', '\\');
+        if (!string.IsNullOrEmpty(root) && file.Length > root.Length && file.StartsWith(root, StringComparison.Ordinal)
+            && file[root.Length] is '/' or '\\')
+            return file[(root.Length + 1)..];
+        return file;
+    }
+    private async Task OpenFileAsync(string file)
+    {
+        try { if (!await SwarmCode.App.Services.DesktopPlatform.OpenFileAsync(file)) _ledgerError = "No app could open " + FileLabel(file) + "."; }
+        catch (Exception ex) { _ledgerError = ex.Message; }
+    }
+    private static string KindLabel(CodingGoalLedgerKind kind) => kind switch
+    {
+        CodingGoalLedgerKind.Published => "Published", CodingGoalLedgerKind.Changed => "Changed files", CodingGoalLedgerKind.Ran => "Ran",
+        CodingGoalLedgerKind.Reported => "Replied", CodingGoalLedgerKind.Observed => "Looked at", CodingGoalLedgerKind.Failed => "Failed",
+        _ => "Uncertain",
+    };
+    /// <summary>Kind chips stay neutral (the row's left tint carries the kind); only outcomes are colored.</summary>
+    private static string KindChip(CodingGoalLedgerKind kind) => kind switch
+    {
+        CodingGoalLedgerKind.Failed => "sc-chip--danger",
+        CodingGoalLedgerKind.Uncertain => "sc-chip--warn",
+        _ => "",
+    };
+    private async Task SendAsync()
+    {
+        if (_selected is not { } id || _contact is not { IsClosed: false } || Draft is not { } draft) return;
+        await draft.SubmitAsync(Mailbox, id); await RefreshAsync();
+    }
+    private async Task RetryAsync()
+    {
+        if (Draft is not { } draft) return;
+        await draft.RetryAsync(Mailbox); await RefreshAsync();
+    }
+    private void BeginRename()
+    {
+        if (_contact is not { } contact) return;
+        _renameGoal = contact.GoalId; _renameRevision = contact.Revision; _name = contact.Name; _handle = contact.Handle; _renaming = true; _renameError = null;
+    }
+    private async Task RenameAsync()
+    {
+        if (_renameBusy) return;
+        _renameBusy = true;
+        try
+        {
+            await Task.Run(() => Mailbox.RenameAsync(_renameGoal, _name, _handle, _renameRevision, _lifetime.Token));
+            _renaming = false; await RefreshAsync();
+        }
+        catch (Exception) { _renameError = "The goal name was not saved. It may have changed elsewhere, or the handle is invalid or already used. Your edits are kept; cancel and reopen to use the latest version."; }
+        finally { _renameBusy = false; }
+    }
+    private sealed record Item(string Id, long Sequence, bool Reply, string Label, string Text, GoalDeliveryState State, DateTimeOffset At, string? Detail, IReadOnlyList<GoalMessageAttachment> Attachments);
+    private IEnumerable<Item> Items() => _messages.Select(m => new Item(m.Id, m.Sequence, false, m.Kind.ToString(), m.Text, m.State, m.CreatedUtc, m.AttachmentIssue ?? m.DeliveryDetail, m.Attachments ?? []))
+        .Concat(_replies.Select(r => new Item(r.Id, r.Sequence, true, r.Origin == GoalReplyOrigin.HostStatus ? "Code status" : "Goal reply", r.Text, r.Disposition, r.CreatedUtc,
+            r.Origin == GoalReplyOrigin.HostStatus ? "Automatic status notice · unread when recorded" : "In reply to message " + r.MessageId, [])))
+        .OrderBy(item => item.At).ThenBy(item => item.Sequence);
+    public void Dispose() { _disposed = true; _lifetime.Cancel(); _lifetime.Dispose(); }
+}

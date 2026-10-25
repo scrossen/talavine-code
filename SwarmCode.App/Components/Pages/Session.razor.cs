@@ -7,6 +7,7 @@ using SwarmCode.Hosting;
 using SwarmCore.Chat.Components;
 using SwarmCore.Coding.Routing;
 using SwarmCore.Coding.Extensions;
+using SwarmCore.Coding.Goals;
 
 namespace SwarmCode.App.Components.Pages;
 
@@ -31,6 +32,7 @@ public partial class Session
         new("fork", "Start an independent conversation with this chat's saved history"),
         new("clear", "Clear the visible transcript"),
         new("plan", "Toggle plan first: investigate read-only and propose a plan"),
+        new(CodingGoalCommand.Name, CodingGoalCommand.Description),
         new("compare", "Send one prompt to two or more models you pick; they review each other and a judge settles disagreements: /compare [prompt]"),
         new("review", "Same as /compare"),
         new("diff", "Open the Changes panel"),
@@ -50,7 +52,7 @@ public partial class Session
         new("settings", "Open settings"),
         new("history", "Search every session across your repositories: /history <words>"),
         new("summary", "Summarize the work done in your sessions: /summary <period, e.g. past week>"),
-        new("secret", "Save a key or password to the vault: /secret <name> <value>"),
+        new("secret", "Save a key or password to the vault: /secret [--site <host>] <name> <value>"),
         new("secrets", "List stored secret names (never values)"),
         new("forget", "Delete a stored secret: /forget <name>"),
         new("import-passwords", "Import a browser or password-manager CSV export"),
@@ -175,7 +177,7 @@ public partial class Session
             _notes.Clear();
             _localRuntimeStatus = null;
             _expanded.Clear();
-            _draft = "";
+            _draft = GoalDraft.SourceText;
             _openError = null;
             _changeCount = 0;
 
@@ -346,6 +348,7 @@ public partial class Session
     private Task OnDraftChanged(string value)
     {
         _draft = value;
+        if (GoalDraft.Pending is not null) GoalDraft.SourceText = value;
         return Task.CompletedTask;
     }
 
@@ -386,10 +389,18 @@ public partial class Session
 
         if (runner is null) return;
         if (text.Length == 0) text = "Inspect the attached files.";
+        if (!text.StartsWith('/') && await TrySendGoalMessageAsync(text, attachments)) return;
         _draft = "";
 
         if (text.StartsWith('/') && ExpandCustomCommand(text) is { Length: > 0 } expanded) text = expanded;
-        else if (attachments.Length == 0 && text.StartsWith('/') && await TryRunCommandAsync(text)) return;
+        // Vault commands always run here, attachments or not: sent as prose, "/secret name value" would carry the
+        // typed credential to the lane, the journal and the transcript.
+        else if (text.StartsWith('/') && (attachments.Length == 0 || CodingGoalCommand.IsInvocation(text) || IsVaultCommand(text))
+            && await TryRunCommandAsync(text, attachments))
+        {
+            if (attachments.Length > 0 && IsVaultCommand(text)) AddNote("info", "The attached files were not sent with the command; they stay attached for your next message.");
+            return;
+        }
 
         var lane = string.IsNullOrEmpty(_lane) ? null : _lane;
         if (text.StartsWith('@'))
@@ -515,7 +526,15 @@ public partial class Session
 
     // ---- slash commands ----------------------------------------------------
 
-    private async Task<bool> TryRunCommandAsync(string text)
+    private static readonly HashSet<string> VaultCommands = new(StringComparer.OrdinalIgnoreCase) { "secret", "secrets", "forget", "import-passwords" };
+
+    private static bool IsVaultCommand(string text)
+    {
+        var space = text.IndexOfAny([' ', '\t', '\n']);
+        return VaultCommands.Contains(space < 0 ? text[1..] : text[1..space]);
+    }
+
+    private async Task<bool> TryRunCommandAsync(string text, IReadOnlyList<SwarmCore.Coding.Files.CodingAttachment> attachments)
     {
         var space = text.IndexOfAny([' ', '\t', '\n']);
         var command = (space < 0 ? text[1..] : text[1..space]).ToLowerInvariant();
@@ -579,6 +598,9 @@ public partial class Session
                 AddNote("info", _runner?.PlanMode == true
                     ? "Plan first is on: the next turns investigate read-only and end with a plan to approve."
                     : "Plan first is off.");
+                break;
+            case CodingGoalCommand.Name:
+                await RunGoalCommandAsync(arg, attachments);
                 break;
             case "compare":
             case "review":
@@ -652,6 +674,61 @@ public partial class Session
     }
 
     private void AddNote(string kind, string text, string? details = null) => _notes.Add(new Note(kind, text, details));
+
+    private async Task RunGoalCommandAsync(string arguments, IReadOnlyList<SwarmCore.Coding.Files.CodingAttachment> attachments)
+    {
+        var command = CodingGoalCommand.Parse(arguments);
+        if (command.Kind == CodingGoalCommandKind.Invalid)
+        {
+            AddNote("warn", command.Error!, CodingGoalCommand.Usage);
+            _draft = "/goal " + arguments;
+            return;
+        }
+        if (_runner is not { } runner) return;
+        if (attachments.Count > 0 && command.Kind != CodingGoalCommandKind.Start)
+        {
+            AddNote("warn", "Remove the attachments before sending a goal control command.");
+            _draft = "/goal " + arguments;
+            return;
+        }
+        if (runner.PlanMode && command.Kind is CodingGoalCommandKind.Start or CodingGoalCommandKind.Resume)
+        {
+            AddNote("warn", "Turn off Plan first with /plan before starting or resuming a goal.");
+            _draft = "/goal " + arguments;
+            return;
+        }
+        var prefs = App.Preferences.Current;
+        var lane = string.IsNullOrEmpty(_lane) ? null : _lane;
+        var model = _model.Length > 0 ? _model : null;
+        switch (command.Kind)
+        {
+            case CodingGoalCommandKind.Start:
+                if (!await runner.StartGoalAsync(command.Objective!, lane, prefs.Mode, prefs.HandOffOnRefusal, model, attachments))
+                {
+                    _draft = "/goal " + arguments;
+                    AddNote("warn", "The goal was not started. Your draft was kept.", runner.GoalStatusText);
+                    return;
+                }
+                _notes.Clear();
+                _attachments = [];
+                return;
+            case CodingGoalCommandKind.Resume:
+                if (!runner.ResumeGoal(lane, prefs.Mode, prefs.HandOffOnRefusal, model))
+                {
+                    AddNote("warn", "The goal could not resume.", runner.GoalStatusText);
+                    return;
+                }
+                return;
+            case CodingGoalCommandKind.Pause:
+                await runner.PauseGoalAsync();
+                break;
+            case CodingGoalCommandKind.Cancel:
+                await runner.CancelGoalAsync();
+                break;
+        }
+        AddNote("info", runner.GoalStatusText, command.Kind == CodingGoalCommandKind.Status
+            ? string.Join("\n\n", new[] { runner.Goal?.LastFailure, CodingGoalCommand.Usage }.Where(value => !string.IsNullOrWhiteSpace(value))) : runner.Goal?.LastFailure);
+    }
 
     /// <summary>/cost: this session's reported usage, then the tracked API usage for today and overall (read off the renderer).</summary>
     private async Task ShowCostAsync()
@@ -802,8 +879,13 @@ public partial class Session
 
     private async Task RenameAsync(string title)
     {
-        try { await App.Sessions.RenameAsync(SessionId, title); } catch { }
-        _session = await App.Sessions.GetAsync(SessionId) ?? _session;
+        try { await Task.Run(() => App.Sessions.RenameAsync(SessionId, title)); }
+        catch (Exception ex)
+        {
+            DesktopHost.LogToFile($"Could not rename the session: {ex.Message}");
+            AddNote("warn", "The session could not be renamed; it keeps its previous title. Try again.");
+        }
+        try { _session = await App.Sessions.GetAsync(SessionId) ?? _session; } catch { /* keep the shown title */ }
     }
 
     private async Task NewSessionAsync()
@@ -903,6 +985,12 @@ public partial class Session
             await Task.Run(() => App.Sessions.SetTemporaryAsync(SessionId, temporary));
             _session = await App.Sessions.GetAsync(SessionId) ?? _session;
         }
-        catch (Exception ex) { DesktopHost.LogToFile($"Could not change the temporary flag: {ex.Message}"); }
+        catch (Exception ex)
+        {
+            DesktopHost.LogToFile($"Could not change the temporary flag: {ex.Message}");
+            AddNote("warn", temporary
+                ? "This session could not be made temporary; memory is still on for it. Try again."
+                : "Memory could not be turned back on for this session; it is still temporary. Try again.");
+        }
     }
 }

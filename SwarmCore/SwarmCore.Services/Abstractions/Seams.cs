@@ -43,6 +43,15 @@ public interface ICredentialStore
     /// </summary>
     Task<IReadOnlyList<string>> GetBoundHostsAsync(string name, CancellationToken ct = default)
         => Task.FromResult<IReadOnlyList<string>>([]);
+
+    /// <summary>
+    /// Trust on first use: binds a credential that has no binding yet to <paramref name="host"/>, the first
+    /// destination it is sent to, so credentials saved before host binding existed keep working. Later sends to
+    /// any other host are refused as usual. True when the credential is now bound to that host. Default: false
+    /// (the store cannot record a binding, so an unbound credential stays refused).
+    /// </summary>
+    Task<bool> TryBindHostOnFirstUseAsync(string name, string host, CancellationToken ct = default)
+        => Task.FromResult(false);
 }
 
 /// <param name="AllowRedirects">False when the caller enforces a host allowlist: an auto-followed

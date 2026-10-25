@@ -20,13 +20,14 @@ namespace SwarmCore.Secrets;
 /// A product that renamed its scope keeps the old one as a read-only fallback
 /// (<c>legacyReadScopes</c>): new keys are always wrapped under the current scope,
 /// while keys wrapped under a shipped earlier scope still unwrap. Every attempt keeps
-/// CurrentUser protection, so foreign-user, foreign-device or corrupt blobs still fail.
+/// configured protection scope (CurrentUser by default), so foreign-user, foreign-device or corrupt blobs still fail.
 /// </summary>
 [SupportedOSPlatform("windows")]
 public sealed class WindowsDpapiKeyStore : IOsKeyStore
 {
     private readonly byte[] _entropy;
     private readonly byte[][] _legacyEntropies;
+    private readonly DataProtectionScope _scope;
     private readonly bool _available;
 
     /// <param name="logger">Probe diagnostics.</param>
@@ -44,7 +45,22 @@ public sealed class WindowsDpapiKeyStore : IOsKeyStore
     /// <param name="applicationScope">Current scope; every new wrap uses it (see the other constructor).</param>
     /// <param name="legacyReadScopes">Earlier shipped scopes tried, in order, only when unwrapping under the current scope fails.</param>
     public WindowsDpapiKeyStore(ILogger logger, string applicationScope, IEnumerable<string>? legacyReadScopes)
+        : this(logger, applicationScope, legacyReadScopes, DataProtectionScope.CurrentUser)
     {
+    }
+
+    /// <param name="logger">Probe diagnostics.</param>
+    /// <param name="applicationScope">Current scope; every new wrap uses it.</param>
+    /// <param name="legacyReadScopes">Earlier shipped scopes tried only when unwrapping under the current scope fails.</param>
+    /// <param name="protectionScope">
+    /// <see cref="DataProtectionScope.CurrentUser"/> for interactive hosts. A host that must
+    /// also read its keys from a password-less logon (an S4U boot-time task cannot open the
+    /// user's DPAPI master key) uses <see cref="DataProtectionScope.LocalMachine"/>: keys
+    /// stay bound to this computer and the store's file permissions still gate who reads them.
+    /// </param>
+    public WindowsDpapiKeyStore(ILogger logger, string applicationScope, IEnumerable<string>? legacyReadScopes, DataProtectionScope protectionScope)
+    {
+        _scope = protectionScope;
         if (string.IsNullOrWhiteSpace(applicationScope))
             throw new ArgumentException("An application scope is required.", nameof(applicationScope));
         _entropy = EntropyFor(applicationScope);
@@ -65,19 +81,19 @@ public sealed class WindowsDpapiKeyStore : IOsKeyStore
     public string ProviderId => "dpapi";
 
     public byte[] WrapKey(byte[] plaintextKey)
-        => ProtectedData.Protect(plaintextKey, _entropy, DataProtectionScope.CurrentUser);
+        => ProtectedData.Protect(plaintextKey, _entropy, _scope);
 
     public byte[] UnwrapKey(byte[] wrappedKey)
     {
         try
         {
-            return ProtectedData.Unprotect(wrappedKey, _entropy, DataProtectionScope.CurrentUser);
+            return ProtectedData.Unprotect(wrappedKey, _entropy, _scope);
         }
         catch (CryptographicException) when (_legacyEntropies.Length > 0)
         {
             for (var i = 0; i < _legacyEntropies.Length; i++)
             {
-                try { return ProtectedData.Unprotect(wrappedKey, _legacyEntropies[i], DataProtectionScope.CurrentUser); }
+                try { return ProtectedData.Unprotect(wrappedKey, _legacyEntropies[i], _scope); }
                 catch (CryptographicException) when (i < _legacyEntropies.Length - 1) { }
             }
             throw; // unreachable: the last legacy attempt rethrows its own failure
@@ -90,8 +106,8 @@ public sealed class WindowsDpapiKeyStore : IOsKeyStore
         {
             var probe = new byte[16];
             RandomNumberGenerator.Fill(probe);
-            var wrapped = ProtectedData.Protect(probe, _entropy, DataProtectionScope.CurrentUser);
-            var roundTripped = ProtectedData.Unprotect(wrapped, _entropy, DataProtectionScope.CurrentUser);
+            var wrapped = ProtectedData.Protect(probe, _entropy, _scope);
+            var roundTripped = ProtectedData.Unprotect(wrapped, _entropy, _scope);
             var ok = CryptographicOperations.FixedTimeEquals(probe, roundTripped);
             if (!ok)
                 logger.LogWarning("DPAPI round-trip probe mismatch; secret protection will fall back to the legacy path.");

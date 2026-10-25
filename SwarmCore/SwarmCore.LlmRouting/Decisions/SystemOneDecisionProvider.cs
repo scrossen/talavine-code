@@ -1,12 +1,14 @@
 using System.Net.Http.Headers;
 using System.Net.Http.Json;
 using System.Text.Json;
+using SwarmCore.Abstractions.LlmRouting;
 using SwarmCore.Abstractions.LlmRouting.Decisions;
 
 namespace SwarmCore.LlmRouting.Decisions;
 
 /// <summary>System One wire protocol, used by hosted services and local Ollama. Never logs state or provider bodies.</summary>
-public class SystemOneDecisionProvider(HttpClient http, IDecisionCredentials? credentials = null) : IChoiceDecisionProvider
+public class SystemOneDecisionProvider(HttpClient http, IDecisionCredentials? credentials = null,
+    ILocalLlmRuntimeManager? localRuntime = null) : IChoiceDecisionProvider
 {
     public virtual string Name => "system-one";
     protected virtual bool LocalOnly => false;
@@ -22,12 +24,16 @@ public class SystemOneDecisionProvider(HttpClient http, IDecisionCredentials? cr
             || request.Options.Count is < 2 or > 26 || request.Options.Any(o => string.IsNullOrWhiteSpace(o.Id) || string.IsNullOrWhiteSpace(o.Description))
             || request.Options.Select(o => o.Id).Distinct(StringComparer.Ordinal).Count() != request.Options.Count)
             throw new InvalidOperationException("A decision requires a model, state, and 2 to 26 uniquely named options with descriptions.");
-        using var timeout = CancellationTokenSource.CreateLinkedTokenSource(ct);
-        timeout.CancelAfter(TimeSpan.FromSeconds(Math.Clamp(connection.TimeoutSeconds, 1, 120)));
+        using var ownedBudget = DecisionExecutionBudget.Current is null
+            ? DecisionExecutionBudget.Begin(TimeSpan.FromSeconds(Math.Clamp(connection.TimeoutSeconds, 1, 120)), ct) : null;
+        var budget = DecisionExecutionBudget.Current!;
+        using var operation = budget.EnterOperation();
+        using var work = CancellationTokenSource.CreateLinkedTokenSource(ct, budget.Token);
         using var message = new HttpRequestMessage(HttpMethod.Post, endpoint);
         if (!string.IsNullOrWhiteSpace(connection.CredentialName))
         {
-            var key = credentials is null ? null : await credentials.ResolveAsync(connection.CredentialName, timeout.Token).ConfigureAwait(false);
+            var key = credentials is null ? null : await credentials.ResolveAsync(connection.CredentialName, work.Token)
+                .WaitAsync(work.Token).ConfigureAwait(false);
             if (string.IsNullOrWhiteSpace(key)) throw new InvalidOperationException("The decision connection credential is unavailable.");
             message.Headers.Authorization = new AuthenticationHeaderValue("Bearer", key);
         }
@@ -37,6 +43,14 @@ public class SystemOneDecisionProvider(HttpClient http, IDecisionCredentials? cr
         if (body.Length > 65536) throw new InvalidOperationException("Decision input exceeds the connection's 64 KiB request limit.");
         message.Content = new ByteArrayContent(body);
         message.Content.Headers.ContentType = new MediaTypeHeaderValue("application/json");
+        using var runtimeLease = LocalOnly && localRuntime is not null
+            ? await budget.AcquireLocalAsync(localRuntime, new("Ollama", connection.Model,
+                new(LlmInteractivity.Background, LlmPrivacyClass.LocalOnly))
+                { SchedulingClass = LocalLlmSchedulingClass.RoutingDecision }, work.Token).ConfigureAwait(false) : null;
+        // Waiting for the local machine is governed by the admission budget, never this inference timer.
+        using var timeout = CancellationTokenSource.CreateLinkedTokenSource(work.Token);
+        timeout.CancelAfter(TimeSpan.FromSeconds(Math.Clamp(connection.TimeoutSeconds, 1, 120)));
+        timeout.Token.ThrowIfCancellationRequested();
         using var response = await http.SendAsync(message, HttpCompletionOption.ResponseHeadersRead, timeout.Token).ConfigureAwait(false);
         if (!response.IsSuccessStatusCode) throw new HttpRequestException($"Decision service returned HTTP {(int)response.StatusCode}.");
         await response.Content.LoadIntoBufferAsync(65536, timeout.Token).ConfigureAwait(false);
@@ -51,7 +65,8 @@ public class SystemOneDecisionProvider(HttpClient http, IDecisionCredentials? cr
     }
 }
 
-public sealed class OllamaDecisionProvider(HttpClient http) : SystemOneDecisionProvider(http)
+public sealed class OllamaDecisionProvider(HttpClient http, ILocalLlmRuntimeManager? localRuntime = null)
+    : SystemOneDecisionProvider(http, localRuntime: localRuntime)
 {
     public override string Name => "ollama";
     protected override bool LocalOnly => true;

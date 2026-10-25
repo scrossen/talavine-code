@@ -5,6 +5,24 @@ namespace SwarmCore.Coding.Routing;
 /// <summary>One user request to the coding harness.</summary>
 public sealed record CodingTurnRequest
 {
+    /// <summary>Host execution fence: retain the selected route without asserting that the user pinned it.</summary>
+    [System.Text.Json.Serialization.JsonIgnore]
+    public bool RequireSelectedRoute { get; init; }
+    /// <summary>Host-authenticated restriction retained across attempts. Only narrows tool access; runtime only.</summary>
+    [System.Text.Json.Serialization.JsonIgnore]
+    public bool HostToolsWithheld { get; init; }
+    /// <summary>Host-only inspection of supplied context; never permission to perform its described actions.</summary>
+    [System.Text.Json.Serialization.JsonIgnore]
+    public bool ReadOnlyInspection { get; init; }
+    public Guid? GoalId { get; init; }
+    [System.Text.Json.Serialization.JsonIgnore]
+    public string? GoalMessageLeaseToken { get; init; }
+    [System.Text.Json.Serialization.JsonIgnore]
+    public SwarmCore.Agent.Communication.IGoalMailbox? GoalMailbox { get; init; }
+    /// <summary>Trusted host provenance of an exact execution route; automatic selection must not become a user pin.</summary>
+    public SwarmCore.Abstractions.LlmRouting.LlmOverrideProvenance? RouteOverrideProvenance { get; init; }
+    /// <summary>Routing interactivity does not change permission, communication, or unattended-turn authority.</summary>
+    public SwarmCore.Abstractions.LlmRouting.LlmInteractivity? RoutingInteractivity { get; init; }
     public required string ConversationId { get; init; }
     public required string UserMessage { get; init; }
     public SwarmCore.Abstractions.Collaboration.TurnAssistanceOptions Assistance { get; init; } = new();

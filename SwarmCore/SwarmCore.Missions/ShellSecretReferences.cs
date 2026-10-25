@@ -80,8 +80,10 @@ public sealed partial class ShellSecretReferences(ICredentialStore? store)
     /// <summary>
     /// Fails closed unless every credential resolved so far is bound to <paramref name="host"/> (or to a parent domain
     /// of it). A general-purpose request tool calls this before sending, in every kind of turn, so a credential can
-    /// never be pointed at a host its owner did not bind it to. Shell commands are not checked here: their
-    /// destination is not known before launch.
+    /// never be pointed at a host its owner did not bind it to. A credential with no binding at all is bound to this
+    /// host on its first use when its store can record that (<see cref="ICredentialStore.TryBindHostOnFirstUseAsync"/>),
+    /// so secrets saved before binding existed keep working. Shell commands are not checked here: their destination
+    /// is not known before launch.
     /// </summary>
     public async Task ThrowIfNotBoundToHostAsync(string host, CancellationToken ct)
     {
@@ -91,6 +93,14 @@ public sealed partial class ShellSecretReferences(ICredentialStore? store)
         {
             var bound = await store.GetBoundHostsAsync(stored, ct);
             if (SwarmCore.Services.Credentials.CredentialHostBinding.Allows(bound, host)) continue;
+            // A credential saved before host binding existed takes its first destination (trust on first use).
+            if (bound.Count == 0)
+            {
+                if (await store.TryBindHostOnFirstUseAsync(stored, host, ct)) continue;
+                // A concurrent first use may have bound it just now; judge the stored binding.
+                bound = await store.GetBoundHostsAsync(stored, ct);
+                if (SwarmCore.Services.Credentials.CredentialHostBinding.Allows(bound, host)) continue;
+            }
             refused.Add(bound.Count == 0
                 ? $"{stored} is not bound to any host"
                 : $"{stored} is bound to {string.Join(", ", bound.Select(b => SwarmCore.Services.Credentials.CredentialHostBinding.HostOf(b) ?? b))}");

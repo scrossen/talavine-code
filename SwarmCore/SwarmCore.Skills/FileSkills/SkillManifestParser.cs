@@ -652,16 +652,53 @@ public static partial class SkillManifestParser
         return count;
     }
 
-    private static string UnquoteYaml(string value)
+    /// <summary>
+    /// A quoted YAML scalar's value: <c>''</c> in a single-quoted one is a quote, and a
+    /// double-quoted one decodes <c>\\</c>, <c>\"</c>, <c>\n</c>, <c>\t</c>, <c>\r</c> and
+    /// <c>\/</c>. Any other backslash sequence is kept as written, so a path such as
+    /// <c>"C:\Tools"</c> in an existing manifest reads as it always did.
+    /// </summary>
+    internal static string UnquoteYaml(string value)
     {
-        if (value.Length >= 2)
+        if (value.Length < 2)
+            return value;
+        if (value[0] == '\'' && value[^1] == '\'')
+            return value[1..^1].Replace("''", "'", StringComparison.Ordinal);
+        if (value[0] != '"' || value[^1] != '"')
+            return value;
+
+        var inner = value[1..^1];
+        if (!inner.Contains('\\'))
+            return inner;
+        var sb = new System.Text.StringBuilder(inner.Length);
+        for (var i = 0; i < inner.Length; i++)
         {
-            if ((value[0] == '"' && value[^1] == '"') ||
-                (value[0] == '\'' && value[^1] == '\''))
+            var ch = inner[i];
+            if (ch != '\\' || i + 1 >= inner.Length)
             {
-                return value[1..^1];
+                sb.Append(ch);
+                continue;
+            }
+            var decoded = inner[i + 1] switch
+            {
+                '\\' => '\\',
+                '"' => '"',
+                '/' => '/',
+                'n' => '\n',
+                't' => '\t',
+                'r' => '\r',
+                _ => (char?)null,
+            };
+            if (decoded is { } known)
+            {
+                sb.Append(known);
+                i++;
+            }
+            else
+            {
+                sb.Append(ch);
             }
         }
-        return value;
+        return sb.ToString();
     }
 }

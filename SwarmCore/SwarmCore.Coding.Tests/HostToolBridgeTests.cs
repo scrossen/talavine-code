@@ -20,7 +20,7 @@ public class HostToolBridgeTests
     public sealed record FailOutput(bool Success, string Error);
 
     /// <summary>A host with a fixed tool list, scripted admission and guard, and a record of ambient calls.</summary>
-    private sealed class FakeHost(IReadOnlyList<ToolDescriptor> tools) : IHostToolBridgeHost
+    private sealed class FakeHost(IReadOnlyList<ToolDescriptor> tools) : IHostToolBridgeHost, IHostToolBridgeAttemptHost
     {
         public Dictionary<string, HostToolProfile> Running { get; } = new(StringComparer.Ordinal);
         public Func<ToolInvocationRequest, ToolGuardDecision> Guard { get; set; } = _ => ToolGuardDecision.Allow();
@@ -28,6 +28,10 @@ public class HostToolBridgeTests
         public int Ended;
         public static readonly AsyncLocal<string?> Owner = new();
 
+        public IDisposable? BeginAttempt(string conversationId, string? capability)
+            => capability == "test-attempt" && Running.ContainsKey(conversationId) ? new End(() => { }) : null;
+        public bool IsAttemptCurrent(string conversationId) => Running.ContainsKey(conversationId);
+        public CancellationToken AttemptCancellation(string conversationId) => default;
         public HostToolProfile? Admit(string conversationId) => Running.TryGetValue(conversationId, out var p) ? p : null;
         public Task<IReadOnlyList<ToolDescriptor>> ToolsAsync(string conversationId, CancellationToken ct) => Task.FromResult(tools);
         public Task<ToolGuardDecision> InspectAsync(ToolInvocationRequest request, CancellationToken ct) => Task.FromResult(Guard(request));
@@ -63,11 +67,11 @@ public class HostToolBridgeTests
     public void Catalog_offers_host_tools_without_cli_equivalents_or_external_servers_under_mcp_names()
     {
         var full = HostToolBridgeCatalog.Select(Tools(), HostToolProfile.Full);
-        Assert.Equal(["agents_echo", "personal_memory_list", "plan_update"], full.Keys.Order());
+        Assert.Equal(["agents_echo", "fs_read_file", "personal_memory_list", "plan_update"], full.Keys.Order());
 
         // A plan turn gets only tools that change nothing, plus the task list.
         var plan = HostToolBridgeCatalog.Select(Tools(), HostToolProfile.Plan);
-        Assert.Equal(["personal_memory_list", "plan_update"], plan.Keys.Order());
+        Assert.Equal(["fs_read_file", "personal_memory_list", "plan_update"], plan.Keys.Order());
         Assert.True(HostToolBridgeCatalog.Manifest("plan_update", plan["plan_update"]).ReadOnly);
         Assert.False(HostToolBridgeCatalog.Manifest("agents_echo", full["agents_echo"]).ReadOnly);
         Assert.Equal("object", (string?)HostToolBridgeCatalog.Manifest("agents_echo", full["agents_echo"]).InputSchema["type"]);
@@ -85,7 +89,7 @@ public class HostToolBridgeTests
         Assert.Empty(host.Began);
 
         host.Running["root"] = HostToolProfile.Full;
-        Assert.Equal(3, (await broker.ListAsync("root", default))!.Count);
+        Assert.Equal(4, (await broker.ListAsync("root", default))!.Count);
         var result = await broker.CallAsync("root", "agents_echo", Args(new { text = "hi" }), default);
         Assert.False(result.IsError);
         var echoed = JsonSerializer.Deserialize<EchoOutput>(result.Text, new JsonSerializerOptions(JsonSerializerDefaults.Web))!;
@@ -158,7 +162,7 @@ public class HostToolBridgeTests
         Assert.Contains("refused to activate", (await broker.CallAsync("root", "computer_stated", Args(new { }), default)).Text);
 
         // Any other failure reads exactly as it would on an API lane (ToolUseAgentEngine): type and message.
-        var proxy = new HostToolBridgeProxy(broker.GetEndpoint(), "root");
+        var proxy = new HostToolBridgeProxy(broker.GetEndpoint(), "root", "test-attempt");
         var generic = await proxy.CallAsync("apps_leaky", Args(new { }), default);
         Assert.True(generic.IsError);
         Assert.Equal("InvalidOperationException: no such app", generic.Text);
@@ -174,7 +178,7 @@ public class HostToolBridgeTests
         var host = new FakeHost(provider.GetRequiredService<CodingComputerTools>().Descriptors);
         host.Running["root"] = HostToolProfile.Full;
         await using var broker = new HostToolBridgeBroker(host);
-        var proxy = new HostToolBridgeProxy(broker.GetEndpoint(), "root");
+        var proxy = new HostToolBridgeProxy(broker.GetEndpoint(), "root", "test-attempt");
 
         var result = await proxy.CallAsync("browser_tabs", Args(new { }), default);
 
@@ -223,7 +227,7 @@ public class HostToolBridgeTests
         var host = new FakeHost(Tools(slow));
         host.Running["root"] = HostToolProfile.Full;
         await using var broker = new HostToolBridgeBroker(host);
-        var proxy = new HostToolBridgeProxy(broker.GetEndpoint(), "root");
+        var proxy = new HostToolBridgeProxy(broker.GetEndpoint(), "root", "test-attempt");
 
         var listed = await proxy.ListAsync(default);
         Assert.Contains(listed, t => t.Name == "shell_slow");
@@ -259,7 +263,7 @@ public class HostToolBridgeTests
         var host = new FakeHost(Tools(slow));
         host.Running["root"] = HostToolProfile.Full;
         var broker = new HostToolBridgeBroker(host);
-        var call = new HostToolBridgeProxy(broker.GetEndpoint(), "root").CallAsync("shell_slow", Args(new { }), default);
+        var call = new HostToolBridgeProxy(broker.GetEndpoint(), "root", "test-attempt").CallAsync("shell_slow", Args(new { }), default);
         await started.Task.WaitAsync(TimeSpan.FromSeconds(10));
         await broker.DisposeAsync().AsTask().WaitAsync(TimeSpan.FromSeconds(10));
         await cancelled.Task.WaitAsync(TimeSpan.FromSeconds(5));

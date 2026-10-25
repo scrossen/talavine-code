@@ -1,0 +1,16 @@
+@page "/goals"
+@page "/goals/{GoalId:guid}"
+@inject AppState App
+
+<PageTitle>Agent inbox - Talavine Code</PageTitle>
+<div class="sc-page sc-goals-page">
+    <header class="sc-topbar"><div><h1 class="sc-topbar__title">Agent inbox</h1>
+    <p class="sc-topbar__copy">Message a named agent and follow its replies without interrupting work.</p></div></header>
+    @if (App.GoalMailboxConnectionError is { } connectionError) { <div class="sc-notice sc-notice--error" role="alert">@connectionError</div> }
+    <GoalInboxPanel Mailbox="App.GoalMailbox" Ledger="App.GoalLedger" Results="App.GoalResults" Reports="App.GoalReports" InitialGoalId="GoalId" InitialView="@View" />
+</div>
+@code {
+    [Parameter] public Guid? GoalId { get; set; }
+    /// <summary><c>?view=reports</c> opens Daily reports; <c>?view=done</c> opens What's been done.</summary>
+    [SupplyParameterFromQuery(Name = "view")] public string? View { get; set; }
+}

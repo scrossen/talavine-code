@@ -67,21 +67,28 @@ public static class RateLimitRetryAfterParser
     /// against the same wall.
     /// </summary>
     public static TimeSpan ParseOrDefault(string? message, TimeSpan? fallback = null)
+        => ParseOrDefault(message, DateTimeOffset.UtcNow, fallback);
+
+    /// <summary>Clock-explicit form: date and wall-clock hints are measured from <paramref name="utcNow"/>.</summary>
+    internal static TimeSpan ParseOrDefault(string? message, DateTimeOffset utcNow, TimeSpan? fallback = null)
     {
-        return TryParse(message) ?? fallback ?? DefaultFallback;
+        return TryParse(message, utcNow) ?? fallback ?? DefaultFallback;
     }
 
     /// <summary>
     /// Strict parse — returns null when no signal is found, so callers can
     /// distinguish "explicit hint" from "we guessed."
     /// </summary>
-    public static TimeSpan? TryParse(string? message)
+    public static TimeSpan? TryParse(string? message) => TryParse(message, DateTimeOffset.UtcNow);
+
+    /// <summary>Clock-explicit form: date and wall-clock hints are measured from <paramref name="utcNow"/>.</summary>
+    internal static TimeSpan? TryParse(string? message, DateTimeOffset utcNow)
     {
         if (string.IsNullOrWhiteSpace(message)) return null;
 
         try
         {
-            return TryParseCore(message);
+            return TryParseCore(message, utcNow.ToUniversalTime());
         }
         catch (Exception ex) when (ex is OverflowException or ArgumentException or RegexMatchTimeoutException)
         {
@@ -98,7 +105,7 @@ public static class RateLimitRetryAfterParser
         @"retry-after\s*[:=]\s*(?<date>(?:Mon|Tue|Wed|Thu|Fri|Sat|Sun),\s*\d{1,2}\s+[A-Za-z]{3}\s+\d{4}\s+\d{1,2}:\d{2}:\d{2}(?:\s*(?:GMT|UTC))?)",
         RegexOptions.IgnoreCase | RegexOptions.Compiled);
 
-    private static TimeSpan? TryParseCore(string message)
+    private static TimeSpan? TryParseCore(string message, DateTimeOffset utcNow)
     {
         // HTTP Retry-After date form. A date in the past is not a usable hint
         // (the reset has already happened), so it yields null and the caller's
@@ -111,7 +118,7 @@ public static class RateLimitRetryAfterParser
                 DateTimeStyles.AssumeUniversal | DateTimeStyles.AdjustToUniversal,
                 out var resetAt))
         {
-            var untilReset = resetAt - DateTimeOffset.UtcNow;
+            var untilReset = resetAt - utcNow;
             return untilReset > TimeSpan.Zero ? Clamp(untilReset) : null;
         }
 
@@ -202,20 +209,20 @@ public static class RateLimitRetryAfterParser
             if (meridiem.StartsWith("a") && hour == 12) hour = 0;
 
             var zone = resetMatch.Groups[4].Success ? resetMatch.Groups[4].Value.ToUpperInvariant() : null;
-            var zoneOffset = ResolveZoneOffset(zone);
+            var zoneOffset = ResolveZoneOffset(zone, utcNow);
             if (resetMatch.Groups["iana"].Success)
             {
                 try
                 {
                     zoneOffset = TimeZoneInfo.FindSystemTimeZoneById(resetMatch.Groups["iana"].Value)
-                        .GetUtcOffset(DateTimeOffset.UtcNow);
+                        .GetUtcOffset(utcNow);
                 }
                 catch (Exception ex) when (ex is TimeZoneNotFoundException or InvalidTimeZoneException)
                 {
                     return null;
                 }
             }
-            var now = zoneOffset is { } offset ? DateTimeOffset.UtcNow.ToOffset(offset) : DateTimeOffset.Now;
+            var now = zoneOffset is { } offset ? utcNow.ToOffset(offset) : utcNow.ToLocalTime();
             var target = new DateTimeOffset(
                 now.Year, now.Month, now.Day,
                 Math.Clamp(hour, 0, 23), Math.Clamp(minute, 0, 59), 0,
@@ -232,7 +239,7 @@ public static class RateLimitRetryAfterParser
     /// are exact; the US zones use their standard offsets adjusted for the
     /// current daylight-saving state where the platform can tell us.
     /// </summary>
-    private static TimeSpan? ResolveZoneOffset(string? zone)
+    private static TimeSpan? ResolveZoneOffset(string? zone, DateTimeOffset utcNow)
     {
         if (string.IsNullOrEmpty(zone)) return null;
         if (zone is "UTC" or "GMT") return TimeSpan.Zero;
@@ -249,7 +256,7 @@ public static class RateLimitRetryAfterParser
 
         try
         {
-            return TimeZoneInfo.FindSystemTimeZoneById(ianaId).GetUtcOffset(DateTimeOffset.UtcNow);
+            return TimeZoneInfo.FindSystemTimeZoneById(ianaId).GetUtcOffset(utcNow);
         }
         catch (Exception ex) when (ex is TimeZoneNotFoundException or InvalidTimeZoneException)
         {

@@ -1,56 +1,27 @@
 using System.Text.Json;
-using System.Text.Json.Nodes;
 using System.Collections.Concurrent;
 using System.Runtime.CompilerServices;
 using SwarmCore.Abstractions.LlmRouting;
-using SwarmCore.Secrets;
 
 namespace SwarmCore.LlmRouting.Services;
 
 /// <summary>Host-neutral JSON settings persistence with fresh reads, checked provider revisions,
 /// and atomic replacement serialized across independent hosts/processes.</summary>
-/// <remarks>
-/// A host that supplies an <see cref="ISecretProtector"/> gets provider API keys
-/// protected at rest: the file holds only <c>ProtectedApiKey</c> (the protector's
-/// envelope) and never a plaintext <c>ApiKey</c>. Plaintext keys written by earlier
-/// builds are rewritten protected the first time the file is read, and an envelope
-/// that cannot be decrypted on this machine reads as "no key" but is never
-/// overwritten or dropped by an unrelated save. Without a protector the file keeps
-/// its legacy plaintext shape.
-/// </remarks>
 public class JsonFileLlmSettingsProvider : ILlmSettingsProvider
 {
     private static readonly JsonSerializerOptions JsonOptions = new() { WriteIndented = true };
-    private const string ApiKeyProperty = nameof(LlmProviderSettings.ApiKey);
-    internal const string ProtectedApiKeyProperty = "ProtectedApiKey";
 
     private readonly string _path;
-    private readonly ISecretProtector? _apiKeyProtector;
     private static readonly ConcurrentDictionary<string, object> Gates = new(
         OperatingSystem.IsWindows() ? StringComparer.OrdinalIgnoreCase : StringComparer.Ordinal);
     private static readonly ConditionalWeakTable<LlmProviderSettings, ProviderBaseline> Baselines = new();
     private sealed record ProviderBaseline(string Path, string Name, DateTime? Revision);
     private readonly object _lock;
     private SettingsFile _data;
-    // At-rest key envelopes from the last load, by provider name. Plaintext is null when
-    // the envelope cannot be read here; such an envelope is carried forward unchanged.
-    private Dictionary<string, StoredApiKey> _storedKeys = new(StringComparer.OrdinalIgnoreCase);
-    private sealed record StoredApiKey(string Protected, string? Plaintext);
 
     public JsonFileLlmSettingsProvider(string path)
-        : this(path, apiKeyProtector: null)
-    {
-    }
-
-    /// <param name="path">The settings file.</param>
-    /// <param name="apiKeyProtector">
-    /// Protects provider API keys at rest (for example the host's OS-keystore
-    /// <see cref="EnvelopeSecretProtector"/>); null keeps the legacy plaintext file.
-    /// </param>
-    public JsonFileLlmSettingsProvider(string path, ISecretProtector? apiKeyProtector)
     {
         _path = Path.GetFullPath(path);
-        _apiKeyProtector = apiKeyProtector;
         _lock = Gates.GetOrAdd(_path, _ => new object());
         _data = new SettingsFile();
     }
@@ -61,66 +32,11 @@ public class JsonFileLlmSettingsProvider : ILlmSettingsProvider
         public List<LlmFunctionPreference> Preferences { get; set; } = new();
     }
 
-    /// <summary>Loads the file, unwrapping protected keys; returns true when a plaintext
-    /// (or plaintext-marked) key should be rewritten under the protector.</summary>
-    private bool LoadLocked()
-    {
-        _storedKeys = new Dictionary<string, StoredApiKey>(StringComparer.OrdinalIgnoreCase);
-        if (!File.Exists(_path))
-        {
-            _data = new SettingsFile();
-            return false;
-        }
-
-        var root = JsonNode.Parse(File.ReadAllText(_path)) as JsonObject
-                   ?? throw new JsonException("The settings file has no settings object.");
-        var upgrade = false;
-        if (root[nameof(SettingsFile.Providers)] is JsonArray providers)
-        {
-            foreach (var provider in providers.OfType<JsonObject>())
-            {
-                var name = ReadString(provider, nameof(LlmProviderSettings.ProviderName));
-                var stored = ReadString(provider, ProtectedApiKeyProperty);
-                provider.Remove(ProtectedApiKeyProperty);
-                var plaintext = ReadString(provider, ApiKeyProperty);
-                if (!string.IsNullOrEmpty(plaintext))
-                {
-                    // A plaintext key (an earlier build, or a host without a protector).
-                    upgrade |= _apiKeyProtector is not null;
-                    continue;
-                }
-
-                if (string.IsNullOrEmpty(stored) || name is null) continue;
-                var unwrapped = _apiKeyProtector?.Unprotect(stored);
-                if (string.IsNullOrEmpty(unwrapped))
-                {
-                    // Fail closed: the key is unusable here, but its envelope is kept.
-                    _storedKeys[name] = new StoredApiKey(stored, null);
-                    continue;
-                }
-
-                provider[ApiKeyProperty] = unwrapped;
-                _storedKeys[name] = new StoredApiKey(stored, unwrapped);
-                if (!stored.StartsWith(EnvelopeSecretProtector.EnvelopeMarker, StringComparison.Ordinal))
-                {
-                    // Written while no OS keystore was available: upgrade once one is.
-                    var reprotected = _apiKeyProtector!.Protect(unwrapped);
-                    if (reprotected.StartsWith(EnvelopeSecretProtector.EnvelopeMarker, StringComparison.Ordinal))
-                    {
-                        _storedKeys[name] = new StoredApiKey(reprotected, unwrapped);
-                        upgrade = true;
-                    }
-                }
-            }
-        }
-
-        _data = root.Deserialize<SettingsFile>()
-                ?? throw new JsonException("The settings file has no settings object.");
-        return upgrade;
-    }
-
-    private static string? ReadString(JsonObject node, string property)
-        => node[property] is JsonValue value && value.TryGetValue<string>(out var text) ? text : null;
+    private static SettingsFile Load(string path)
+        => File.Exists(path)
+            ? JsonSerializer.Deserialize<SettingsFile>(File.ReadAllText(path))
+              ?? throw new JsonException("The settings file has no settings object.")
+            : new SettingsFile();
 
     private IDisposable Acquire()
     {
@@ -135,14 +51,7 @@ public class JsonFileLlmSettingsProvider : ILlmSettingsProvider
                 try { lease = new FileStream(_path + ".lock", FileMode.OpenOrCreate, FileAccess.ReadWrite, FileShare.None); }
                 catch (IOException) when (Environment.TickCount64 < deadline) { Thread.Sleep(10); }
             }
-            if (LoadLocked())
-            {
-                try { SaveLocked(); }
-                catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or InvalidOperationException)
-                {
-                    // The rewrite is retried on the next access; the loaded settings stay usable.
-                }
-            }
+            _data = Load(_path);
             return new Lease(_lock, lease);
         }
         catch
@@ -160,62 +69,17 @@ public class JsonFileLlmSettingsProvider : ILlmSettingsProvider
 
     private void SaveLocked()
     {
-        // Protect before touching the disk so a protector failure writes nothing.
-        var document = _apiKeyProtector is null && _storedKeys.Count == 0 ? null : ToProtectedDocument();
         var temporary = _path + "." + Guid.NewGuid().ToString("N") + ".tmp";
         try
         {
             using (var stream = new FileStream(temporary, FileMode.CreateNew, FileAccess.Write, FileShare.None))
             {
-                if (document is null) JsonSerializer.Serialize(stream, _data, JsonOptions);
-                else JsonSerializer.Serialize(stream, document, JsonOptions);
+                JsonSerializer.Serialize(stream, _data, JsonOptions);
                 stream.Flush(flushToDisk: true);
             }
             File.Move(temporary, _path, overwrite: true);
         }
         finally { if (File.Exists(temporary)) File.Delete(temporary); }
-    }
-
-    /// <summary>
-    /// The on-disk form when keys are protected: no plaintext <c>ApiKey</c> while a
-    /// protector is configured, an unchanged key keeps its existing envelope, and an
-    /// envelope this host cannot read is carried forward unless its provider now holds
-    /// a new key (an empty key on save never destroys an unreadable credential).
-    /// </summary>
-    private JsonObject ToProtectedDocument()
-    {
-        var root = JsonSerializer.SerializeToNode(_data)!.AsObject();
-        if (root[nameof(SettingsFile.Providers)] is not JsonArray providers) return root;
-        var written = new Dictionary<string, StoredApiKey>(StringComparer.OrdinalIgnoreCase);
-        foreach (var provider in providers.OfType<JsonObject>())
-        {
-            var name = ReadString(provider, nameof(LlmProviderSettings.ProviderName));
-            if (name is null) continue;
-            _storedKeys.TryGetValue(name, out var stored);
-            var plaintext = ReadString(provider, ApiKeyProperty);
-            if (!string.IsNullOrEmpty(plaintext))
-            {
-                if (_apiKeyProtector is null) continue;
-                var envelope = stored is { Plaintext: not null }
-                               && string.Equals(stored.Plaintext, plaintext, StringComparison.Ordinal)
-                               && stored.Protected.StartsWith(EnvelopeSecretProtector.EnvelopeMarker, StringComparison.Ordinal)
-                    ? stored.Protected
-                    : _apiKeyProtector.Protect(plaintext);
-                if (string.IsNullOrEmpty(envelope))
-                    throw new InvalidOperationException("The provider API key could not be protected for storage.");
-                provider[ApiKeyProperty] = null;
-                provider[ProtectedApiKeyProperty] = envelope;
-                written[name] = new StoredApiKey(envelope, plaintext);
-            }
-            else if (stored is { Plaintext: null })
-            {
-                provider[ProtectedApiKeyProperty] = stored.Protected;
-                written[name] = stored;
-            }
-        }
-
-        _storedKeys = written;
-        return root;
     }
 
     private LlmProviderSettings TrackProvider(LlmProviderSettings value)
@@ -477,14 +341,9 @@ public class JsonFileLlmSettingsProvider : ILlmSettingsProvider
                 string.Equals(x.ProviderName, provider, StringComparison.OrdinalIgnoreCase));
             if (p != null && !string.IsNullOrWhiteSpace(p.DefaultModel)) return p.DefaultModel!;
         }
-        return provider.ToLowerInvariant() switch
-        {
-            "openai" => "gpt-5-mini",
-            "claude" => "claude-haiku-4-5-20251001",
-            "gemini" => "gemini-2.5-flash",
-            "ollama" => "llama3.1:8b",
-            _ => "gpt-5-mini",
-        };
+        // Same deep fallback as the shipped host: the reviewed provider-pack
+        // tier, never another provider's model id for an unknown provider.
+        return ModelDefaults.ForProvider(provider) ?? "unknown-model";
     }
 
     public Task<bool> DeleteFunctionPreferenceAsync(string functionType)

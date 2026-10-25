@@ -8,12 +8,21 @@
   </PropertyGroup>
   <ItemGroup>
     <RazorComponent Include="../SwarmCode.App/Components/Chat/LocalRuntimeQueue.razor" Link="Components/LocalRuntimeQueue.razor" />
+    <RazorComponent Include="../SwarmCode.App/Components/Chat/SessionWelcome.razor" Link="Components/SessionWelcome.razor" />
+    <RazorComponent Include="../SwarmCode.App/Components/Chat/SessionTranscript.razor" Link="Components/SessionTranscript.razor" />
+    <RazorComponent Include="../SwarmCode.App/Components/Chat/SessionActivity.razor" Link="Components/SessionActivity.razor" />
+    <RazorComponent Include="../SwarmCode.App/Components/Chat/SessionHeader.razor" Link="Components/SessionHeader.razor" />
+    <Compile Include="../SwarmCode.App/Components/Chat/SessionActivityView.cs" Link="Components/SessionActivityView.cs" />
+    <Compile Include="../SwarmCode.App/Components/Layout/SidebarSessionTree.cs" Link="Components/SidebarSessionTree.cs" />
+    <RazorComponent Include="../SwarmCode.App/Components/Chat/GoalInboxPanel.razor" Link="Components/GoalInboxPanel.razor" />
+    <Compile Include="../SwarmCode.App/Components/Chat/GoalInboxDraft.cs" Link="Components/GoalInboxDraft.cs" />
+    <Compile Include="../SwarmCode.App/Components/Chat/GoalInboxSendScope.cs" Link="Components/GoalInboxSendScope.cs" />
     <FrameworkReference Include="Microsoft.AspNetCore.App" />
     <ProjectReference Include="../SwarmCode.Hosting/SwarmCode.Hosting.csproj" />
     <ProjectReference Include="../SwarmCore/SwarmCore.Chat.Components/SwarmCore.Chat.Components.csproj" />
     <PackageReference Include="bunit" Version="2.5.3" />
     <!-- bUnit permits 1.x; pin the patched parser for GHSA-pgww-w46g-26qg. -->
-    <PackageReference Include="AngleSharp" Version="1.5.0" />
+    <PackageReference Include="AngleSharp" Version="1.7.1" />
     <PackageReference Include="Microsoft.NET.Test.Sdk" Version="17.13.0" />
     <PackageReference Include="xunit" Version="2.9.3" />
     <PackageReference Include="xunit.runner.visualstudio" Version="3.0.2" />
@@ -26,6 +35,8 @@
     <Compile Include="../SwarmCore/Testing/OwnedTestScratch.cs" Link="TestSupport/OwnedTestScratch.cs" />
     <Compile Include="../TestSupport/TestTempRoot.cs" Link="TestSupport/TestTempRoot.cs" />
     <RazorComponent Include="../SwarmCode.App/Components/Shared/ReasoningPicker.razor" Link="Components/ReasoningPicker.razor" />
+    <RazorComponent Include="../SwarmCode.App/Components/Shared/GitHubStarInvitation.razor" Link="Components/GitHubStarInvitation.razor" />
+    <RazorComponent Include="../SwarmCode.App/Components/Shared/GitHubStarInvitationHost.razor" Link="Components/GitHubStarInvitationHost.razor" />
     <RazorComponent Include="../SwarmCode.App/Components/Shared/ProviderPicker.razor" Link="Components/ProviderPicker.razor" />
     <RazorComponent Include="../SwarmCode.App/Components/Pages/AiOverview.razor" Link="Components/AiOverview.razor" />
     <RazorComponent Include="../SwarmCode.App/Components/Pages/MyApps.razor" Link="Components/MyApps.razor" />

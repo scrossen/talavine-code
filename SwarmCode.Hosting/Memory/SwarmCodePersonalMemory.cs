@@ -235,11 +235,13 @@ public sealed class SwarmCodeMemoryMaintenance(
     PersonalMemoryOptions options,
     SwarmCodeDreamingOptions dreaming,
     ILogger<SwarmCodeMemoryMaintenance>? logger = null,
-    TimeProvider? time = null) : IHostedService, IAsyncDisposable
+    TimeProvider? time = null,
+    IEnumerable<IIdleMaintenanceStep>? steps = null) : IHostedService, IAsyncDisposable
 {
     private static readonly SemaphoreSlim ProcessWide = new(1, 1);
     private readonly ILogger _logger = (ILogger?)logger ?? NullLogger.Instance;
     private readonly TimeProvider _time = time ?? TimeProvider.System;
+    private readonly IReadOnlyList<IIdleMaintenanceStep> _steps = steps?.ToArray() ?? [];
     private CancellationTokenSource? _stop;
     private Task? _loop;
     private DateTimeOffset _started;
@@ -281,6 +283,40 @@ public sealed class SwarmCodeMemoryMaintenance(
 
     private bool IsTimeSweepDue(DateTimeOffset now) => now - _lastTimeSweep >= dreaming.TimeSweepInterval;
 
+    /// <summary>
+    /// True while no turn is running and the workspace has been quiet for the idle delay (after the startup delay). The
+    /// idle steps (goal receipt compaction and the like) run on this alone; they do not depend on memory being enabled.
+    /// </summary>
+    public bool IsIdle(DateTimeOffset now)
+        => turns.ActiveCount == 0 && now - _started >= dreaming.StartupDelay && now - turns.LastActivity >= dreaming.IdleDelay;
+
+    /// <summary>The idle steps that are due now, in registration order.</summary>
+    public IReadOnlyList<IIdleMaintenanceStep> DueSteps(DateTimeOffset now)
+        => IsIdle(now) ? _steps.Where(step => step.IsDue(now)).ToArray() : [];
+
+    /// <summary>Runs each due idle step once; a failing step is logged and does not stop the others.</summary>
+    public async Task<int> RunDueStepsAsync(CancellationToken ct)
+    {
+        var ran = 0;
+        foreach (var step in DueSteps(_time.GetUtcNow()))
+        {
+            ct.ThrowIfCancellationRequested();
+            // Re-check between steps: a turn may have started while the previous step ran.
+            if (turns.ActiveCount > 0) break;
+            try
+            {
+                await step.RunAsync(ct).ConfigureAwait(false);
+                ran++;
+            }
+            catch (OperationCanceledException) when (ct.IsCancellationRequested) { throw; }
+            catch (Exception ex)
+            {
+                _logger.LogWarning("Idle maintenance step {Step} failed ({Error}); it will be tried again when due.", step.Name, ex.GetType().Name);
+            }
+        }
+        return ran;
+    }
+
     /// <summary>One consolidation pass (no-op when another pass is running in this process).</summary>
     public async Task<IReadOnlyList<MemoryConsolidationReport>> RunOnceAsync(CancellationToken ct)
     {
@@ -314,6 +350,7 @@ public sealed class SwarmCodeMemoryMaintenance(
             {
                 await Task.Delay(dreaming.PollInterval, _time, ct).ConfigureAwait(false);
                 if (IsDue(_time.GetUtcNow())) await RunOnceAsync(ct).ConfigureAwait(false);
+                await RunDueStepsAsync(ct).ConfigureAwait(false);
             }
             catch (OperationCanceledException) when (ct.IsCancellationRequested) { return; }
             catch (Exception ex)
@@ -420,7 +457,10 @@ public static class SwarmCodePersonalMemoryRegistration
             configuration?.GetSection(ConfigurationSection + ":Dreaming").Bind(dreaming);
             return dreaming;
         });
-        services.TryAddSingleton<SwarmCodeMemoryMaintenance>();
+        services.TryAddSingleton(sp => new SwarmCodeMemoryMaintenance(
+            sp.GetRequiredService<IServiceScopeFactory>(), sp.GetRequiredService<SwarmCodeMemoryTurns>(), sp.GetRequiredService<PersonalMemoryOptions>(),
+            sp.GetRequiredService<SwarmCodeDreamingOptions>(), sp.GetService<ILogger<SwarmCodeMemoryMaintenance>>(), sp.GetService<TimeProvider>(),
+            sp.GetServices<IIdleMaintenanceStep>()));
         services.AddHostedService(sp => sp.GetRequiredService<SwarmCodeMemoryMaintenance>());
         services.AddHostedService<SwarmCodeMemoryToolRegistration>();
 

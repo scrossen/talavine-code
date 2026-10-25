@@ -22,7 +22,7 @@ internal sealed class CodingInspectionProgress(int limit)
         }
         // A successful command such as `ls` is not proof of a file change and
         // must not reset inspection history. Unknown tools are not classified.
-        if (result.ToolName is not ("code.glob" or "code.grep" or "fs.list_files" or "fs.read_file"
+        if (result.ToolName is not ("code.glob" or "code.grep" or "fs.list_files" or "fs.read_file" or Tools.ReadJsonTool.ToolId
             or "git.status" or "git.diff" or "Read" or "Glob" or "Grep")) return false;
         var key = result.ToolName + ":" + Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(result.Result)));
         repeated = seen.Add(key) ? 0 : repeated + 1;

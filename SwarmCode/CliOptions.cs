@@ -17,6 +17,8 @@ public sealed class CliOptions
     public bool ShowThinking { get; private set; }
     public bool McpServer { get; private set; }
     public string? McpHttpServer { get; private set; }
+    /// <summary>Private credential-free callback for a native Claude attention checkpoint.</summary>
+    public string? GoalMessageHook { get; private set; }
     /// <summary>Conversation id to open under measurement (diagnostics; prints a JSON report).</summary>
     public string? BenchOpen { get; private set; }
     /// <summary>Profile id whose working-context checkpoint the benchmark restores.</summary>
@@ -95,6 +97,10 @@ public sealed class CliOptions
                     if (!TakeValue(args, ref i, arg, o, out var httpServer)) return o;
                     o.McpHttpServer = httpServer;
                     break;
+                case "--goal-message-hook":
+                    if (!TakeValue(args, ref i, arg, o, out var goalHook)) return o;
+                    o.GoalMessageHook = goalHook;
+                    break;
                 case "--bench-open":
                     if (!TakeValue(args, ref i, arg, o, out var bench)) return o;
                     o.BenchOpen = bench;
@@ -155,7 +161,7 @@ public sealed class CliOptions
     private static bool IsKnownFlag(string value) => value is
         "-h" or "--help" or "--version" or "--repo" or "--lane" or "-p" or "--prompt" or "--json"
         or "--yes" or "-y" or "--no-handoff" or "--temporary" or "--list-lanes" or "--list-models" or "--show-thinking" or "--mcp-server"
-        or "--bench-open" or "--profile" or "--mcp-http-server" or "-c" or "--continue" or "-r" or "--resume" or "--permission-mode"
+        or "--bench-open" or "--profile" or "--mcp-http-server" or "--goal-message-hook" or "-c" or "--continue" or "-r" or "--resume" or "--permission-mode"
         or "--model" or "--plan" or "--append-system-prompt" or "--max-turns";
 
     private static bool TakeValue(string[] args, ref int i, string name, CliOptions o, out string value)
@@ -204,9 +210,10 @@ public sealed class CliOptions
           -h, --help           show this help
 
         Interactive commands: /help /greeting /lanes /lane <name> /model [id|auto] /mode [auto|ask-risky|ask] /models
-          /sessions /resume [n|id] /new /clear /plan /approve /compact /cost /status /agents /mcp /hooks /permissions
+          /sessions /resume [n|id] /new /clear /plan /approve /goal <objective|status|pause|resume|cancel>
+          /compact /cost /status /agents /mcp /hooks /permissions
           /undo /review <text> /export [path] /init /keys /key <provider|brave> [value]
-          /secret <name> [value] /secrets /forget <name> /import-passwords <csv> /quit
+          /secret [--site <host>] <name> [value] /secrets /forget <name> /import-passwords <csv> /quit
         Prefix a message with @<lane> to run that one message on a specific lane; @path/to/file attaches a file.
         Environment: SWARMCODE_HOME (data dir), NO_COLOR, SWARMCODE_<Section>__<Key> overrides.
         """;

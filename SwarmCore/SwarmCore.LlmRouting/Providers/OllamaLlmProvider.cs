@@ -57,6 +57,8 @@ public partial class OllamaLlmProvider : ILlmProvider, IOllamaModelWarmup, ILlmP
     private readonly ILlmRouteContextWindowObservations? _contextWindows;
 
     private const int MaxRetryAttempts = 2; // 3 total attempts
+    private const string RuntimeUnreachableMessage =
+        "Ollama is not running or no configured Ollama node is reachable";
     private const int MaxEmbeddingPromptChars = 3000;
     private const int FallbackEmbeddingPromptChars = 1500;
     private const int ArtifactDigestCacheCapacity = 128;
@@ -122,7 +124,7 @@ public partial class OllamaLlmProvider : ILlmProvider, IOllamaModelWarmup, ILlmP
         if (string.IsNullOrWhiteSpace(model)) return false;
 
         var normalizedModel = model.Trim();
-        if (_visionCapabilityCache.TryGetValue(normalizedModel, out var advertisedVision))
+        if (_visionCapabilityCache.TryGetValue(NormalizeOllamaModelName(normalizedModel), out var advertisedVision))
         {
             // Ollama's /api/show capabilities describe the installed artifact and
             // are authoritative. This handles new multimodal families without an
@@ -141,6 +143,14 @@ public partial class OllamaLlmProvider : ILlmProvider, IOllamaModelWarmup, ILlmP
         => GetAvailableModelsAsync(CancellationToken.None);
 
     public async Task<List<string>> GetAvailableModelsAsync(CancellationToken ct)
+        => await TryGetAvailableModelsAsync(ct).ConfigureAwait(false) ?? new List<string>();
+
+    /// <summary>
+    /// Lists the models installed across all nodes. Returns null when no node
+    /// answered and no earlier listing is cached, so callers can tell an
+    /// unreachable runtime apart from a running one that lacks a model.
+    /// </summary>
+    private async Task<List<string>?> TryGetAvailableModelsAsync(CancellationToken ct)
     {
         // Return cached models if still valid
         if (_cachedModels != null && DateTime.UtcNow - _lastModelCheck < _modelCacheDuration)
@@ -151,6 +161,7 @@ public partial class OllamaLlmProvider : ILlmProvider, IOllamaModelWarmup, ILlmP
         try
         {
             var merged = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            var anyNodeAnswered = false;
 
             foreach (var node in GetOrderedNodesForRouting(includeCoolingDownNodes: true))
             {
@@ -165,6 +176,7 @@ public partial class OllamaLlmProvider : ILlmProvider, IOllamaModelWarmup, ILlmP
                     continue;
                 }
 
+                anyNodeAnswered = true;
                 node.MarkSuccess();
                 foreach (var m in models)
                 {
@@ -180,6 +192,12 @@ public partial class OllamaLlmProvider : ILlmProvider, IOllamaModelWarmup, ILlmP
                 {
                     _logger.LogWarning("Failed to refresh Ollama model list from all nodes; keeping cached list of {Count} model(s)", _cachedModels.Count);
                     return _cachedModels;
+                }
+
+                if (!anyNodeAnswered)
+                {
+                    _logger.LogDebug("No configured Ollama node answered the model list probe");
+                    return null;
                 }
 
                 // An empty local-model list is the normal state on a fresh install where
@@ -211,7 +229,7 @@ public partial class OllamaLlmProvider : ILlmProvider, IOllamaModelWarmup, ILlmP
         catch (Exception ex)
         {
             _logger.LogError(ex, "Error getting Ollama models");
-            return _cachedModels ?? new List<string>();
+            return _cachedModels;
         }
     }
 
@@ -513,7 +531,7 @@ public partial class OllamaLlmProvider : ILlmProvider, IOllamaModelWarmup, ILlmP
                     // ── Non-streaming fallback (StreamInactivityTimeoutSeconds == 0) ──
                     var content = new StringContent(json, Encoding.UTF8, "application/json");
 
-                    var response = await client.PostAsync(
+                    using var response = await client.PostAsync(
                             $"{node.Endpoint}/api/chat",
                             content,
                             requestCancellation)
@@ -722,18 +740,36 @@ public partial class OllamaLlmProvider : ILlmProvider, IOllamaModelWarmup, ILlmP
         var stopwatch = Stopwatch.StartNew();
         var autoPullAttempted = false;
 
-        // Find a vision-capable model
         var effectiveModel = model;
         if (string.IsNullOrEmpty(effectiveModel) || !SupportsVision(effectiveModel))
         {
-            var models = await GetAvailableModelsAsync(requestCancellation).ConfigureAwait(false);
-            effectiveModel = models.FirstOrDefault(m =>
-                SupportsVision(m)
-                && LocalModelArtifactCompatibility.IsCompatibleWithCurrentProcess(m));
+            // Discovery refreshes the authoritative /api/show capabilities. An
+            // unreachable runtime is not a missing or text-only model: telling the
+            // user to pull one, or that theirs cannot read images, sends them the
+            // wrong way (same rule as the embedding path).
+            var models = await TryGetAvailableModelsAsync(requestCancellation).ConfigureAwait(false);
+            requestCancellation.ThrowIfCancellationRequested();
+            if (models is null)
+            {
+                return CreateErrorResponse(model, $"{RuntimeUnreachableMessage}. Start Ollama and try again.", 0);
+            }
 
             if (string.IsNullOrEmpty(effectiveModel))
             {
-                return CreateErrorResponse(model, "No vision-capable model available. Pull llama3.2-vision with: ollama pull llama3.2-vision", 0);
+                effectiveModel = models.FirstOrDefault(m =>
+                    SupportsVision(m)
+                    && LocalModelArtifactCompatibility.IsCompatibleWithCurrentProcess(m));
+
+                if (string.IsNullOrEmpty(effectiveModel))
+                {
+                    return CreateErrorResponse(model, "No vision-capable model available. Pull llama3.2-vision with: ollama pull llama3.2-vision", 0);
+                }
+            }
+            else if (!SupportsVision(effectiveModel))
+            {
+                // A named route is exact: answering with another installed
+                // model would break route identity and the artifact check.
+                return CreateErrorResponse(effectiveModel, $"Ollama model '{effectiveModel}' does not support images.", 0);
             }
         }
 
@@ -987,7 +1023,7 @@ public partial class OllamaLlmProvider : ILlmProvider, IOllamaModelWarmup, ILlmP
                 {
                     var content = new StringContent(json, Encoding.UTF8, "application/json");
 
-                    var response = await client.PostAsync(
+                    using var response = await client.PostAsync(
                             $"{node.Endpoint}/api/chat",
                             content,
                             requestCancellation)
@@ -1142,6 +1178,21 @@ public partial class OllamaLlmProvider : ILlmProvider, IOllamaModelWarmup, ILlmP
                 attempt++;
                 retryDelayNeeded = true;
             }
+            catch (Exception ex) when (IsTransientError(ex))
+            {
+                node.MarkFailure(ex.Message);
+                // Out of retries. When no node answers a fresh model listing either,
+                // say the runtime is down rather than surfacing a raw socket error.
+                ClearModelCache();
+                if (await TryGetAvailableModelsAsync(requestCancellation).ConfigureAwait(false) is null)
+                {
+                    return CreateErrorResponse(
+                        effectiveModel,
+                        $"{RuntimeUnreachableMessage}. Start Ollama and try again.",
+                        (int)stopwatch.ElapsedMilliseconds);
+                }
+                throw;
+            }
             catch
             {
                 node.MarkFailure("unhandled exception");
@@ -1217,33 +1268,33 @@ public partial class OllamaLlmProvider : ILlmProvider, IOllamaModelWarmup, ILlmP
         }
         var requestText = TrimEmbeddingPrompt(text, MaxEmbeddingPromptChars);
 
-        // Check if embedding model is available
-        var models = await GetAvailableModelsAsync(requestCancellation).ConfigureAwait(false);
-        var hasEmbeddingModel = models.Any(m =>
-            m.StartsWith(effectiveModel, StringComparison.OrdinalIgnoreCase));
+        // Check if embedding model is available. An unreachable runtime is not a
+        // missing model: telling the user to pull would send them the wrong way.
+        var models = await TryGetAvailableModelsAsync(requestCancellation).ConfigureAwait(false);
+        requestCancellation.ThrowIfCancellationRequested();
+        var availability = ClassifyEmbeddingModel(models, effectiveModel);
 
-        if (!hasEmbeddingModel)
+        if (availability == EmbeddingModelAvailability.Missing && _options.AutoPullEmbeddingModel)
         {
-            if (_options.AutoPullEmbeddingModel)
-            {
-                _logger.LogWarning(
-                    "Pinned Ollama embedding model {Model} is not installed; attempting automatic pull before failing embedding request",
-                    effectiveModel);
+            _logger.LogWarning(
+                "Pinned Ollama embedding model {Model} is not installed; attempting automatic pull before failing embedding request",
+                effectiveModel);
 
-                hasEmbeddingModel = await EnsurePinnedEmbeddingModelAvailableAsync(
-                    effectiveModel,
-                    requestCancellation).ConfigureAwait(false);
-            }
+            availability = await EnsurePinnedEmbeddingModelAvailableAsync(
+                effectiveModel,
+                requestCancellation).ConfigureAwait(false);
         }
 
-        if (!hasEmbeddingModel)
+        if (availability != EmbeddingModelAvailability.Installed)
         {
             return new LlmEmbeddingResponse
             {
                 Success = false,
                 Provider = ProviderName,
                 Model = effectiveModel,
-                ErrorMessage = $"Embedding model '{effectiveModel}' not installed. Pull it with: ollama pull {effectiveModel}",
+                ErrorMessage = availability == EmbeddingModelAvailability.RuntimeUnreachable
+                    ? $"{RuntimeUnreachableMessage}. Start Ollama and try again."
+                    : $"Embedding model '{effectiveModel}' not installed. Pull it with: ollama pull {effectiveModel}",
                 ResponseTimeMs = 0
             };
         }
@@ -1361,8 +1412,24 @@ public partial class OllamaLlmProvider : ILlmProvider, IOllamaModelWarmup, ILlmP
                     responseContent = await legacyResponse.Content.ReadAsStringAsync(requestCancellation).ConfigureAwait(false);
                     if (legacyResponse.IsSuccessStatusCode)
                     {
+                        if (await FindEmbeddingArtifactChangeAsync(node, effectiveModel, expectedArtifactDigest, requestCancellation)
+                                .ConfigureAwait(false) is { } legacyChange)
+                        {
+                            node.MarkFailure(legacyChange);
+                            if (attempt < MaxRetryAttempts) continue;
+                            stopwatch.Stop();
+                            return new LlmEmbeddingResponse
+                            {
+                                Success = false,
+                                Provider = ProviderName,
+                                Model = effectiveModel,
+                                ErrorMessage = legacyChange,
+                                ResponseTimeMs = (int)stopwatch.ElapsedMilliseconds,
+                            };
+                        }
+
                         var legacy = JsonSerializer.Deserialize<OllamaLegacyEmbeddingResponse>(responseContent, SwarmJsonOptions.ExternalApi);
-                        return CreateEmbeddingSuccessResponse(legacy?.Embedding, effectiveModel, requestText, stopwatch);
+                        return CreateEmbeddingSuccessResponse(legacy?.Embedding, effectiveModel, requestText, stopwatch, node);
                     }
 
                     return CreateEmbeddingFailureResponse(
@@ -1377,36 +1444,19 @@ public partial class OllamaLlmProvider : ILlmProvider, IOllamaModelWarmup, ILlmP
 
                 if (response.IsSuccessStatusCode)
                 {
-                    if (expectedArtifactDigest is not null)
+                    if (await FindEmbeddingArtifactChangeAsync(node, effectiveModel, expectedArtifactDigest, requestCancellation)
+                            .ConfigureAwait(false) is { } postflightError)
                     {
-                        // Close the same-tag pull race between preflight and inference.
-                        // Ollama accepts a tag, not a digest, on /api/embeddings, so the
-                        // selected node must still expose the exact artifact after it
-                        // produced the vector before we allow that vector to be stamped.
-                        var postflight = await GetInstalledArtifactDigestAsync(
-                            node,
-                            effectiveModel,
-                            requestCancellation).ConfigureAwait(false);
-                        if (!postflight.Success
-                            || !string.Equals(
-                                expectedArtifactDigest,
-                                EmbeddingModelIdentity.NormalizeDigest(postflight.Digest),
-                                StringComparison.Ordinal))
+                        node.MarkFailure(postflightError);
+                        if (attempt < MaxRetryAttempts) continue;
+                        return new LlmEmbeddingResponse
                         {
-                            var observed = postflight.Digest ?? "missing";
-                            var postflightError =
-                                $"Ollama embedding artifact changed during inference for '{effectiveModel}': expected {expectedArtifactDigest}, observed {observed}. The vector was discarded.";
-                            node.MarkFailure(postflightError);
-                            if (attempt < MaxRetryAttempts) continue;
-                            return new LlmEmbeddingResponse
-                            {
-                                Success = false,
-                                Provider = ProviderName,
-                                Model = effectiveModel,
-                                ErrorMessage = postflightError,
-                                ResponseTimeMs = (int)stopwatch.ElapsedMilliseconds,
-                            };
-                        }
+                            Success = false,
+                            Provider = ProviderName,
+                            Model = effectiveModel,
+                            ErrorMessage = postflightError,
+                            ResponseTimeMs = (int)stopwatch.ElapsedMilliseconds,
+                        };
                     }
                     var embeddingResponse = JsonSerializer.Deserialize<OllamaEmbeddingResponse>(responseContent, SwarmJsonOptions.ExternalApi);
                     return CreateEmbeddingSuccessResponse(embeddingResponse?.Embeddings?.FirstOrDefault(), effectiveModel, requestText, stopwatch, node);
@@ -1489,6 +1539,33 @@ public partial class OllamaLlmProvider : ILlmProvider, IOllamaModelWarmup, ILlmP
         };
     }
 
+    /// <summary>
+    /// Closes the same-tag pull race between preflight and inference. Ollama
+    /// accepts a tag, not a digest, on its embedding endpoints, so the node must
+    /// still expose the exact artifact after it produced the vector before that
+    /// vector may be stamped. Returns the failure text, or null when the
+    /// artifact is unchanged or no digest was expected.
+    /// </summary>
+    private async Task<string?> FindEmbeddingArtifactChangeAsync(
+        OllamaNodeState node,
+        string model,
+        string? expectedArtifactDigest,
+        CancellationToken ct)
+    {
+        if (expectedArtifactDigest is null) return null;
+        var postflight = await GetInstalledArtifactDigestAsync(node, model, ct).ConfigureAwait(false);
+        if (postflight.Success
+            && string.Equals(
+                expectedArtifactDigest,
+                EmbeddingModelIdentity.NormalizeDigest(postflight.Digest),
+                StringComparison.Ordinal))
+        {
+            return null;
+        }
+
+        return $"Ollama embedding artifact changed during inference for '{model}': expected {expectedArtifactDigest}, observed {postflight.Digest ?? "missing"}. The vector was discarded.";
+    }
+
     private async Task<(bool Success, string? Digest, string? Error)> GetInstalledArtifactDigestAsync(
         OllamaNodeState node,
         string model,
@@ -1554,7 +1631,23 @@ public partial class OllamaLlmProvider : ILlmProvider, IOllamaModelWarmup, ILlmP
             : normalized + ":latest";
     }
 
-    private async Task<bool> EnsurePinnedEmbeddingModelAvailableAsync(
+    private enum EmbeddingModelAvailability
+    {
+        Installed,
+        Missing,
+        RuntimeUnreachable,
+    }
+
+    private static EmbeddingModelAvailability ClassifyEmbeddingModel(
+        List<string>? models,
+        string effectiveModel)
+        => models is null
+            ? EmbeddingModelAvailability.RuntimeUnreachable
+            : models.Any(m => m.StartsWith(effectiveModel, StringComparison.OrdinalIgnoreCase))
+                ? EmbeddingModelAvailability.Installed
+                : EmbeddingModelAvailability.Missing;
+
+    private async Task<EmbeddingModelAvailability> EnsurePinnedEmbeddingModelAvailableAsync(
         string effectiveModel,
         CancellationToken ct)
     {
@@ -1562,21 +1655,24 @@ public partial class OllamaLlmProvider : ILlmProvider, IOllamaModelWarmup, ILlmP
         try
         {
             ClearModelCache();
-            var models = await GetAvailableModelsAsync(ct).ConfigureAwait(false);
-            if (models.Any(m => m.StartsWith(effectiveModel, StringComparison.OrdinalIgnoreCase)))
-            {
-                return true;
-            }
+            var current = ClassifyEmbeddingModel(
+                await TryGetAvailableModelsAsync(ct).ConfigureAwait(false),
+                effectiveModel);
 
-            // A missing local runtime is not a model-install operation. Probe first
-            // so clean installs that deliberately omitted Ollama do not advertise a
-            // phantom pull, emit avoidable errors, or leave a stuck activity chip.
-            if (!await HasReachableNodeAsync(ct).ConfigureAwait(false))
+            // A missing local runtime is not a model-install operation. With the
+            // cache cleared, a listing proves a node answered, so clean installs
+            // that deliberately omitted Ollama do not advertise a phantom pull,
+            // emit avoidable errors, or leave a stuck activity chip.
+            if (current != EmbeddingModelAvailability.Missing)
             {
-                _logger.LogDebug(
-                    "Skipping automatic embedding pull for {Model} because no Ollama node is reachable",
-                    effectiveModel);
-                return false;
+                if (current == EmbeddingModelAvailability.RuntimeUnreachable)
+                {
+                    _logger.LogDebug(
+                        "Skipping automatic embedding pull for {Model} because no Ollama node is reachable",
+                        effectiveModel);
+                }
+
+                return current;
             }
 
             using var activity = _localRuntimeManager?.TrackActivity(new LocalLlmRuntimeActivity(
@@ -1591,13 +1687,14 @@ public partial class OllamaLlmProvider : ILlmProvider, IOllamaModelWarmup, ILlmP
             if (!pulled)
             {
                 _logger.LogWarning("Automatic pull failed for pinned Ollama embedding model {Model}", effectiveModel);
-                return false;
+                return EmbeddingModelAvailability.Missing;
             }
 
             ClearModelCache();
-            models = await GetAvailableModelsAsync(ct).ConfigureAwait(false);
-            var available = models.Any(m => m.StartsWith(effectiveModel, StringComparison.OrdinalIgnoreCase));
-            if (available)
+            var available = ClassifyEmbeddingModel(
+                await TryGetAvailableModelsAsync(ct).ConfigureAwait(false),
+                effectiveModel);
+            if (available == EmbeddingModelAvailability.Installed)
             {
                 _logger.LogInformation("Pinned Ollama embedding model {Model} is now installed", effectiveModel);
             }
@@ -1675,7 +1772,7 @@ public partial class OllamaLlmProvider : ILlmProvider, IOllamaModelWarmup, ILlmP
             var json = JsonSerializer.Serialize(request);
             var content = new StringContent(json, Encoding.UTF8, "application/json");
 
-            var response = await client.PostAsync(
+            using var response = await client.PostAsync(
                 $"{lease.Node.Endpoint}/api/generate", content, ct).ConfigureAwait(false);
 
             if (response.IsSuccessStatusCode)
@@ -1883,7 +1980,7 @@ public partial class OllamaLlmProvider : ILlmProvider, IOllamaModelWarmup, ILlmP
         var reachable = await HasReachableNodeAsync(cancellationToken).ConfigureAwait(false);
         return reachable
             ? (true, "Ollama is reachable")
-            : (false, "Ollama is not running or no configured Ollama node is reachable");
+            : (false, RuntimeUnreachableMessage);
     }
 
     /// <summary>
@@ -2077,7 +2174,7 @@ public partial class OllamaLlmProvider : ILlmProvider, IOllamaModelWarmup, ILlmP
             using var client = CreateHttpClient();
             using var cts = CancellationTokenSource.CreateLinkedTokenSource(ct);
             cts.CancelAfter(timeout);
-            var response = await client.GetAsync($"{node.Endpoint}/api/tags", cts.Token).ConfigureAwait(false);
+            using var response = await client.GetAsync($"{node.Endpoint}/api/tags", cts.Token).ConfigureAwait(false);
 
             if (!response.IsSuccessStatusCode)
             {
@@ -2144,8 +2241,8 @@ public partial class OllamaLlmProvider : ILlmProvider, IOllamaModelWarmup, ILlmP
                         .ConfigureAwait(false);
                     if (metadata?.Capabilities is not null)
                     {
-                        var normalizedModel = model.Trim();
-                        _visionCapabilityCache[normalizedModel] = metadata.Capabilities.Any(capability =>
+                        // /api/tags names are always name:tag; a route may omit ":latest".
+                        _visionCapabilityCache[NormalizeOllamaModelName(model)] = metadata.Capabilities.Any(capability =>
                             capability.Equals("vision", StringComparison.OrdinalIgnoreCase));
                     }
                 }).ConfigureAwait(false);

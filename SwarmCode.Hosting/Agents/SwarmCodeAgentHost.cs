@@ -1,6 +1,8 @@
 using System.Collections.Concurrent;
+using Microsoft.Extensions.Logging;
 using SwarmCore.Abstractions.Agents;
 using SwarmCore.Coding.Agents;
+using SwarmCore.Abstractions.LlmRouting;
 
 namespace SwarmCode.Hosting.Agents;
 
@@ -24,7 +26,9 @@ public sealed class SwarmCodeAgentHost(
     AppPreferencesStore preferences,
     IConversationRunnerSource runners,
     Microsoft.Extensions.Options.IOptions<SwarmCore.Coding.CodingOptions> coding,
-    SwarmCodeDataPaths paths) : IAgentTeamHost
+    SwarmCodeDataPaths paths,
+    DecisionSessionCoordinator? decisions = null,
+    ILogger<SwarmCodeAgentHost>? logger = null) : IAgentTeamHost
 {
     private readonly ConcurrentDictionary<ConversationRunner, RunnerObservation> _observed = new(ReferenceEqualityComparer.Instance);
     private readonly ConcurrentDictionary<string, int> _external = new(StringComparer.Ordinal);
@@ -92,7 +96,14 @@ public sealed class SwarmCodeAgentHost(
         {
             var session = await sessions.CreateAsync(root, request.Title, laneName, ct, modelName, request.ParentConversationId,
                 workingRoot: worktree?.WorkingRoot ?? parent?.WorkingRoot, permissionMode: SwarmCore.Coding.Permissions.CodingPermissionPolicy.Name(mode)).ConfigureAwait(false);
-            return new AgentConversation(session.Id, worktree);
+            var schedulingOwner = await sessions.GetSchedulingOwnerIdAsync(session.Id, ct).ConfigureAwait(false);
+            // Assessment is work owned by this new child, not the parent's ambient model call.
+            using var runtimeOwner = LocalLlmRuntimeOwnerScope.Enter(session.Id, "Talavine Code", schedulingOwner);
+            var selected = decisions is not null && !string.IsNullOrWhiteSpace(request.Task)
+                ? await decisions.PrepareDelegatedAsync(session.Id, request.ParentConversationId, request.Task,
+                    request.ExplicitModelSelection, ct).ConfigureAwait(false) : null;
+            return new AgentConversation(session.Id, worktree, selected?.Lane ?? laneName,
+                selected?.Model ?? modelName, selected?.Notice);
         }
         catch when (worktree is not null)
         {
@@ -108,8 +119,10 @@ public sealed class SwarmCodeAgentHost(
         if (runner is null) return false;
         Observe(runner);
         var session = await sessions.GetAsync(conversationId, ct).ConfigureAwait(false);
-        var laneName = lane ?? session?.LaneName;
-        var modelName = model ?? (laneName is null ? null : session?.ModelChoices.GetValueOrDefault(laneName));
+        // A fresh authenticated picker choice supersedes the route in an older durable team record.
+        var userSelected = session?.Selection is { UserSelected: true } or { Origin: SwarmCore.Abstractions.LlmRouting.Decisions.ModelSelectionOrigin.User };
+        var laneName = userSelected ? session!.Selection!.Route ?? session.LaneName : lane ?? session?.LaneName;
+        var modelName = userSelected ? session!.Selection!.Model : model ?? (laneName is null ? null : session?.ModelChoices.GetValueOrDefault(laneName));
         var prefs = preferences.Current;
         // Agent messages are written by another agent: a continuation, never the person's own words.
         var mode = SwarmCodePermissions.ForSession(prefs.Mode, session);
@@ -156,7 +169,8 @@ public sealed class SwarmCodeAgentHost(
         var prefs = preferences.Current;
         var lane = session?.LaneName;
         var model = lane is null ? null : session?.ModelChoices.GetValueOrDefault(lane);
-        return runner.TrySend(message, lane, SwarmCodePermissions.ForSession(prefs.Mode, session), prefs.HandOffOnRefusal, model, isContinuation: true, origin: AgentOrigin(conversationId));
+        return runner.TrySendAgentReport(message, lane, SwarmCodePermissions.ForSession(prefs.Mode, session), prefs.HandOffOnRefusal,
+            model, origin: AgentOrigin(conversationId));
     }
 
     /// <summary>Plain-language label for what an agent's runner is doing now.</summary>
@@ -179,7 +193,8 @@ public sealed class SwarmCodeAgentHost(
     private static string Label(string tool) => tool switch
     {
         _ when tool.StartsWith("browser", StringComparison.OrdinalIgnoreCase) => "Using Chrome",
-        _ when tool.StartsWith("computer", StringComparison.OrdinalIgnoreCase) => "Using the desktop",
+        _ when tool.StartsWith("computer", StringComparison.OrdinalIgnoreCase)
+            || tool.StartsWith("desktop", StringComparison.OrdinalIgnoreCase) => "Using the desktop",
         _ when tool.StartsWith("agents", StringComparison.OrdinalIgnoreCase) => "Working with its agents",
         _ when tool.StartsWith("apps", StringComparison.OrdinalIgnoreCase) => "Using a connected app",
         "shell.exec" or "Bash" or "PowerShell" or "shell" => "Running a command",
@@ -222,7 +237,40 @@ public sealed class SwarmCodeAgentHost(
             Interlocked.Exchange(ref _wasRunning, 0);
             var moreQueued = !result.Cancelled && result.Error is null && runner.QueuedMessages.Count > 0 && !runner.QueuePaused;
             var outcome = new AgentTurnOutcome(result.Completed, result.Cancelled, result.Error, result.FinalText, result.ToolCalls, moreQueued);
-            _ = Task.Run(() => host.Team.ReportTurnFinishedAsync(runner.ConversationId, outcome));
+            _ = Task.Run(() => host.ReportTurnFinishedAsync(runner.ConversationId, outcome));
+        }
+    }
+
+    /// <summary>
+    /// Records an agent's finished turn. The record must reach a settled state, or a parent in <c>agents.wait</c>
+    /// waits out its own timeout: a failed write (store I/O, an invalid record) is logged and retried once as a
+    /// failure report, and a second failure is logged rather than lost silently.
+    /// </summary>
+    internal async Task ReportTurnFinishedAsync(string conversationId, AgentTurnOutcome outcome)
+    {
+        try
+        {
+            await team.ReportTurnFinishedAsync(conversationId, outcome).ConfigureAwait(false);
+            return;
+        }
+        catch (Exception ex)
+        {
+            logger?.LogWarning(ex, "Recording agent {Agent}'s finished turn failed; reporting it as failed.", conversationId);
+        }
+
+        try
+        {
+            await team.ReportTurnFinishedAsync(conversationId, outcome with
+            {
+                Completed = false,
+                Cancelled = false,
+                MoreQueued = false,
+                Error = "The agent's turn ended, but its result could not be saved.",
+            }).ConfigureAwait(false);
+        }
+        catch (Exception ex)
+        {
+            logger?.LogError(ex, "Could not record agent {Agent}'s finished turn; its team record may not settle.", conversationId);
         }
     }
 }

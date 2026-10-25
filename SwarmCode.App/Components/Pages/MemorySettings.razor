@@ -201,7 +201,35 @@
         await RefreshAsync();
     }
 
-    private void OnChanged() => _ = InvokeAsync(async () => { await RefreshProposalsAsync(); StateHasChanged(); });
+    // App events arrive for every runner event (each streamed chunk): proposal refreshes are coalesced, one at a
+    // time, a change during a refresh reruns it once, and reruns are spaced a second apart while a turn streams.
+    private int _refreshState; // 0 idle, 1 running, 2 running + rerun requested
+    private void OnChanged() => _ = InvokeAsync(RefreshOnChangeAsync);
+
+    private async Task RefreshOnChangeAsync()
+    {
+        if (Interlocked.CompareExchange(ref _refreshState, 1, 0) != 0)
+        {
+            Interlocked.Exchange(ref _refreshState, 2);
+            return;
+        }
+        try
+        {
+            do
+            {
+                Interlocked.Exchange(ref _refreshState, 1);
+                await RefreshProposalsAsync();
+                StateHasChanged();
+                if (State.AnyTurnRunning) await Task.Delay(1000);
+            }
+            while (Interlocked.CompareExchange(ref _refreshState, 0, 1) == 2);
+        }
+        catch (Exception ex)
+        {
+            DesktopHost.LogToFile($"Memory settings refresh failed: {ex.Message}");
+            Interlocked.Exchange(ref _refreshState, 0);
+        }
+    }
 
     private async Task RefreshAsync()
     {
@@ -291,6 +319,7 @@
             var result = await Task.Run(() => RepoMemoryProposals.DiscardAsync(State.RepoMemoryProposals, proposal.Id, proposal.Version));
             Show(result.Message, !result.Ok);
         }
+        catch (Exception ex) { Show("Could not discard: " + ex.Message, true); }
         finally { _busy = false; }
         await RefreshProposalsAsync();
     }

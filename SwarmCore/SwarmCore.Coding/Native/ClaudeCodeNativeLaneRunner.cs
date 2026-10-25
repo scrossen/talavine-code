@@ -1,4 +1,5 @@
 using System.Diagnostics;
+using System.Collections.Concurrent;
 using System.Runtime.CompilerServices;
 using System.Text;
 using System.Text.Json;
@@ -9,6 +10,7 @@ using Microsoft.Extensions.Options;
 using SwarmCore.Abstractions.LlmRouting;
 using SwarmCore.Abstractions.Processes;
 using SwarmCore.Agent.Runtime;
+using SwarmCore.Agent.Communication;
 using SwarmCore.Agent.ToolUseEngine;
 using SwarmCore.Coding.Routing;
 using SwarmCore.LlmRouting.Services;
@@ -34,6 +36,8 @@ public sealed class ClaudeCodeNativeLaneRunner(
 {
     public const string ProviderId = "ClaudeCodeNative";
     public const string SessionStateKey = "claudeCode.sessionId";
+    internal Func<string?> ExecutableResolver { get; init; } = ResolveExecutable;
+    internal Func<ProcessStartInfo, IChildProcess> ProcessStarter { get; init; } = ChildProcessLauncher.Start;
 
     public bool Supports(CodingLane lane) => string.Equals(lane.Provider, ProviderId, StringComparison.OrdinalIgnoreCase);
     public string ModelCatalogProvider => SubscriptionCliCatalog.ClaudeCodeProvider;
@@ -53,6 +57,10 @@ public sealed class ClaudeCodeNativeLaneRunner(
         public int ExitCode = -1;
         public int PersistedCount = 1;
         public string? Model;
+        public GoalDelivery? InitialDelivery;
+        public bool PromptWriteAttempted;
+        public bool InitialAdmitted;
+        public readonly ConcurrentQueue<GoalDelivery> AcceptedMessages = new();
     }
 
     public async IAsyncEnumerable<TurnEvent> RunAsync(NativeLaneTurn turn, [EnumeratorCancellation] CancellationToken ct = default)
@@ -61,7 +69,7 @@ public sealed class ClaudeCodeNativeLaneRunner(
         var started = DateTime.UtcNow;
         var options = coding.Value;
 
-        var executable = ResolveExecutable();
+        var executable = ExecutableResolver();
         if (executable is null)
         {
             yield return new TurnErrored(turnId, "Claude Code CLI executable was not found on this machine; install it and sign in to use the native lane.")
@@ -89,7 +97,7 @@ public sealed class ClaudeCodeNativeLaneRunner(
         // person's external servers stay off (their tools run outside the CLI's plan-mode checks and SwarmCode's).
         try
         {
-            mcpConfig = WriteMcpConfigFor(containment, mcp, turn.RepositoryRoot, turn.PlanMode ? null : options.NativeAgents.ExternalMcpServers, turn.ConversationId);
+            mcpConfig = WriteMcpConfigFor(containment, mcp, turn.RepositoryRoot, turn.PlanMode ? null : options.NativeAgents.ExternalMcpServers, turn.ConversationId, turn.HostToolBridgeCapability);
         }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException) { logger.LogWarning(ex, "Could not write the MCP bridge config; running Claude Code without the vault bridge."); }
         using var mcpConfigLease = new NativeLaneSupport.TempConfigLease(mcpConfig);
@@ -106,18 +114,41 @@ public sealed class ClaudeCodeNativeLaneRunner(
 
         var resumeId = string.IsNullOrWhiteSpace(sessionId) ? null : sessionId;
         var retried = false;
+        var hooksSupported = !confined && !turn.PlanMode && turn.GoalMailbox is not null && turn.GoalId is not null
+            && ClaudeGoalAttentionHooks.CanLaunchHelper(mcp) && await ClaudeGoalAttentionHooks.IsSupportedAsync(executable, ct).ConfigureAwait(false)
+            && await ClaudeGoalAttentionHooks.IsHelperSupportedAsync(mcp, ct).ConfigureAwait(false);
         Attempt attempt;
         while (true)
         {
             attempt = new Attempt();
             attempt.Transcript.Add(ChatMessage.Text(ChatRole.User, turn.UserMessage));
+            var workerId = "claude:" + turnId + ":" + (retried ? "retry" : "initial");
+            ClaudeGoalAttentionHooks? createdAttention = null;
+            try { if (hooksSupported) createdAttention = ClaudeGoalAttentionHooks.Create(turn, workerId, resumeId, mcp,
+                delivery => { attempt.AcceptedMessages.Enqueue(delivery); return Task.CompletedTask; }); }
+            catch { /* Initial prompt remains the fallback; optional hook setup cannot stop work. */ }
+            await using var attention = createdAttention;
+            if (turn.GoalMailbox is not null && turn.GoalId is not null && attention is null)
+                yield return new CodingLaneNotice(turnId, turn.Lane.Name,
+                    "Live goal inbox checkpoints are unavailable for this launch. Saved messages will be checked at the next goal turn.");
             var prompt = NativeLaneSupport.BuildPrompt(turn, isFirstTurn: resumeId is null, confined ? null : mcp, "CLAUDE.md", sharedHistory,
                 options.MaxNativeHandoffCharacters, turn.PlanMode ? null : externalMcp);
             var psi = BuildStartInfo(executable, turn, resumeId, confined ? null : mcpConfig, containment,
-                restrictedSupported, options.NativeAgents.AllowClaudeAiConnectors, settingsLease.Path);
+                restrictedSupported, options.NativeAgents.AllowClaudeAiConnectors, settingsLease.Path, attention?.SettingsPath);
+            var inboxUnavailable = false;
+            try
+            {
+                attempt.InitialDelivery = await GoalMailboxBoundary.BeginAsync(turn.GoalMailbox, turn.GoalId,
+                    turn.ConversationId, workerId, ct: ct, expectedLeaseToken: turn.GoalMessageLeaseToken).ConfigureAwait(false);
+            }
+            catch (OperationCanceledException) when (ct.IsCancellationRequested) { throw; }
+            catch { inboxUnavailable = true; }
+            if (inboxUnavailable)
+                yield return new CodingLaneNotice(turnId, turn.Lane.Name, "The goal inbox could not be checked; existing work continues and messages remain in the inbox.");
+            if (attempt.InitialDelivery is { } initial) prompt += "\n\n" + initial.ContextText;
             var channel = Channel.CreateUnbounded<TurnEvent>(new UnboundedChannelOptions { SingleReader = true });
             using var attemptLifetime = CancellationTokenSource.CreateLinkedTokenSource(ct);
-            var pump = Task.Run(() => PumpAsync(psi, prompt, turn.ConversationId, attempt, turnId, turn.Lane.Model, channel.Writer, attemptLifetime.Token), CancellationToken.None);
+            var pump = Task.Run(() => PumpAsync(psi, prompt, turn.ConversationId, attempt, turnId, turn.Lane.Model, channel.Writer, attention, turn.GoalMailbox, attemptLifetime.Token), CancellationToken.None);
 
             // yield return cannot sit inside a try/catch, so cancellation is handled around the read only.
             var readerCompleted = false;
@@ -202,7 +233,8 @@ public sealed class ClaudeCodeNativeLaneRunner(
         }
     }
 
-    private async Task PumpAsync(ProcessStartInfo psi, string prompt, string conversationId, Attempt attempt, string turnId, string model, ChannelWriter<TurnEvent> writer, CancellationToken ct)
+    private async Task PumpAsync(ProcessStartInfo psi, string prompt, string conversationId, Attempt attempt, string turnId, string model, ChannelWriter<TurnEvent> writer,
+        ClaudeGoalAttentionHooks? attention, IGoalMailbox? mailbox, CancellationToken ct)
     {
         IChildProcess? process = null;
         Process? diagnosticsProcess = null;
@@ -212,7 +244,7 @@ public sealed class ClaudeCodeNativeLaneRunner(
             foreach (var notice in await NativeLaneSupport.PrepareHttpEnvironmentAsync(psi, coding.Value.NativeAgents,
                 psi.ArgumentList.Contains("--strict-mcp-config"), vault, ct).ConfigureAwait(false))
                 writer.TryWrite(new CodingLaneNotice(turnId, "Claude Code", notice));
-            process = ChildProcessLauncher.Start(NativeLaneSupport.ForLaunch(psi)) ?? throw new InvalidOperationException("The Claude Code process did not start.");
+            process = ProcessStarter(NativeLaneSupport.ForLaunch(psi)) ?? throw new InvalidOperationException("The Claude Code process did not start.");
             diagnosticsProcess = process.AttachDiagnosticsProcess();
             containment = diagnosticsProcess is null ? null : ChildProcessLifetimeContainment.Attach(diagnosticsProcess, NativeLaneSupport.WorkloadKey(psi.WorkingDirectory, conversationId), logger);
             process.ErrorLineReceived += line =>
@@ -225,6 +257,7 @@ public sealed class ClaudeCodeNativeLaneRunner(
             process.BeginErrorReadLine();
             try
             {
+                attempt.PromptWriteAttempted = true;
                 await process.StandardInput.WriteAsync(prompt).ConfigureAwait(false);
                 process.StandardInput.Close();
             }
@@ -239,6 +272,15 @@ public sealed class ClaudeCodeNativeLaneRunner(
                 catch (JsonException) { evt = null; }
                 if (evt is null) { logger.LogDebug("Claude Code emitted a non-JSON line: {Line}", NativeLaneSupport.Truncate(line, 200)); continue; }
 
+                if (!attempt.InitialAdmitted && attempt.InitialDelivery is { } initial && IsPromptAdmission(evt))
+                {
+                    attempt.InitialAdmitted = true;
+                    await GoalMailboxBoundary.TryRecordAsync(mailbox!, initial, GoalDeliveryState.Delivered,
+                        "Claude produced a worker response after the complete goal context was written.").ConfigureAwait(false);
+                    attempt.AcceptedMessages.Enqueue(initial);
+                }
+                DrainAccepted();
+
                 var pendingEvents = Channel.CreateUnbounded<TurnEvent>();
                 switch ((string?)evt["type"])
                 {
@@ -247,6 +289,7 @@ public sealed class ClaudeCodeNativeLaneRunner(
                         if ((string?)evt["session_id"] is { Length: > 0 } s && attempt.NewSessionId is null)
                         {
                             attempt.NewSessionId = s;
+                            attention?.BindSession(s);
                             // Remember it at once so a cancelled turn still resumes the same session next time.
                             await NativeLaneSupport.WriteStateAsync(conversations, logger, conversationId, SessionStateKey, s, CancellationToken.None).ConfigureAwait(false);
                         }
@@ -261,6 +304,7 @@ public sealed class ClaudeCodeNativeLaneRunner(
                         if ((string?)evt["session_id"] is { Length: > 0 } rs && attempt.NewSessionId is null)
                         {
                             attempt.NewSessionId = rs;
+                            attention?.BindSession(rs);
                             await NativeLaneSupport.WriteStateAsync(conversations, logger, conversationId, SessionStateKey, rs, CancellationToken.None).ConfigureAwait(false);
                         }
                         if (evt["usage"] is JsonObject usage)
@@ -294,11 +338,45 @@ public sealed class ClaudeCodeNativeLaneRunner(
         }
         finally
         {
-            containment?.Dispose();
-            diagnosticsProcess?.Dispose();
-            process?.Dispose();
-            writer.TryComplete();
+            try
+            {
+                // Stop callbacks before flushing, so no accepted context is lost after the final read.
+                if (attention is not null) await attention.DisposeAsync().ConfigureAwait(false);
+                DrainAccepted();
+                if (!attempt.InitialAdmitted && attempt.InitialDelivery is { } initial)
+                    await GoalMailboxBoundary.TryRecordAsync(mailbox!, initial,
+                        attempt.PromptWriteAttempted ? GoalDeliveryState.Uncertain : GoalDeliveryState.Received,
+                        attempt.PromptWriteAttempted ? "Claude prompt admission was not confirmed; inspect before retrying." : "Claude did not receive any prompt bytes.").ConfigureAwait(false);
+                attempt.PersistedCount = await NativeLaneSupport.FlushAsync(sessions, conversationId, attempt.Transcript,
+                    attempt.PersistedCount, CancellationToken.None).ConfigureAwait(false);
+            }
+            finally
+            {
+                containment?.Dispose();
+                diagnosticsProcess?.Dispose();
+                process?.Dispose();
+                writer.TryComplete();
+            }
         }
+
+        void DrainAccepted()
+        {
+            while (attempt.AcceptedMessages.TryDequeue(out var delivery))
+                attempt.Transcript.Add(ChatMessage.Text(ChatRole.User, delivery.ContextText));
+        }
+    }
+
+    internal static bool IsPromptAdmission(JsonObject evt)
+    {
+        // Claude can emit an assistant-shaped synthetic error without admitting a model turn.
+        if ((bool?)evt["is_api_error_message"] == true || evt["error"] is not null) return false;
+        return (string?)evt["type"] switch
+        {
+            "assistant" => evt["message"]?["content"] is JsonArray { Count: > 0 },
+            "user" => evt["message"]?["content"] is JsonArray content && content.OfType<JsonObject>().Any(b => (string?)b["type"] == "tool_result"),
+            "result" => (bool?)evt["is_error"] != true && (string?)evt["subtype"] == "success",
+            _ => false,
+        };
     }
 
     internal static void HandleAssistant(JsonObject evt, string turnId, ChannelWriter<TurnEvent> writer, List<ChatMessage> transcript, Dictionary<string, (string Name, DateTime Started)> toolNames)
@@ -374,10 +452,10 @@ public sealed class ClaudeCodeNativeLaneRunner(
     /// all when confined (the confined arguments carry <c>--strict-mcp-config</c>).
     /// </summary>
     internal static string? WriteMcpConfigFor(NativeLaneContainment containment, McpServerLaunch? bridge, string repositoryRoot,
-        IReadOnlyList<McpServerLaunch>? external, string? conversationId = null)
+        IReadOnlyList<McpServerLaunch>? external, string? conversationId = null, string? attemptCapability = null)
         => containment == NativeLaneContainment.WorkspaceConfined
             ? null
-            : NativeLaneSupport.WriteClaudeMcpConfig(bridge, repositoryRoot, external, conversationId);
+            : NativeLaneSupport.WriteClaudeMcpConfig(bridge, repositoryRoot, external, conversationId, attemptCapability);
 
     /// <summary>Settings for a confined launch on a CLI without <see cref="RestrictedFlag"/>: no hooks from any settings source.</summary>
     internal const string ConfinedSettings = "{\"disableAllHooks\":true}";
@@ -385,7 +463,7 @@ public sealed class ClaudeCodeNativeLaneRunner(
     /// <param name="settingsPath">A file holding <see cref="ConfinedSettings"/>, for a launcher that cannot carry the inline JSON (a Windows shim).</param>
     internal static ProcessStartInfo BuildStartInfo(string executable, NativeLaneTurn turn, string? sessionId, string? mcpConfigPath = null,
         NativeLaneContainment containment = NativeLaneContainment.Bypass, bool restrictedSupported = false,
-        bool allowClaudeAiConnectors = false, string? settingsPath = null)
+        bool allowClaudeAiConnectors = false, string? settingsPath = null, string? goalSettingsPath = null)
     {
         var args = new List<string>
         {
@@ -424,6 +502,7 @@ public sealed class ClaudeCodeNativeLaneRunner(
         else
         {
             args.Add("--permission-mode"); args.Add("bypassPermissions");
+            if (goalSettingsPath is not null) { args.Add("--settings"); args.Add(goalSettingsPath); }
         }
         if (!string.IsNullOrWhiteSpace(sessionId)) { args.Add("--resume"); args.Add(sessionId); }
         if (turn.ExecutionLimits is { MaxIterations: > 0 } limits)

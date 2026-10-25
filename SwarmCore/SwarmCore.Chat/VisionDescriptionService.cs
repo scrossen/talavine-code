@@ -82,7 +82,7 @@ notes). Reply with the description only, no preamble.
         catch (Exception ex)
         {
             _logger.LogWarning(ex, "Vision description failed for {FileName}", image.FileName);
-            var failureKind = IsNoUsableVisionRoute(ex)
+            var failureKind = LlmNoUsableRouteException.IsIn(ex)
                 ? VisionDescriptionFailureKind.NoUsableRoute
                 : VisionDescriptionFailureKind.RouteFailed;
             var reason = failureKind == VisionDescriptionFailureKind.NoUsableRoute
@@ -113,21 +113,9 @@ notes). Reply with the description only, no preamble.
         Temperature = source.Temperature,
         MaxTokens = source.MaxTokens,
         DisableFallback = source.DisableFallback,
-        AllowAnyProviderFallback = source.AllowAnyProviderFallback,
         RequiresVision = true,
         RequestCancellationToken = requestCancellationToken,
         ProviderExecutionStartCallback = source.ProviderExecutionStartCallback,
         ExecutionSettings = source.ExecutionSettings,
     };
-
-    private static bool IsNoUsableVisionRoute(Exception exception)
-    {
-        var diagnostic = exception.ToString();
-        return diagnostic.Contains("no vision", StringComparison.OrdinalIgnoreCase)
-               || diagnostic.Contains("not vision-capable", StringComparison.OrdinalIgnoreCase)
-               || diagnostic.Contains("does not support vision", StringComparison.OrdinalIgnoreCase)
-               || diagnostic.Contains("no usable", StringComparison.OrdinalIgnoreCase)
-               || diagnostic.Contains("no fallback route", StringComparison.OrdinalIgnoreCase)
-               || diagnostic.Contains("no current function-scoped fallback proof", StringComparison.OrdinalIgnoreCase);
-    }
 }

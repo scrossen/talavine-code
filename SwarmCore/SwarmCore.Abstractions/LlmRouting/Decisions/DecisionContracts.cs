@@ -41,6 +41,8 @@ public sealed record SessionModelSelection
     public string? Model { get; init; }
     public bool InitialAssessmentComplete { get; init; }
     public ModelReassessment Reassessment { get; init; }
+    /// <summary>Trusted delegated-task assessment; never inferred from a route or model name.</summary>
+    public DelegationTaskClass? DelegationClass { get; init; }
 }
 
 public static class ModelSelectionPolicy
@@ -50,7 +52,7 @@ public static class ModelSelectionPolicy
 
     public static SessionModelSelection UserChoice(SessionModelSelection state, string route, string model)
         => state with { Revision = state.Revision + 1, Origin = ModelSelectionOrigin.User, UserSelected = true, Route = route, Model = model,
-            InitialAssessmentComplete = true, Reassessment = ModelReassessment.None };
+            InitialAssessmentComplete = true, Reassessment = ModelReassessment.None, DelegationClass = null };
 
     public static SessionModelSelection Assessed(SessionModelSelection state, ModelDecisionCandidate? choice)
         => state with { Revision = state.Revision + 1, InitialAssessmentComplete = true, Reassessment = ModelReassessment.None,

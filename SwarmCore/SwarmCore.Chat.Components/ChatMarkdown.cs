@@ -1,15 +1,17 @@
 using System.Net;
-using System.Text.RegularExpressions;
+using AngleSharp;
+using AngleSharp.Dom;
+using AngleSharp.Html.Parser;
 using Markdig;
 
 namespace SwarmCore.Chat.Components;
 
 /// <summary>
 /// Markdown to safe HTML for chat surfaces. Markdig runs with raw HTML disabled,
-/// then a second, regex-based pass strips anything executable so the result can
-/// be handed to a MarkupString even when the model output is untrusted.
+/// then a parser-based allowlist pass rebuilds the markup so the result can be
+/// handed to a MarkupString even when the model output is untrusted.
 /// </summary>
-public static partial class ChatMarkdown
+public static class ChatMarkdown
 {
     private static readonly MarkdownPipeline Pipeline = WithoutGenericAttributes(new MarkdownPipelineBuilder()
         .UseAdvancedExtensions()
@@ -68,9 +70,12 @@ public static partial class ChatMarkdown
     }
 
     /// <summary>
-    /// Removes script/style/iframe/object/embed/form (and similar) elements, event-handler
-    /// and style attributes, and javascript:/vbscript:/data: URLs. Images are replaced by
-    /// their alt text so rendering never triggers a remote load.
+    /// Parses the HTML and rebuilds it from an allowlist: markup elements Markdig emits keep
+    /// their allowlisted attributes; script-capable elements (script, style, frames, objects,
+    /// forms, SVG/MathML, templates, metadata) are removed with their content; any other element
+    /// is unwrapped to its text. Images become their alt text so rendering never triggers a remote
+    /// load. Link URLs with a script or data scheme (after entity decoding) become <c>#</c>; other
+    /// schemes are left for the link policy. Comments are dropped.
     /// </summary>
     public static string SanitizeHtml(string? html)
     {
@@ -79,95 +84,112 @@ public static partial class ChatMarkdown
             return string.Empty;
         }
 
-        var current = html;
-        // Repeat until stable so fragments reassembled by a removal (<scr<script>ipt>) are caught.
-        for (var pass = 0; pass < 6; pass++)
+        var parser = new HtmlParser();
+        var document = parser.ParseDocument(string.Empty);
+        var container = document.CreateElement("div");
+        foreach (var node in parser.ParseFragment(html, document.Body!).ToList())
         {
-            var next = current;
-            next = DangerousPairedTag().Replace(next, string.Empty);
-            next = DangerousLooseTag().Replace(next, string.Empty);
-            next = ImageTag().Replace(next, ImageToAltText);
-            next = EventHandlerAttribute().Replace(next, " ");
-            next = StyleAttribute().Replace(next, " ");
-            next = UrlAttribute().Replace(next, NeutralizeUrlAttribute);
-            if (string.Equals(next, current, StringComparison.Ordinal))
+            container.AppendChild(node);
+        }
+
+        Clean(container);
+        return container.InnerHtml;
+    }
+
+    private static readonly HashSet<string> RemovedWithContent = new(StringComparer.OrdinalIgnoreCase)
+    {
+        "script", "style", "iframe", "frame", "frameset", "object", "embed", "applet", "form", "noscript",
+        "template", "meta", "link", "base", "svg", "math", "textarea", "select", "button", "audio", "video",
+        "canvas", "noembed", "noframes", "xmp", "plaintext", "title", "head",
+    };
+
+    private static readonly HashSet<string> AllowedElements = new(StringComparer.OrdinalIgnoreCase)
+    {
+        "a", "abbr", "b", "blockquote", "br", "cite", "code", "dd", "del", "details", "div", "dl", "dt", "em",
+        "figcaption", "figure", "h1", "h2", "h3", "h4", "h5", "h6", "hr", "i", "input", "ins", "kbd", "li", "mark",
+        "ol", "p", "pre", "q", "s", "small", "span", "strong", "sub", "summary", "sup", "table", "tbody", "td",
+        "tfoot", "th", "thead", "tr", "u", "ul",
+    };
+
+    private static readonly HashSet<string> AllowedAttributes = new(StringComparer.OrdinalIgnoreCase)
+    {
+        "href", "title", "class", "id", "align", "start", "colspan", "rowspan", "lang", "dir", "rel", "target",
+    };
+
+    private static void Clean(INode parent)
+    {
+        foreach (var node in parent.ChildNodes.ToList())
+        {
+            switch (node)
             {
-                break;
+                case IComment:
+                    node.RemoveFromParent();
+                    break;
+                case IElement element:
+                    var name = element.LocalName;
+                    if (RemovedWithContent.Contains(name))
+                    {
+                        element.RemoveFromParent();
+                    }
+                    else if (string.Equals(name, "img", StringComparison.OrdinalIgnoreCase))
+                    {
+                        var alt = element.GetAttribute("alt");
+                        parent.ReplaceChild(element.Owner!.CreateTextNode(alt ?? string.Empty), element);
+                    }
+                    else if (string.Equals(name, "input", StringComparison.OrdinalIgnoreCase))
+                    {
+                        // Only a read-only task-list checkbox survives.
+                        if (!string.Equals(element.GetAttribute("type"), "checkbox", StringComparison.OrdinalIgnoreCase))
+                        {
+                            element.RemoveFromParent();
+                            break;
+                        }
+
+                        var isChecked = element.HasAttribute("checked");
+                        foreach (var attribute in element.Attributes.ToList()) element.RemoveAttribute(attribute.Name);
+                        element.SetAttribute("type", "checkbox");
+                        element.SetAttribute("disabled", "disabled");
+                        if (isChecked) element.SetAttribute("checked", "checked");
+                    }
+                    else if (!AllowedElements.Contains(name) || element.NamespaceUri != NamespaceNames.HtmlUri)
+                    {
+                        Clean(element);
+                        foreach (var child in element.ChildNodes.ToList()) parent.InsertBefore(child, element);
+                        element.RemoveFromParent();
+                    }
+                    else
+                    {
+                        foreach (var attribute in element.Attributes.ToList())
+                        {
+                            if (!AllowedAttributes.Contains(attribute.Name)
+                                || (string.Equals(attribute.Name, "href", StringComparison.OrdinalIgnoreCase) && !string.Equals(name, "a", StringComparison.OrdinalIgnoreCase)))
+                            {
+                                element.RemoveAttribute(attribute.Name);
+                            }
+                            else if (string.Equals(attribute.Name, "href", StringComparison.OrdinalIgnoreCase) && IsScriptOrDataUrl(attribute.Value))
+                            {
+                                element.SetAttribute("href", "#");
+                            }
+                        }
+
+                        Clean(element);
+                    }
+
+                    break;
             }
-
-            current = next;
         }
-
-        return current;
     }
 
-    private static string ImageToAltText(Match match)
+    private static bool IsScriptOrDataUrl(string value)
     {
-        var alt = AltAttribute().Match(match.Value);
-        if (!alt.Success)
-        {
-            return string.Empty;
-        }
-
-        // Already entity-encoded source text; keep as is.
-        return alt.Groups["d"].Success ? alt.Groups["d"].Value
-            : alt.Groups["s"].Success ? alt.Groups["s"].Value
-            : alt.Groups["u"].Value;
-    }
-
-    private static string NeutralizeUrlAttribute(Match match)
-    {
-        var value = match.Groups["d"].Success ? match.Groups["d"].Value
-            : match.Groups["s"].Success ? match.Groups["s"].Value
-            : match.Groups["u"].Value;
-
-        // WebUtility only knows HTML4 entities; browsers also decode these HTML5 ones.
-        var normalized = value
-            .Replace("&colon;", ":", StringComparison.OrdinalIgnoreCase)
-            .Replace("&Tab;", string.Empty, StringComparison.OrdinalIgnoreCase)
-            .Replace("&NewLine;", string.Empty, StringComparison.OrdinalIgnoreCase);
-        var decoded = WebUtility.HtmlDecode(WebUtility.HtmlDecode(normalized));
-        var compact = new string(decoded.Where(c => c > ' ' && c != ' ' && c != '​').ToArray());
-        if (compact.StartsWith("javascript:", StringComparison.OrdinalIgnoreCase)
+        // The parser has already decoded entities; browsers also ignore embedded whitespace,
+        // control and zero-width characters in a scheme.
+        var compact = new string(value.Where(c => c > ' ' && c != '\u00a0' && c != '\u200b' && c != '\ufeff').ToArray());
+        return compact.StartsWith("javascript:", StringComparison.OrdinalIgnoreCase)
             || compact.StartsWith("vbscript:", StringComparison.OrdinalIgnoreCase)
             || compact.StartsWith("data:", StringComparison.OrdinalIgnoreCase)
-            || compact.StartsWith("livescript:", StringComparison.OrdinalIgnoreCase))
-        {
-            return $"{match.Groups["name"].Value}=\"#\"";
-        }
-
-        return match.Value;
+            || compact.StartsWith("livescript:", StringComparison.OrdinalIgnoreCase);
     }
-
-    private const string DangerousNames =
-        "script|style|iframe|frame|frameset|object|embed|applet|form|noscript|template|meta|link|base";
-
-    [GeneratedRegex("<(?<t>" + DangerousNames + @")\b[^>]*>.*?</\k<t>\s*>",
-        RegexOptions.IgnoreCase | RegexOptions.Singleline | RegexOptions.CultureInvariant)]
-    private static partial Regex DangerousPairedTag();
-
-    [GeneratedRegex("</?(?:" + DangerousNames + @")\b[^>]*>",
-        RegexOptions.IgnoreCase | RegexOptions.CultureInvariant)]
-    private static partial Regex DangerousLooseTag();
-
-    [GeneratedRegex("<img\\b[^>]*>", RegexOptions.IgnoreCase | RegexOptions.CultureInvariant)]
-    private static partial Regex ImageTag();
-
-    [GeneratedRegex("""\balt\s*=\s*(?:"(?<d>[^"]*)"|'(?<s>[^']*)'|(?<u>[^\s>]+))""",
-        RegexOptions.IgnoreCase | RegexOptions.CultureInvariant)]
-    private static partial Regex AltAttribute();
-
-    [GeneratedRegex("""[\s/"']on[a-z0-9_-]+\s*=\s*(?:"[^"]*"|'[^']*'|[^\s>]+)""",
-        RegexOptions.IgnoreCase | RegexOptions.CultureInvariant)]
-    private static partial Regex EventHandlerAttribute();
-
-    [GeneratedRegex("""\sstyle\s*=\s*(?:"[^"]*"|'[^']*'|[^\s>]+)""",
-        RegexOptions.IgnoreCase | RegexOptions.CultureInvariant)]
-    private static partial Regex StyleAttribute();
-
-    [GeneratedRegex("""(?<name>\b(?:href|src|xlink:href|action|formaction|poster|background))\s*=\s*(?:"(?<d>[^"]*)"|'(?<s>[^']*)'|(?<u>[^\s>]+))""",
-        RegexOptions.IgnoreCase | RegexOptions.CultureInvariant)]
-    private static partial Regex UrlAttribute();
 }
 
 /// <summary>

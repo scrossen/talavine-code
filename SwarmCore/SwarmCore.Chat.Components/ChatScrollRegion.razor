@@ -7,7 +7,7 @@
     @if (!_following)
     {
         <button type="button" class="chat-jump" @onclick="JumpAsync">
-            <span aria-hidden="true">↓</span><span>Jump to latest</span>
+            <span aria-hidden="true">↓</span><span>@JumpLabel</span>
         </button>
     }
 </div>
@@ -19,11 +19,22 @@
     /// <summary>When true, <see cref="ScrollToBottomAsync"/> follows new content while the user is at the bottom.</summary>
     [Parameter] public bool AutoFollow { get; set; } = true;
 
+    /// <summary>Opt in to opening a selected conversation at its latest content.</summary>
+    [Parameter] public string? ConversationKey { get; set; }
+
+    /// <summary>A value-equal revision of visible content, rather than a rebuilt collection.</summary>
+    [Parameter] public object? ContentRevision { get; set; }
+    [Parameter] public string JumpLabel { get; set; } = "Jump to latest";
+    /// <summary>A paged host selects its latest window and changes ConversationKey to scroll after render.</summary>
+    [Parameter] public EventCallback OnJumpToLatest { get; set; }
+
     private ElementReference _element;
     private DotNetObjectReference<ChatScrollRegion>? _self;
     private bool _following = true;
     private bool _observing;
     private bool _disposed;
+    private string? _renderedConversation;
+    private object? _renderedRevision;
 
     /// <summary>
     /// Scrolls to the newest content when <paramref name="force"/> is set, or when
@@ -54,6 +65,15 @@
             _observing = true;
             await ChatJs.InvokeVoidAsync(JS, "observeScroll", _element, _self);
         }
+
+        if (_disposed || ConversationKey is null) return;
+        var changedConversation = _renderedConversation != ConversationKey;
+        var changedContent = !Equals(_renderedRevision, ContentRevision);
+        // Set the baseline before interop: resetting follow state can itself render again.
+        _renderedConversation = ConversationKey;
+        _renderedRevision = ContentRevision;
+        if (changedConversation || changedContent)
+            await ScrollToBottomAsync(force: changedConversation);
     }
 
     [JSInvokable]
@@ -71,7 +91,8 @@
     private async Task JumpAsync()
     {
         _following = true;
-        await ChatJs.InvokeVoidAsync(JS, "scrollToBottom", _element, false);
+        if (OnJumpToLatest.HasDelegate) await OnJumpToLatest.InvokeAsync();
+        else await ChatJs.InvokeVoidAsync(JS, "scrollToBottom", _element, false);
     }
 
     public async ValueTask DisposeAsync()

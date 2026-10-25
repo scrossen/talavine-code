@@ -6,19 +6,22 @@ namespace SwarmCore.Coding.Tests;
 
 public sealed class MacComputerSessionTests
 {
-    private sealed class Native : IMacDesktopDriver
+    internal sealed class Native : IMacDesktopDriver
     {
         public MacDesktopWindow Window { get; set; } = new("42", "Synthetic editor", 7, 123, -800, 20, 640, 480);
         public bool Focused { get; set; } = true;
         public bool Changed { get; set; }
         public int Inputs { get; private set; }
         public Action? AfterInput { get; set; }
+        public Exception? InputFailure { get; set; }
+        public Exception? CurrentFailure { get; set; }
+        public bool CaptureFailure { get; set; }
         public Task<IReadOnlyList<MacDesktopWindow>> ListAsync(CancellationToken ct) => Task.FromResult<IReadOnlyList<MacDesktopWindow>>([Window]);
         public Task ActivateAsync(MacDesktopWindow w, CancellationToken ct) { Focused = true; return Task.CompletedTask; }
-        public Task<byte[]> CaptureAsync(MacDesktopWindow w, CancellationToken ct) => Task.FromResult(new byte[] { 1, 2, 3 });
-        public Task<bool> IsCurrentAsync(MacDesktopWindow w, bool focus, CancellationToken ct) => Task.FromResult(!Changed && (!focus || Focused) && w == Window);
+        public Task<byte[]> CaptureAsync(MacDesktopWindow w, CancellationToken ct) => CaptureFailure ? throw new IOException("synthetic capture failure") : Task.FromResult(new byte[] { 1, 2, 3 });
+        public Task<bool> IsCurrentAsync(MacDesktopWindow w, bool focus, CancellationToken ct) => CurrentFailure is { } error ? throw error : Task.FromResult(!Changed && (!focus || Focused) && w == Window);
         public Task ExecuteAsync(MacDesktopWindow w, ComputerAction a, CancellationToken ct)
-        { Inputs++; AfterInput?.Invoke(); ct.ThrowIfCancellationRequested(); return Task.CompletedTask; }
+        { Inputs++; AfterInput?.Invoke(); ct.ThrowIfCancellationRequested(); if (InputFailure is { } error) throw error; return Task.CompletedTask; }
     }
     private static MacComputerSession Session(Native native, bool enabled = true) => new(Options.Create(new CodingComputerOptions { Enabled = enabled }), native);
     private static ComputerActionBatch Batch(ComputerObservation o, params ComputerAction[] actions) => new(o.SessionId, o.SurfaceId, o.ObservationId, actions);
@@ -48,7 +51,7 @@ public sealed class MacComputerSessionTests
     {
         var native = new Native(); var session = Session(native); var o = await session.ObserveAsync("42");
         var result = await session.ExecuteBatchAsync(Batch(o, new ComputerAction("type") { Text = "safe" }, new ComputerAction("click") { X = 640, Y = 0 }));
-        Assert.False(result.Succeeded); Assert.False(result.OutcomeUncertain); Assert.Equal(0, native.Inputs);
+        Assert.False(result.Succeeded); Assert.False(result.OutcomeUncertain); Assert.True(result.NoPhysicalAction); Assert.Equal(0, native.Inputs);
         Assert.False((await session.ExecuteBatchAsync(Batch(o, new ComputerAction("type") { Text = "retry" }))).Succeeded);
     }
 
@@ -73,7 +76,7 @@ public sealed class MacComputerSessionTests
         else if (change == "bounds") native.Window = native.Window with { X = 30 };
         else native.Window = native.Window with { ProcessStartTicks = 999 };
         var result = await session.ExecuteBatchAsync(Batch(o, new ComputerAction("keypress") { Keys = ["CMD", "A"] }));
-        Assert.False(result.Succeeded); Assert.False(result.OutcomeUncertain); Assert.Equal(0, native.Inputs);
+        Assert.False(result.Succeeded); Assert.False(result.OutcomeUncertain); Assert.True(result.NoPhysicalAction); Assert.Equal(0, native.Inputs);
     }
 
     [Fact]
@@ -82,7 +85,7 @@ public sealed class MacComputerSessionTests
         var native = new Native(); var session = Session(native); var o = await session.ObserveAsync("42");
         native.AfterInput = () => native.Focused = false;
         var result = await session.ExecuteBatchAsync(Batch(o, new ComputerAction("type") { Text = "first" }, new ComputerAction("type") { Text = "second" }));
-        Assert.False(result.Succeeded); Assert.True(result.OutcomeUncertain); Assert.Equal(1, result.CompletedActions);
+        Assert.False(result.Succeeded); Assert.True(result.OutcomeUncertain); Assert.False(result.NoPhysicalAction); Assert.Equal(1, result.CompletedActions);
         Assert.False((await session.ExecuteBatchAsync(Batch(o, new ComputerAction("screenshot")))).Succeeded);
         Assert.Equal(1, native.Inputs);
     }
@@ -116,4 +119,47 @@ public sealed class MacComputerSessionTests
         Assert.Throws<ArgumentException>(() => MacComputerSession.ValidateAction(new ComputerAction("keypress"), 100, 100));
         Assert.Throws<ArgumentException>(() => MacComputerSession.ValidateAction(new ComputerAction("click") { X = double.NaN, Y = 0 }, 100, 100));
     }
+    [Theory]
+    [InlineData("driver-hit-guard")]
+    [InlineData("capture-after-input")]
+    [InlineData("current-check-exception")]
+    [InlineData("wait-then-focus-guard")]
+    public async Task Driver_entry_partial_input_capture_and_unknown_exceptions_never_claim_zero_dispatch(string scenario)
+    {
+        var native = new Native(); var session = Session(native); var observation = await session.ObserveAsync("42");
+        if (scenario == "driver-hit-guard") native.InputFailure = new ComputerOperationException("synthetic hit guard after pointer move");
+        if (scenario == "capture-after-input") native.CaptureFailure = true;
+        if (scenario == "current-check-exception") native.CurrentFailure = new IOException("synthetic unknown driver check failure");
+        if (scenario == "wait-then-focus-guard") native.AfterInput = () => native.Focused = false;
+        var actions = scenario == "wait-then-focus-guard"
+            ? new ComputerAction[] { new("wait"), new("keypress") { Keys = ["RETURN"] } }
+            : [new ComputerAction("keypress") { Keys = ["RETURN"] }];
+        var result = await session.ExecuteBatchAsync(Batch(observation, actions));
+        Assert.False(result.Succeeded); Assert.False(result.NoPhysicalAction);
+        Assert.Equal(scenario == "current-check-exception" ? 0 : 1, native.Inputs);
+        if (scenario is "driver-hit-guard" or "current-check-exception") Assert.Equal(0, result.CompletedActions);
+        // Failure consumed the observation; it cannot admit the same action again.
+        native.CurrentFailure = null;
+        Assert.True((await session.ExecuteBatchAsync(Batch(observation, new ComputerAction("screenshot")))).NoPhysicalAction);
+    }
+
+    [Fact]
+    public async Task Pure_unavailable_guards_prove_zero_dispatch_but_cancellation_stays_an_exception()
+    {
+        var batch = new ComputerActionBatch("missing", "missing", "missing", [new("screenshot")]);
+        Assert.True((await Session(new Native(), false).ExecuteBatchAsync(batch)).NoPhysicalAction);
+        var noDriver = new MacComputerSession(Options.Create(new CodingComputerOptions { Enabled = true }));
+        Assert.True((await noDriver.ExecuteBatchAsync(batch)).NoPhysicalAction);
+        var windows = new WindowsComputerSession(Options.Create(new CodingComputerOptions { Enabled = false }));
+        Assert.True((await windows.ExecuteBatchAsync(batch)).NoPhysicalAction);
+        using var cancelled = new CancellationTokenSource(); cancelled.Cancel();
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => noDriver.ExecuteBatchAsync(batch, cancelled.Token));
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => windows.ExecuteBatchAsync(batch, cancelled.Token));
+        if (!OperatingSystem.IsWindows())
+        {
+            var unavailableWindows = new WindowsComputerSession(Options.Create(new CodingComputerOptions { Enabled = true }));
+            Assert.True((await unavailableWindows.ExecuteBatchAsync(batch)).NoPhysicalAction);
+        }
+    }
+
 }

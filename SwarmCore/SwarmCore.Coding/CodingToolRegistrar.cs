@@ -1,6 +1,7 @@
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using SwarmCore.Agent.Abstractions;
+using SwarmCore.Agent.Catalog;
 using SwarmCore.Coding.Tools;
 using SwarmCore.Missions;
 
@@ -14,10 +15,29 @@ public sealed class CodingToolRegistrar(IServiceProvider services) : IHostedServ
         EditFileTool.ToolId, GrepTool.ToolId, GlobTool.ToolId,
         GitStatusTool.ToolId, GitDiffTool.ToolId, GitCommitTool.ToolId, GitLogTool.ToolId,
         CredentialsListTool.ToolId, HarnessDeclineTool.ToolId,
-        NotebookReadTool.ToolId, NotebookEditTool.ToolId,
+        NotebookReadTool.ToolId, NotebookEditTool.ToolId, ReadJsonTool.ToolId,
         "models.inspect", "models.test_vision",
         ModelVisionRecovery.ToolId,
     ];
+
+    /// <summary>
+    /// The descriptors of the harness tools named by <see cref="CodingToolIds"/>. Hosts that
+    /// publish the harness themselves use this list, so a new harness tool reaches them too.
+    /// </summary>
+    public static IEnumerable<ToolDescriptor> HarnessToolDescriptors(IServiceProvider services)
+    {
+        yield return services.GetRequiredService<EditFileTool>().Descriptor;
+        yield return services.GetRequiredService<GrepTool>().Descriptor;
+        yield return services.GetRequiredService<GlobTool>().Descriptor;
+        yield return services.GetRequiredService<GitStatusTool>().Descriptor;
+        yield return services.GetRequiredService<GitDiffTool>().Descriptor;
+        yield return services.GetRequiredService<GitCommitTool>().Descriptor;
+        yield return services.GetRequiredService<GitLogTool>().Descriptor;
+        yield return services.GetRequiredService<CredentialsListTool>().Descriptor;
+        yield return services.GetRequiredService<HarnessDeclineTool>().Descriptor;
+        yield return services.GetRequiredService<NotebookReadTool>().Descriptor;
+        yield return services.GetRequiredService<NotebookEditTool>().Descriptor;
+    }
 
     /// <summary>For hosts that do not run hosted services. Safe to call repeatedly.</summary>
     public static void RegisterAll(IServiceProvider services)
@@ -26,24 +46,22 @@ public sealed class CodingToolRegistrar(IServiceProvider services) : IHostedServ
         _ = services.GetService<Microsoft.Extensions.Options.IOptions<CodingOptions>>()?.Value;
         MissionPrimitiveTools.RegisterAll(services);
         var catalog = services.GetRequiredService<ICapabilityCatalog>();
-        catalog.Register(services.GetRequiredService<EditFileTool>().Descriptor);
-        catalog.Register(services.GetRequiredService<GrepTool>().Descriptor);
-        catalog.Register(services.GetRequiredService<GlobTool>().Descriptor);
-        catalog.Register(services.GetRequiredService<GitStatusTool>().Descriptor);
-        catalog.Register(services.GetRequiredService<GitDiffTool>().Descriptor);
-        catalog.Register(services.GetRequiredService<GitCommitTool>().Descriptor);
-        catalog.Register(services.GetRequiredService<GitLogTool>().Descriptor);
-        catalog.Register(services.GetRequiredService<CredentialsListTool>().Descriptor);
+        foreach (var descriptor in HarnessToolDescriptors(services)) catalog.Register(descriptor);
         foreach (var descriptor in services.GetRequiredService<ModelCapabilityTools>().Descriptors) catalog.Register(descriptor);
-        catalog.Register(services.GetRequiredService<HarnessDeclineTool>().Descriptor);
         // The task list belongs to the calling turn's conversation; the model never names one.
         if (services.GetService<Planning.IConversationPlanStore>() is { } plans
             && services.GetService<SwarmCore.Agent.Runtime.ICurrentTurnContextAccessor>() is { } turns)
             foreach (var descriptor in Planning.PlanTools.Create(plans, () => turns.Current?.ConversationId)) catalog.Register(descriptor);
         catalog.Register(services.GetRequiredService<NotebookReadTool>().Descriptor);
         catalog.Register(services.GetRequiredService<NotebookEditTool>().Descriptor);
+        catalog.Register(services.GetRequiredService<ReadJsonTool>().Descriptor);
         if (services.GetService<Computer.CodingComputerTools>() is { } computer)
             foreach (var descriptor in computer.Descriptors) catalog.Register(descriptor);
+        // Element-level desktop control (desktop.*) only while computer access is on. Reads are read-only; act, input
+        // and command declare an external side effect, so the turn's permission policy and broker decide them.
+        if (services.GetService<Microsoft.Extensions.Options.IOptions<Computer.CodingComputerOptions>>()?.Value.Enabled == true
+            && services.GetService<SwarmCore.RemoteControl.Agent.DesktopControlTools>() is { } desktop)
+            foreach (var descriptor in SwarmCore.RemoteControl.Platform.DesktopToolChoice.ForHost(desktop, "coding")) catalog.Register(descriptor);
     }
 
     public Task StartAsync(CancellationToken cancellationToken)

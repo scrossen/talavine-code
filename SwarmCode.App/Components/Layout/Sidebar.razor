@@ -8,9 +8,7 @@
     <RepositoryPicker />
 
     <a class="sc-sidebar__item @(_activePath.Length == 0 || _activePath.StartsWith("apps", StringComparison.Ordinal) ? "sc-sidebar__item--active" : "")" href="/apps">My Apps and Projects</a>
-    <a class="sc-sidebar__item" href="/history">Search session history</a>
-    <a class="sc-sidebar__item" href="/peers">Peers</a>
-    <a class="sc-sidebar__item @(_activePath == "overview" ? "sc-sidebar__item--active" : "")" href="/overview">AI overview</a>
+    <a class="sc-sidebar__item @(_activePath.StartsWith("goals", StringComparison.Ordinal) ? "sc-sidebar__item--active" : "")" href="/goals">Agent inbox</a>
 
     <button type="button" class="sc-btn sc-btn--primary sc-btn--block" @onclick="NewSessionAsync" title="Ctrl/Cmd+N">
         New chat
@@ -33,14 +31,14 @@
             var session = row.Session;
             var running = IsWorking(session.Id);
             var hiddenWorking = row.Collapsed ? row.Descendants.Count(IsWorking) : 0;
+            var hiddenWaiting = row.Collapsed ? row.Descendants.Count(id => _waiting.Contains(id)) : 0;
             var active = session.Id == _activeId;
             var confirming = _confirmDeleteId == session.Id;
             var independent = State.Agents.Get(session.Id)?.Independent == true;
             <div role="treeitem" aria-level="@(row.Depth + 1)" aria-expanded="@(row.HasChildren ? (!row.Collapsed).ToString().ToLowerInvariant() : null)"
                  aria-selected="@(active ? "true" : "false")"
                  class="sc-sidebar__item sc-tree__row @(row.Depth > 0 ? "sc-tree__row--child" : "") @(active ? "sc-sidebar__item--active" : "") @(running || hiddenWorking > 0 ? "sc-sidebar__item--running" : "") @(confirming ? "sc-sidebar__item--confirm" : "")"
-                 style="--sc-tree-depth:@row.Depth"
-                 @onclick="() => Open(session.Id)">
+                 style="--sc-tree-depth:@row.Depth">
                 @if (row.HasChildren)
                 {
                     <button type="button" class="sc-tree__toggle @(row.Collapsed ? "sc-tree__toggle--collapsed" : "")"
@@ -52,7 +50,8 @@
                 {
                     <span class="sc-tree__spacer" aria-hidden="true"></span>
                 }
-                <span class="sc-sidebar__text">
+                @* A real link: reachable with Tab and opened with Enter, like Home and Agents. *@
+                <a class="sc-sidebar__text sc-sidebar__link" href="@AppNavigation.SessionUrl(session.Id)" aria-current="@(active ? "page" : null)">
                     <span class="sc-sidebar__title" title="@session.Title">@session.Title</span>
                     <span class="sc-sidebar__meta">
                         <span>@AppNavigation.RelativeTime(session.LastActivityUtc)</span>
@@ -62,16 +61,13 @@
                         }
                         @if (row.Collapsed)
                         {
-                            <span class="sc-chip @(hiddenWorking > 0 ? "sc-chip--accent" : "")" title="Folded agent sessions">
-                                @(hiddenWorking > 0 ? $"{hiddenWorking} working" : $"+{row.Descendants.Count}")
+                            <span class="sc-chip sc-tree__summary @(hiddenWorking > 0 ? "sc-chip--accent" : "")" title="Folded agent sessions">
+                                @($"{row.Descendants.Count} agents")@if (hiddenWorking > 0) { <span> · @hiddenWorking working</span> }@if (hiddenWaiting > 0) { <span> · @hiddenWaiting waiting</span> }
                             </span>
                         }
-                        @if (!string.IsNullOrEmpty(session.LaneName))
-                        {
-                            <span class="sc-chip">@session.LaneName</span>
-                        }
+                        @if (_attention.Contains(session.Id)) { <span>Needs attention</span> }
                     </span>
-                </span>
+                </a>
                 @if (confirming)
                 {
                     <span class="sc-sidebar__confirm" @onclick:stopPropagation="true">
@@ -90,6 +86,11 @@
     </div>
 
     <div class="sc-sidebar__footer">
+        <details class="sc-sidebar__more" open="@MoreIsActive">
+        <summary class="sc-sidebar__item">More @if (_runningAgents > 0) { <span class="sc-chip">@_runningAgents agents working</span> }</summary>
+        <a class="sc-sidebar__item" href="/history">Search chat history</a>
+        <a class="sc-sidebar__item" href="/peers">Peers</a>
+        <a class="sc-sidebar__item @(_activePath == "overview" ? "sc-sidebar__item--active" : "")" href="/overview">AI overview</a>
         <a class="sc-sidebar__item @(_activePath == "agents" ? "sc-sidebar__item--active" : "") @(_runningAgents > 0 ? "sc-sidebar__item--running" : "")" href="/agents">
             Agents @if (_runningAgents > 0) { <span class="sc-chip sc-chip--accent">@_runningAgents working</span> }
         </a>
@@ -100,6 +101,7 @@
                 Self-improvement @if (loop.IsRunning) { <span class="sc-chip sc-chip--accent">working</span> }
             </a>
         }
+        </details>
         <a class="sc-sidebar__item @(_activePath == "settings" ? "sc-sidebar__item--active" : "")" href="/settings">Settings <span class="sc-kbd">@SwarmCode.App.Services.PlatformText.SettingsShortcut</span></a>
         <button type="button" class="sc-sidebar__item" @onclick="CycleTheme" title="Cycle theme: system, light, dark">
             <span>@ThemeGlyph</span> <span>Theme: @Theme</span>
@@ -110,11 +112,15 @@
 @code {
     private IReadOnlyList<SessionTreeRow> _rows = [];
     private HashSet<string> _working = new(StringComparer.Ordinal);
+    private HashSet<string> _waiting = new(StringComparer.Ordinal);
+    private HashSet<string> _attention = new(StringComparer.Ordinal);
+    private readonly SidebarSessionTree _tree = new();
     private int _runningAgents;
     private string? _activeId;
     private string _activePath = "";
     private string? _confirmDeleteId;
     private int _refreshState; // 0 idle, 1 running, 2 running + rerun requested
+    private bool MoreIsActive => _activePath is "history" or "peers" or "overview" or "agents" or "schedules" or "self-improvement";
 
     private string Theme => State.Preferences.Current.Theme is "light" or "dark" ? State.Preferences.Current.Theme : "system";
     private string ThemeGlyph => Theme switch { "light" => "☀", "dark" => "☾", _ => "◐" };
@@ -138,18 +144,14 @@
 
     private void OnLocationChanged(object? sender, LocationChangedEventArgs e)
     {
-        _ = InvokeAsync(() => { UpdateLocation(); StateHasChanged(); });
+        _ = InvokeAsync(async () => { UpdateLocation(); await RefreshAsync(); });
     }
 
     // Events arrive on background threads and can be frequent (streaming), so refreshes are coalesced.
     private void OnChanged() => _ = InvokeAsync(RefreshAsync);
 
-    // Agent activity changes often; only the running count matters here.
-    private void OnAgentsChanged()
-    {
-        var running = State.Agents.RunningCount;
-        if (running != _runningAgents) _ = InvokeAsync(RefreshAsync);
-    }
+    // State can change without changing the running count (including queued and attention states).
+    private void OnAgentsChanged() => _ = InvokeAsync(RefreshAsync);
 
     private async Task RefreshAsync()
     {
@@ -165,11 +167,18 @@
                 Interlocked.Exchange(ref _refreshState, 1);
                 var root = State.SessionListRoot;
                 var sessions = await Task.Run(() => State.Sessions.ListAsync(root));
-                var collapsed = State.Preferences.Current.CollapsedSessionIds.ToHashSet(StringComparer.Ordinal);
-                _rows = SessionTree.Flatten(sessions, collapsed.Contains);
-                _working = sessions.Select(s => s.Id).Where(id => State.TryGetRunner(id)?.IsRunning == true
-                    || State.Agents.Get(id)?.State is SwarmCore.Coding.Agents.AgentState.Running or SwarmCore.Coding.Agents.AgentState.Queued)
-                    .ToHashSet(StringComparer.Ordinal);
+                _rows = _tree.Rows(sessions, _activeId);
+                _working.Clear(); _waiting.Clear(); _attention.Clear();
+                foreach (var session in sessions)
+                {
+                    var runner = State.TryGetRunner(session.Id);
+                    var state = SessionActivityView.Create(runner?.IsRunning == true, runner?.JobState ?? "Idle", runner?.Goal, [],
+                        useGoalState: runner?.IsGoalJob == true || runner?.HasUnfinishedGoal == true);
+                    var agent = State.Agents.Get(session.Id);
+                    if (state.State == "Needs attention") _attention.Add(session.Id);
+                    else if (state.State is "Waiting to retry" or "Paused" or "Needs your input" || agent?.State == SwarmCore.Coding.Agents.AgentState.Queued) _waiting.Add(session.Id);
+                    else if (state.Busy || agent?.State == SwarmCore.Coding.Agents.AgentState.Running) _working.Add(session.Id);
+                }
                 _runningAgents = State.Agents.RunningCount;
                 StateHasChanged();
                 if (State.AnyTurnRunning) await Task.Delay(300);
@@ -183,15 +192,11 @@
         }
     }
 
-    private void Open(string id) => Nav.NavigateTo(AppNavigation.SessionUrl(id));
 
     private bool IsWorking(string id) => _working.Contains(id);
 
-    // Folding is per person and survives restarts; expanded is the default, so only folded ids are kept.
-    private void ToggleCollapsed(string id) => State.Preferences.Update(p =>
-    {
-        if (!p.CollapsedSessionIds.Remove(id)) p.CollapsedSessionIds.Add(id);
-    });
+    // Historical branches start folded. Explicit expansion lasts for this window; saved preferences are untouched.
+    private void ToggleCollapsed(string id) { _tree.Toggle(id); _ = RefreshAsync(); }
 
     private async Task NewSessionAsync()
     {

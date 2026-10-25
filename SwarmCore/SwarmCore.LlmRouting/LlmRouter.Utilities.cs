@@ -262,21 +262,11 @@ public partial class LlmRouter
 
     internal static string CleanHtmlFromPrompt(string prompt)
     {
-        if (string.IsNullOrEmpty(prompt))
-            return prompt;
-
-        // Remove common HTML tags
-        var cleaned = Regex.Replace(prompt, @"<[^>]+>", " ");
-        // Preserve prompt structure. Flattening every newline into a space
-        // destroys evidence boundaries and field instructions used by structured
-        // local-model prompts, which can turn a bounded JSON response into an
-        // unparseable max-token completion.
-        cleaned = cleaned.Replace("\r\n", "\n", StringComparison.Ordinal)
-            .Replace('\r', '\n');
-        cleaned = Regex.Replace(cleaned, @"[^\S\n]+", " ");
-        cleaned = Regex.Replace(cleaned, @" *\n *", "\n");
-        cleaned = Regex.Replace(cleaned, @"\n{3,}", "\n\n");
-        return cleaned.Trim();
+        // Despite this helper's legacy name, a prompt is already prepared text.
+        // It may contain comparisons, generics, literal markup or significant
+        // whitespace. Preserve it verbatim on every router path. HTML-to-text
+        // conversion belongs to the source/adapter that explicitly owns HTML.
+        return prompt;
     }
 
     // Structural extraction is shared with the rest of the system via

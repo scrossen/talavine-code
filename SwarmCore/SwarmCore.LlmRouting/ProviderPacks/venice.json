@@ -1,0 +1,22 @@
+{
+  "schemaVersion": 1,
+  "packId": "talavine.venice",
+  "version": "2026.10.22.1",
+  "providerName": "Venice",
+  "modelPrefix": "venice",
+  "executionDialect": "openai-compatible-chat-v1",
+  "modelDefaults": { "frontier": "zai-org-glm-5-2", "balanced": "zai-org-glm-5-2", "economy": "venice-uncensored-1-2" },
+  "directApi": {
+    "baseUrl": "https://api.venice.ai/api/v1",
+    "executionEndpoints": ["https://api.venice.ai/api/v1/chat/completions"],
+    "defaultModel": "zai-org-glm-5-2",
+    "defaultModels": ["zai-org-glm-5-2", "venice-uncensored-1-2"],
+    "modelFacts": {
+      "zai-org-glm-5-2": { "displayName": "GLM 5.2", "supportsChat": true, "maxContextTokens": 1000000, "inputCostPer1K": 0.0014, "outputCostPer1K": 0.0044, "description": "Venice-hosted GLM 5.2; base rate below the long-context tier", "recommendedFor": "General chat and tool use" },
+      "venice-uncensored-1-2": { "displayName": "Venice Uncensored 1.2", "supportsChat": true, "maxContextTokens": 128000, "inputCostPer1K": 0.0002, "outputCostPer1K": 0.0009, "description": "Venice's own uncensored model", "recommendedFor": "Requests other models decline on policy grounds" }
+    },
+    "preferredModels": ["zai-org-glm-5-2"],
+    "visionModelPatterns": [],
+    "qualificationPriority": 80
+  }
+}

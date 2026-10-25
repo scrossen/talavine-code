@@ -37,7 +37,7 @@
                 @foreach (var row in _rows)
                 {
                     var agent = row.Agent;
-                    <div class="sc-list__row sc-agent" style="padding-left:@((agent.Depth - 1) * 1.25)rem">
+                    <div class="sc-list__row sc-agent" style="padding-left:@(((agent.Depth - 1) * 1.25).ToString(System.Globalization.CultureInfo.InvariantCulture))rem">
                         <span class="sc-agent__dot sc-agent__dot--@agent.State.ToString().ToLowerInvariant()" title="@StateLabel(agent.State)"></span>
                         <div class="sc-grow sc-agent__text">
                             <a class="sc-agent__title" href="@AppNavigation.SessionUrl(agent.Id)" title="@agent.Task">@agent.Title</a>
@@ -48,6 +48,7 @@
                                 @if (Elapsed(agent) is { } elapsed) { <span>@elapsed</span> }
                                 @if (agent.ToolCalls > 0) { <span>@agent.ToolCalls @(agent.ToolCalls == 1 ? "step" : "steps")</span> }
                                 @if (!string.IsNullOrEmpty(agent.Lane)) { <span>@agent.Lane</span> }
+                                @if (!string.IsNullOrEmpty(agent.Model)) { <span>Started with @agent.Model</span> }
                                 @if (agent.Worktree is { } worktree)
                                 {
                                     <span class="sc-chip @(worktree.HasUncommittedChanges == true ? "sc-chip--warn" : "")"
@@ -58,6 +59,13 @@
                                     <span>from <a href="@AppNavigation.SessionUrl(agent.ParentId)">@row.ParentTitle</a></span>
                                 }
                             </div>
+                            @if (!string.IsNullOrWhiteSpace(agent.RoutingNote))
+                            {
+                                <details class="sc-muted">
+                                    <summary>Initial model selection</summary>
+                                    <p>@agent.RoutingNote</p>
+                                </details>
+                            }
                         </div>
                         @if (!agent.IsTerminal)
                         {

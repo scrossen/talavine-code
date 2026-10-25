@@ -59,7 +59,7 @@
     private async Task ReloadAsync()
     {
         try { _document = await Task.Run(Store.Read); _hasKey = await App.ApiKeys.HasApiKeyAsync(Draft().Provider); _status = null; }
-        catch { _status = "Could not read model sources. Existing settings have been preserved."; }
+        catch { _status = $"Could not read {Store.FilePath}. Fix or remove that file; until then no saved model sources are used, and the file is never overwritten."; }
     }
     private void Edit(ConfiguredModelSource s)
     {

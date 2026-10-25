@@ -1,4 +1,5 @@
 using System.Text.Json;
+using Microsoft.Extensions.Logging;
 using SwarmCore.Abstractions.LlmRouting;
 
 namespace SwarmCode.Hosting.Llm;
@@ -16,10 +17,15 @@ public sealed class JsonLlmUsageTracker : ILlmUsageTracker
     private static readonly TimeSpan Retention = TimeSpan.FromDays(90);
 
     private readonly SwarmCodeDataPaths _paths;
+    private readonly ILogger<JsonLlmUsageTracker>? _logger;
     private readonly object _lock = new();
     private List<LlmUsageRecord>? _records;
 
-    public JsonLlmUsageTracker(SwarmCodeDataPaths paths) => _paths = paths;
+    public JsonLlmUsageTracker(SwarmCodeDataPaths paths, ILogger<JsonLlmUsageTracker>? logger = null)
+    {
+        _paths = paths;
+        _logger = logger;
+    }
 
     public Task TrackUsageAsync(LlmUsageRecord record)
     {
@@ -61,6 +67,10 @@ public sealed class JsonLlmUsageTracker : ILlmUsageTracker
                 TotalTokens = list.Sum(r => (long)r.TotalTokens),
                 StartDate = startDate ?? DateTime.MinValue,
                 EndDate = endDate ?? DateTime.UtcNow,
+                CostByFunction = list.GroupBy(r => r.FunctionType ?? "").ToDictionary(g => g.Key, g => g.Sum(r => r.EstimatedCost)),
+                RequestsByFunction = list.GroupBy(r => r.FunctionType ?? "").ToDictionary(g => g.Key, g => g.Count()),
+                CostByModel = list.GroupBy(r => r.Model ?? "").ToDictionary(g => g.Key, g => g.Sum(r => r.EstimatedCost)),
+                TokensByModel = list.GroupBy(r => r.Model ?? "").ToDictionary(g => g.Key, g => g.Sum(r => (long)r.TotalTokens)),
             });
         }
     }
@@ -112,11 +122,26 @@ public sealed class JsonLlmUsageTracker : ILlmUsageTracker
         }
         catch (Exception ex) when (ex is IOException or JsonException or UnauthorizedAccessException)
         {
-            // A corrupt or unreadable usage file must not take LLM calls down;
-            // start a fresh ledger and let the next save replace it.
+            // A corrupt or unreadable usage file must not take LLM calls down, but its history must not
+            // vanish either: move it aside (like the routing audit ledger) and start a fresh ledger.
+            Quarantine(ex);
             _records = [];
         }
         return _records;
+    }
+
+    private void Quarantine(Exception reason)
+    {
+        var aside = _paths.UsagePath + $".corrupt-{DateTime.UtcNow:yyyyMMddHHmmss}";
+        try
+        {
+            if (File.Exists(_paths.UsagePath)) File.Move(_paths.UsagePath, aside, overwrite: false);
+            _logger?.LogWarning(reason, "The LLM usage file was unreadable; moved it to {Quarantine} and started a new one.", aside);
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            _logger?.LogWarning(ex, "The LLM usage file was unreadable and could not be moved aside.");
+        }
     }
 
     private static void PruneLocked(List<LlmUsageRecord> records)

@@ -56,27 +56,33 @@ public sealed class MacComputerSession(IOptions<CodingComputerOptions> options, 
 
     public async Task<ComputerActionResult> ExecuteBatchAsync(ComputerActionBatch batch, CancellationToken ct = default)
     {
-        var native = RequireDriver();
+        ct.ThrowIfCancellationRequested();
+        var completed = 0;
+        var dispatched = false;
+        var driverEntered = false;
+        IMacDesktopDriver native;
+        try { native = RequireDriver(); }
+        catch (ComputerOperationException ex) { return GuardFailure(ex.Message); }
         await gate.WaitAsync(ct).ConfigureAwait(false);
         using var deadline = CancellationTokenSource.CreateLinkedTokenSource(ct);
         deadline.CancelAfter(TimeSpan.FromSeconds(30));
         ct = deadline.Token;
-        var completed = 0;
-        var dispatched = false;
         try
         {
             if (current is null || selected is null || batch.SessionId != sessionId || batch.SurfaceId != selected.Id
-                || batch.ObservationId != current.ObservationId) return Failure("stale-or-missing-observation");
+                || batch.ObservationId != current.ObservationId) return GuardFailure("stale-or-missing-observation");
             current = null; // Invalid, cancelled and uncertain attempts cannot reuse the observation either.
-            if (batch.Actions.Count is < 1 or > 64) return Failure("invalid-action-batch");
-            foreach (var action in batch.Actions) ValidateAction(action, selected.Width, selected.Height);
+            if (batch.Actions.Count is < 1 or > 64) return GuardFailure("invalid-action-batch");
+            try { foreach (var action in batch.Actions) ValidateAction(action, selected.Width, selected.Height); }
+            catch (ArgumentException ex) { return GuardFailure(ex.Message); }
             foreach (var action in batch.Actions)
             {
                 ct.ThrowIfCancellationRequested();
                 if (!await native.IsCurrentAsync(selected, true, ct).ConfigureAwait(false))
-                    return Failure("window-focus-or-bounds-changed; observe again");
+                    return GuardFailure("window-focus-or-bounds-changed; observe again");
                 // Driver may throw after input; conservatively mark that attempt uncertain.
                 dispatched |= action.Type is not ("wait" or "screenshot");
+                driverEntered = true;
                 await native.ExecuteAsync(selected, action, ct).ConfigureAwait(false);
                 completed++;
             }
@@ -90,6 +96,11 @@ public sealed class MacComputerSession(IOptions<CodingComputerOptions> options, 
             return Failure(ex is ComputerOperationException or ArgumentException ? ex.Message : "Mac app control failed; observe the window before retrying.");
         }
         finally { gate.Release(); }
+        ComputerActionResult GuardFailure(string error)
+        {
+            ct.ThrowIfCancellationRequested();
+            return Failure(error) with { NoPhysicalAction = !driverEntered };
+        }
         ComputerActionResult Failure(string error) => new(false, completed, null, error)
             { Mode = "desktop", BeforeObservationId = batch.ObservationId, OutcomeUncertain = dispatched };
     }

@@ -41,7 +41,7 @@ public sealed class ToolUseCapabilityProver : IToolUseCapabilityProver
     private readonly ILogger<ToolUseCapabilityProver> _logger;
     private readonly Func<DateTime> _utcNow;
     private readonly ConcurrentDictionary<string, bool> _verdicts = new(StringComparer.OrdinalIgnoreCase);
-    private readonly ConcurrentDictionary<string, Task<bool?>> _inFlight = new(StringComparer.OrdinalIgnoreCase);
+    private readonly ConcurrentDictionary<string, Lazy<Task<bool?>>> _inFlight = new(StringComparer.OrdinalIgnoreCase);
     private readonly ConcurrentDictionary<string, ProbeFailure> _failures = new(StringComparer.OrdinalIgnoreCase);
 
     public ToolUseCapabilityProver(
@@ -111,31 +111,38 @@ public sealed class ToolUseCapabilityProver : IToolUseCapabilityProver
             return Task.FromResult<bool?>(null);
         }
 
-        // Single-flight: a turn that fans out across candidate routes should not
-        // fire the same probe several times concurrently. The in-flight entry is
-        // released by a continuation rather than inside the probe: a probe that
-        // fails synchronously would otherwise remove the entry BEFORE GetOrAdd
-        // inserts it, leaving a stale completed task that answers every later
-        // call with "inconclusive" without ever probing again.
-        var created = false;
-        var probe = _inFlight.GetOrAdd(key, _ =>
+        if (ct.IsCancellationRequested)
         {
-            created = true;
-            return ProbeAsync(provider, model, ct);
-        });
-        if (created)
+            return Task.FromCanceled<bool?>(ct);
+        }
+
+        // Single-flight: a turn that fans out across candidate routes should not
+        // fire the same probe several times concurrently. GetOrAdd may run its
+        // factory on several threads, so the factory only builds a Lazy; the
+        // probe starts once, when the stored Lazy is first read. The probe is
+        // owned by no single caller: it runs under its own timeout and each
+        // caller waits with its own token, so one caller's cancellation neither
+        // aborts the shared probe nor reaches the others. The in-flight entry is
+        // released by a continuation once the probe completes, so a probe that
+        // fails synchronously still leaves no stale entry behind.
+        Lazy<Task<bool?>>? created = null;
+        var entry = _inFlight.GetOrAdd(key, _ => created = new Lazy<Task<bool?>>(
+            () => ProbeAsync(provider, model),
+            LazyThreadSafetyMode.ExecutionAndPublication));
+        var probe = entry.Value;
+        if (ReferenceEquals(entry, created))
         {
             _ = probe.ContinueWith(
-                completed => _inFlight.TryRemove(new KeyValuePair<string, Task<bool?>>(key, completed)),
+                _ => _inFlight.TryRemove(new KeyValuePair<string, Lazy<Task<bool?>>>(key, entry)),
                 CancellationToken.None,
                 TaskContinuationOptions.ExecuteSynchronously,
                 TaskScheduler.Default);
         }
 
-        return probe;
+        return probe.WaitAsync(ct);
     }
 
-    private async Task<bool?> ProbeAsync(string provider, string model, CancellationToken ct)
+    private async Task<bool?> ProbeAsync(string provider, string model)
     {
         var key = Key(provider, model);
         try
@@ -146,8 +153,7 @@ public sealed class ToolUseCapabilityProver : IToolUseCapabilityProver
                 return null; // no translator — a different gate's problem, not a capability verdict
             }
 
-            using var timeout = CancellationTokenSource.CreateLinkedTokenSource(ct);
-            timeout.CancelAfter(ProbeTimeout);
+            using var timeout = new CancellationTokenSource(ProbeTimeout);
 
             var schema = new JsonObject
             {
@@ -204,7 +210,7 @@ public sealed class ToolUseCapabilityProver : IToolUseCapabilityProver
 
             return calledTool;
         }
-        catch (OperationCanceledException) when (!ct.IsCancellationRequested)
+        catch (OperationCanceledException)
         {
             // Timed out rather than refused. Inconclusive, so do NOT cache.
             _logger.LogWarning(

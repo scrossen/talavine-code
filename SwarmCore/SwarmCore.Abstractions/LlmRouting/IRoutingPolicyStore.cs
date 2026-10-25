@@ -151,6 +151,66 @@ public sealed record RoutingPolicy(
             : localTime >= start || localTime < end;
     }
 
+    /// <summary>
+    /// Three-way merge for a policy editor. Applies only the fields the editor
+    /// changed (<paramref name="edited"/> compared with the <paramref name="baseline"/>
+    /// it loaded) onto the <paramref name="current"/> stored policy, so a field
+    /// another writer changed meanwhile (for example the connection preference on
+    /// AI Connections) survives. Returns false, with the conflicting field names,
+    /// when the editor and another writer changed the same field to different values.
+    /// </summary>
+    public static bool TryMergeEdit(
+        RoutingPolicy baseline,
+        RoutingPolicy edited,
+        RoutingPolicy current,
+        out RoutingPolicy merged,
+        out IReadOnlyList<string> conflicts)
+    {
+        ArgumentNullException.ThrowIfNull(baseline);
+        ArgumentNullException.ThrowIfNull(edited);
+        ArgumentNullException.ThrowIfNull(current);
+
+        var conflicted = new List<string>();
+        T Pick<T>(string name, T before, T requested, T fresh)
+        {
+            var comparer = EqualityComparer<T>.Default;
+            if (comparer.Equals(before, requested))
+            {
+                return fresh;
+            }
+
+            if (!comparer.Equals(before, fresh) && !comparer.Equals(requested, fresh))
+            {
+                conflicted.Add(name);
+            }
+
+            return requested;
+        }
+
+        // Start from the current policy so any field not listed here keeps its
+        // stored value rather than a constructor default.
+        merged = current with
+        {
+            MonthlyCloudBudgetUsd = Pick(nameof(MonthlyCloudBudgetUsd), baseline.MonthlyCloudBudgetUsd, edited.MonthlyCloudBudgetUsd, current.MonthlyCloudBudgetUsd),
+            UrgencyBoostMonthlyBudgetUsd = Pick(nameof(UrgencyBoostMonthlyBudgetUsd), baseline.UrgencyBoostMonthlyBudgetUsd, edited.UrgencyBoostMonthlyBudgetUsd, current.UrgencyBoostMonthlyBudgetUsd),
+            QuietHoursStart = Pick(nameof(QuietHoursStart), baseline.QuietHoursStart, edited.QuietHoursStart, current.QuietHoursStart),
+            QuietHoursEnd = Pick(nameof(QuietHoursEnd), baseline.QuietHoursEnd, edited.QuietHoursEnd, current.QuietHoursEnd),
+            BudgetPressureThreshold = Pick(nameof(BudgetPressureThreshold), baseline.BudgetPressureThreshold, edited.BudgetPressureThreshold, current.BudgetPressureThreshold),
+            SubscriptionQuotaThreshold = Pick(nameof(SubscriptionQuotaThreshold), baseline.SubscriptionQuotaThreshold, edited.SubscriptionQuotaThreshold, current.SubscriptionQuotaThreshold),
+            AllowUrgencyBoost = Pick(nameof(AllowUrgencyBoost), baseline.AllowUrgencyBoost, edited.AllowUrgencyBoost, current.AllowUrgencyBoost),
+            QuietHoursForceLocal = Pick(nameof(QuietHoursForceLocal), baseline.QuietHoursForceLocal, edited.QuietHoursForceLocal, current.QuietHoursForceLocal),
+            AllowMeteredPipelineFallback = Pick(nameof(AllowMeteredPipelineFallback), baseline.AllowMeteredPipelineFallback, edited.AllowMeteredPipelineFallback, current.AllowMeteredPipelineFallback),
+            MeteredPipelineDailyCapUsd = Pick(nameof(MeteredPipelineDailyCapUsd), baseline.MeteredPipelineDailyCapUsd, edited.MeteredPipelineDailyCapUsd, current.MeteredPipelineDailyCapUsd),
+            ModelScoutCapabilityWeight = Pick(nameof(ModelScoutCapabilityWeight), baseline.ModelScoutCapabilityWeight, edited.ModelScoutCapabilityWeight, current.ModelScoutCapabilityWeight),
+            ModelScoutSpeedWeight = Pick(nameof(ModelScoutSpeedWeight), baseline.ModelScoutSpeedWeight, edited.ModelScoutSpeedWeight, current.ModelScoutSpeedWeight),
+            ModelScoutCostWeight = Pick(nameof(ModelScoutCostWeight), baseline.ModelScoutCostWeight, edited.ModelScoutCostWeight, current.ModelScoutCostWeight),
+            UseCustomModelScoutWeights = Pick(nameof(UseCustomModelScoutWeights), baseline.UseCustomModelScoutWeights, edited.UseCustomModelScoutWeights, current.UseCustomModelScoutWeights),
+            PreferredModelConnection = Pick(nameof(PreferredModelConnection), baseline.PreferredModelConnection, edited.PreferredModelConnection, current.PreferredModelConnection),
+        };
+        conflicts = conflicted;
+        return conflicted.Count == 0;
+    }
+
     private static bool IsPositiveBudget(decimal? value) =>
         value is null or (> 0 and <= 1_000_000m);
 

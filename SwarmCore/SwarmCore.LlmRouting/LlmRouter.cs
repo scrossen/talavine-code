@@ -106,7 +106,9 @@ public partial class LlmRouter : ILlmRouter
     /// request-scoped hosts cannot dispose the settings provider before its atomic row +
     /// receipt commit. Failures remain non-fatal and are retried on the next call.
     /// </summary>
-    private async Task MaterializeFunctionPreferenceIfMissingAsync(
+    // Internal (not private) so the router test assembly calls it directly
+    // instead of binding to it by reflection.
+    internal async Task MaterializeFunctionPreferenceIfMissingAsync(
         string functionType,
         LlmModelSelection selection,
         LlmRouterOptions? options,
@@ -1611,7 +1613,7 @@ public partial class LlmRouter : ILlmRouter
             {
                 if (options?.DisableFallback == true)
                 {
-                    throw new InvalidOperationException(
+                    throw new LlmNoUsableRouteException(
                         $"Exact model {selectedModel.Provider}/{selectedModel.Model} does not support vision.");
                 }
 
@@ -1635,7 +1637,7 @@ public partial class LlmRouter : ILlmRouter
                 }
                 else
                 {
-                    throw new InvalidOperationException($"Model {selectedModel.Model} does not support vision");
+                    throw new LlmNoUsableRouteException($"Model {selectedModel.Model} does not support vision");
                 }
             }
 
@@ -2071,8 +2073,8 @@ public partial class LlmRouter : ILlmRouter
         var retryRequestId = $"{requestId}-{ResolveQualityRetrySuffix(qualityFailureReason, options)}";
         var retryPrompt = isJsonContractRetry
                           && !StoppedAtMaxTokens(failedResponse)
-                          && string.Equals(selectedModel.Provider, "GenieX", StringComparison.OrdinalIgnoreCase)
-            ? BuildGenieXJsonRecoveryPrompt(prompt)
+                          && provider is ILlmJsonRecoveryPromptProvider recovery
+            ? recovery.BuildJsonRecoveryPrompt(prompt)
             : prompt;
         _debugLogger.LogRequest(new LlmDebugRequest(
             RequestId: retryRequestId,
@@ -2673,40 +2675,80 @@ public partial class LlmRouter : ILlmRouter
                 reason: "vision_typed_json_parse",
                 options: jsonOptions);
 
-            var fallbackOptions = CloneRouterOptions(jsonOptions);
-            fallbackOptions.OverrideProvider = fallbackProvider;
-            fallbackOptions.OverrideModel = fallbackModel;
-            fallbackOptions.OverrideProvenance = LlmOverrideProvenance.Fallback;
-            ApplyRoutePolicyToOptions(selection, fallbackOptions);
-
-            var fbResponse = await GenerateVisionResponseAsync(functionType, prompt, imageBase64, fallbackOptions, payloadMetadata);
-            try
+            // Same guards as the text typed path: never re-send the identical
+            // request to the route that just answered with unusable JSON, retry
+            // exactly once without a further fallback chain, and stop once the
+            // physical-call budget is spent.
+            var answeringProvider = scope.AnsweringProvider;
+            var answeringModel = scope.AnsweringModel;
+            var answeringRouteKnown = !string.IsNullOrWhiteSpace(answeringProvider)
+                                      && !string.IsNullOrWhiteSpace(answeringModel);
+            if (answeringRouteKnown
+                && IsSameRoute(fallbackProvider, fallbackModel, answeringProvider!, answeringModel!)
+                && !IsSameRoute(selection.Provider, selection.Model, answeringProvider!, answeringModel!)
+                && _cooldownTracker?.IsAvailable(selection.Provider) != false)
             {
-                if (JsonRepair.TryDeserialize<T>(fbResponse, LlmJsonOptions, out var parsed, out var issue)
-                    && parsed is not null)
+                (fallbackProvider, fallbackModel) = (selection.Provider, selection.Model);
+            }
+
+            var retryRouteExcluded = answeringRouteKnown
+                && IsSameRoute(fallbackProvider, fallbackModel, answeringProvider!, answeringModel!);
+            var attemptBudgetExhausted = scope.PhysicalCalls >= MaxTypedJsonPhysicalCalls;
+
+            Exception fbParseEx;
+            if (retryRouteExcluded || attemptBudgetExhausted)
+            {
+                fbParseEx = new InvalidOperationException(retryRouteExcluded
+                    ? $"Typed vision JSON retry skipped: the only resolvable retry route {fallbackProvider}/{fallbackModel} is the route that just returned unusable JSON."
+                    : $"Typed vision JSON retry skipped: {scope.PhysicalCalls} physical provider calls already spent (limit {MaxTypedJsonPhysicalCalls}).");
+                _logger.LogWarning(
+                    "Typed vision JSON retry for {FunctionType} skipped: {Reason}",
+                    functionType,
+                    fbParseEx.Message);
+            }
+            else
+            {
+                var fallbackOptions = CloneRouterOptions(jsonOptions);
+                fallbackOptions.OverrideProvider = fallbackProvider;
+                fallbackOptions.OverrideModel = fallbackModel;
+                fallbackOptions.OverrideProvenance = LlmOverrideProvenance.Fallback;
+                // Exactly one retry call, never a further fallback chain.
+                fallbackOptions.DisableFallback = true;
+                ApplyRoutePolicyToOptions(selection, fallbackOptions);
+
+                try
                 {
-                    return parsed;
-                }
+                    var fbResponse = await GenerateVisionResponseAsync(functionType, prompt, imageBase64, fallbackOptions, payloadMetadata);
+                    if (JsonRepair.TryDeserialize<T>(fbResponse, LlmJsonOptions, out var parsed, out var issue)
+                        && parsed is not null)
+                    {
+                        return parsed;
+                    }
 
-                throw new JsonException(issue);
+                    fbParseEx = new JsonException(issue);
+                }
+                catch (FallbackDisabledException retryEx)
+                {
+                    // The single-call retry hit its own quality gate: a reply
+                    // failure on the retry route.
+                    fbParseEx = retryEx;
+                }
             }
-            catch (Exception fbParseEx) when (fbParseEx is not SwarmCore.Abstractions.Budgets.MissionBudgetExceededException)
-            {
-                // Both failures are known exactly: each provider answered and
-                // its reply was unusable JSON — MalformedReply by the
-                // taxonomy (evidence against the reply, not the provider).
-                throw new LlmFailoverException(
-                    functionType: functionType,
-                    promptId: "vision-typed-json",
-                    primary: selection,
-                    fallback: new LlmModelSelection { Provider = fallbackProvider, Model = fallbackModel, IsDefault = false },
-                    primaryError: $"Primary JSON parse failed: {ex.Message}",
-                    fallbackError: $"Fallback JSON parse failed: {fbParseEx.Message}",
-                    primaryException: ex,
-                    fallbackException: fbParseEx,
-                    primaryCategory: LlmFailureCategory.MalformedReply,
-                    fallbackCategory: LlmFailureCategory.MalformedReply);
-            }
+
+            // Both failures are known exactly: each provider answered and
+            // its reply was unusable JSON — MalformedReply by the
+            // taxonomy (evidence against the reply, not the provider).
+            throw new LlmFailoverException(
+                functionType: functionType,
+                promptId: "vision-typed-json",
+                primary: selection,
+                fallback: new LlmModelSelection { Provider = fallbackProvider, Model = fallbackModel, IsDefault = false },
+                primaryError: $"Primary JSON parse failed: {ex.Message}",
+                fallbackError: $"Fallback JSON parse failed: {fbParseEx.Message}",
+                primaryException: ex,
+                fallbackException: fbParseEx,
+                primaryCategory: LlmFailureCategory.MalformedReply,
+                fallbackCategory: LlmFailureCategory.MalformedReply);
         }
     }
 
@@ -3084,7 +3126,6 @@ public partial class LlmRouter : ILlmRouter
             AllowTextJsonContractRepair = source?.AllowTextJsonContractRepair ?? false,
             MinimumContextTokens = source?.MinimumContextTokens,
             DisableFallback = source?.DisableFallback ?? false,
-            AllowAnyProviderFallback = source?.AllowAnyProviderFallback ?? false,
             Interactivity = source?.Interactivity ?? LlmInteractivity.Unspecified,
             Workload = source?.Workload ?? LlmWorkloadKind.Unspecified,
             TaskDemand = source?.TaskDemand,

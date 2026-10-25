@@ -22,9 +22,35 @@ public sealed class ModelSourcesStore(SwarmCodeDataPaths paths)
 {
     private static readonly JsonSerializerOptions Json = new(JsonSerializerDefaults.Web) { WriteIndented = true };
     private readonly string path = Path.Combine(paths.RootDirectory, "model-sources.json");
+
+    /// <summary>The file this store owns.</summary>
+    public string FilePath => path;
+
+    /// <summary>The saved sources. Strict: a damaged file throws, so Settings never saves over it.</summary>
     public ModelSourcesDocument Read() => File.Exists(path)
-        ? JsonSerializer.Deserialize<ModelSourcesDocument>(File.ReadAllText(path), Json) ?? throw new InvalidDataException("Model sources are invalid.")
+        ? JsonSerializer.Deserialize<ModelSourcesDocument>(File.ReadAllText(path), Json) is { Sources: not null } document
+            ? document
+            : throw new InvalidDataException($"The model sources file {path} is empty or not a model-sources document.")
         : new(0, []);
+
+    /// <summary>
+    /// The saved sources for composing a workspace: an optional settings file that cannot be read must not stop every
+    /// repository from opening. Returns no sources and a plain description naming the file, which is left untouched
+    /// (the strict <see cref="Read"/> behind Settings still refuses to overwrite it).
+    /// </summary>
+    public ModelSourcesDocument ReadOrEmpty(out string? problem)
+    {
+        try
+        {
+            problem = null;
+            return Read();
+        }
+        catch (Exception ex) when (ex is JsonException or InvalidDataException or IOException or UnauthorizedAccessException or NotSupportedException)
+        {
+            problem = $"{path} could not be read ({ex.GetType().Name}); Talavine Code is running without your saved model sources. Fix or remove that file.";
+            return new(0, []);
+        }
+    }
 
     public async Task SaveAsync(ModelSourcesDocument value, CancellationToken ct = default)
     {
@@ -62,6 +88,10 @@ public sealed class ModelSourcesStore(SwarmCodeDataPaths paths)
             ct.ThrowIfCancellationRequested();
             try { return new FileStream(path + ".lock", FileMode.OpenOrCreate, FileAccess.ReadWrite, FileShare.None); }
             catch (IOException) when (DateTime.UtcNow < until) { await Task.Delay(25, ct); }
+            catch (IOException ex)
+            {
+                throw new TimeoutException("Another Talavine Code process is holding the model sources. Close it or wait, then retry.", ex);
+            }
         }
     }
 }
@@ -70,7 +100,7 @@ public static class ModelSourcesRegistration
 {
     public static IServiceCollection AddSwarmCodeModelSources(this IServiceCollection services, SwarmCodeDataPaths paths, IConfiguration? configuration = null)
     {
-        var sources = new ModelSourcesStore(paths).Read().Sources;
+        var sources = new ModelSourcesStore(paths).ReadOrEmpty(out _).Sources;
         services.AddSingleton<ModelSourcesStore>();
         services.AddSingleton<OllamaSetupClient>();
         services.AddOptions<Models.OllamaVisionStorageOptions>();

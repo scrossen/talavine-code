@@ -17,6 +17,14 @@
   <Project Path="SwarmCore/SwarmCore.Mcp/SwarmCore.Mcp.csproj" />
   <Project Path="SwarmCore/SwarmCore.Missions/SwarmCore.Missions.csproj" />
   <Project Path="SwarmCore/SwarmCore.PersonalMemory/SwarmCore.PersonalMemory.csproj" />
+  <Project Path="SwarmCore/SwarmCore.RemoteControl.Agent.Tests/SwarmCore.RemoteControl.Agent.Tests.csproj" />
+  <Project Path="SwarmCore/SwarmCore.RemoteControl.Agent/SwarmCore.RemoteControl.Agent.csproj" />
+  <Project Path="SwarmCore/SwarmCore.RemoteControl.Mac.Tests/SwarmCore.RemoteControl.Mac.Tests.csproj" />
+  <Project Path="SwarmCore/SwarmCore.RemoteControl.Mac/SwarmCore.RemoteControl.Mac.csproj" />
+  <Project Path="SwarmCore/SwarmCore.RemoteControl.Platform/SwarmCore.RemoteControl.Platform.csproj" />
+  <Project Path="SwarmCore/SwarmCore.RemoteControl.Tests/SwarmCore.RemoteControl.Tests.csproj" />
+  <Project Path="SwarmCore/SwarmCore.RemoteControl.Windows/SwarmCore.RemoteControl.Windows.csproj" />
+  <Project Path="SwarmCore/SwarmCore.RemoteControl/SwarmCore.RemoteControl.csproj" />
   <Project Path="SwarmCore/SwarmCore.Scripting/SwarmCore.Scripting.csproj" />
   <Project Path="SwarmCore/SwarmCore.Secrets/SwarmCore.Secrets.csproj" />
   <Project Path="SwarmCore/SwarmCore.Services/SwarmCore.Services.csproj" />

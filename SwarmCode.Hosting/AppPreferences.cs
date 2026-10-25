@@ -46,6 +46,12 @@ public sealed class AppPreferences
 
     public bool ShowReasoning { get; set; }
 
+    /// <summary>A saved direct coding success passed acceptance or had a successful mutating-tool receipt. Never inferred from answer text.</summary>
+    public bool GitHubStarInvitationEligible { get; set; }
+
+    /// <summary>The person dismissed the optional invitation or explicitly opened its repository.</summary>
+    public bool GitHubStarInvitationDismissed { get; set; }
+
     /// <summary>The sidebar lists sessions from every repository (with a project chip) instead of only the open one.</summary>
     public bool SidebarAllRepositories { get; set; }
 
@@ -74,6 +80,12 @@ public sealed class AppPreferences
     /// <summary>Pause the self-improvement loop (items stay queued; nothing runs until resumed).</summary>
     public bool SelfImprovementPaused { get; set; }
 
+    /// <summary>
+    /// Compact old goal receipt texts while the workspace is idle (Settings &gt; Data and logs). Off by default: receipts
+    /// are evidence, and the person decides when finished and month-old closed work may keep only a digest and excerpt.
+    /// </summary>
+    public bool CompactGoalReceipts { get; set; }
+
     /// <summary>Models used in /compare (contenders and judges), most recent first; pinned at the top of its picker. See <see cref="ModelCompareChoices"/>.</summary>
     public List<SwarmCore.Coding.Review.ModelPanelPick> RecentCompareModels { get; set; } = [];
 
@@ -88,7 +100,10 @@ public sealed class AppPreferencesStore
 {
     private static readonly JsonSerializerOptions Json = new(JsonSerializerDefaults.Web) { WriteIndented = true };
     private readonly string _path;
-    public AppPreferencesStore(SwarmCodeDataPaths paths) => _path = paths.PreferencesPath;
+    private readonly Action<string, string, string>? _replaceExisting;
+    public AppPreferencesStore(SwarmCodeDataPaths paths) : this(paths, null) { }
+    internal AppPreferencesStore(SwarmCodeDataPaths paths, Action<string, string, string>? replaceExisting)
+    { _path = paths.PreferencesPath; _replaceExisting = replaceExisting; }
 
     public event Action? Changed;
     internal void NotifyChanged() => Changed?.Invoke();
@@ -111,7 +126,7 @@ public sealed class AppPreferencesStore
             // Preserve fields from newer versions of the app.
             Settings.SettingsJsonFile.Merge(root, JsonSerializer.SerializeToNode(prefs, Json)!.AsObject());
             return true;
-        });
+        }, replaceExisting: _replaceExisting);
         Changed?.Invoke();
     }
 

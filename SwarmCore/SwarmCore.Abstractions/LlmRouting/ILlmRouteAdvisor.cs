@@ -226,3 +226,56 @@ public sealed class LlmRouteTemporarilyUnavailableException : InvalidOperationEx
     {
     }
 }
+
+/// <summary>
+/// Implemented by wrapper exceptions (for example a failover that tried more
+/// than one route) that know whether the underlying cause was the absence of
+/// any usable route rather than a failed attempt on one.
+/// </summary>
+public interface ILlmNoUsableRouteSignal
+{
+    bool NoUsableRoute { get; }
+}
+
+/// <summary>
+/// Signals that no configured or provable route can serve the request at all:
+/// for example no vision-capable model, or no configured/proven fallback after
+/// the primary route failed. Distinct from a route that was tried and failed.
+/// </summary>
+public sealed class LlmNoUsableRouteException : InvalidOperationException
+{
+    public LlmNoUsableRouteException(string message)
+        : base(message)
+    {
+    }
+
+    public LlmNoUsableRouteException(string message, Exception innerException)
+        : base(message, innerException)
+    {
+    }
+
+    /// <summary>
+    /// True when <paramref name="exception"/> or anything it wraps reports that
+    /// no usable route exists.
+    /// </summary>
+    public static bool IsIn(Exception? exception)
+    {
+        for (var depth = 0; exception is not null && depth < 16; depth++)
+        {
+            if (exception is LlmNoUsableRouteException
+                || exception is ILlmNoUsableRouteSignal { NoUsableRoute: true })
+            {
+                return true;
+            }
+
+            if (exception is AggregateException aggregate)
+            {
+                return aggregate.InnerExceptions.Any(IsIn);
+            }
+
+            exception = exception.InnerException;
+        }
+
+        return false;
+    }
+}

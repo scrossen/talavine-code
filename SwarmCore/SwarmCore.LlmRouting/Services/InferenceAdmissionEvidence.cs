@@ -57,7 +57,7 @@ public sealed class InferenceAdmissionValidator(string proofPath, string proofSh
             || evidence.SourceEvidenceStatus != "PASS_INFERENCE_ONLY_CONTAINMENT"
             || !evidence.NativeToolSurfacesDisabled || !evidence.InferenceVerified
             || !Path.IsPathFullyQualified(evidence.ExecutablePath)
-            || !MatchesHash(evidence.ExecutablePath, evidence.ExecutableSha256)
+            || !MatchesHash(evidence.ExecutablePath, evidence.ExecutableSha256, reuseRecentDigest: true)
             || !string.Equals(pack.ContentSha256, evidence.ProviderPackSha256, StringComparison.OrdinalIgnoreCase)
             || !Path.IsPathFullyQualified(evidence.SourceEvidencePath)
             || !MatchesHash(evidence.SourceEvidencePath, evidence.SourceEvidenceSha256)
@@ -165,9 +165,45 @@ public sealed class InferenceAdmissionValidator(string proofPath, string proofSh
             throw Denied("The final physical executable, arguments, cwd or child environment changed after admission.");
     }
 
-    public static string HashFile(string path) => Convert.ToHexStringLower(SHA256.HashData(File.ReadAllBytes(path)));
-    private static bool MatchesHash(string path, string expected) => File.Exists(path)
-        && expected is { Length: 64 } && string.Equals(HashFile(path), expected, StringComparison.OrdinalIgnoreCase);
+    /// <summary>SHA-256 of a file, streamed (CLI binaries are tens to hundreds of MB).</summary>
+    public static string HashFile(string path)
+    {
+        using var stream = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.Read | FileShare.Delete,
+            bufferSize: 1 << 16, FileOptions.SequentialScan);
+        return Convert.ToHexStringLower(SHA256.HashData(stream));
+    }
+
+    private static bool MatchesHash(string path, string expected, bool reuseRecentDigest = false) => File.Exists(path)
+        && expected is { Length: 64 }
+        && string.Equals(reuseRecentDigest ? RecentDigest(path) : HashFile(path), expected, StringComparison.OrdinalIgnoreCase);
+
+    // One launch validates the same executable several times (environment capture,
+    // request validation, final prepared-launch check). Reuse its digest briefly
+    // while its size and timestamps are unchanged instead of re-reading the binary.
+    private static readonly TimeSpan DigestReuseWindow = TimeSpan.FromMinutes(1);
+    private static readonly System.Collections.Concurrent.ConcurrentDictionary<string, FileDigest> RecentDigests =
+        new(OperatingSystem.IsWindows() ? StringComparer.OrdinalIgnoreCase : StringComparer.Ordinal);
+
+    private sealed record FileDigest(long Length, DateTime LastWriteUtc, DateTime CreationUtc, string Sha256, DateTime ComputedAtUtc);
+
+    private static string RecentDigest(string path)
+    {
+        var key = Path.GetFullPath(path);
+        var info = new FileInfo(key);
+        var now = DateTime.UtcNow;
+        if (RecentDigests.TryGetValue(key, out var cached)
+            && cached.Length == info.Length
+            && cached.LastWriteUtc == info.LastWriteTimeUtc
+            && cached.CreationUtc == info.CreationTimeUtc
+            && now - cached.ComputedAtUtc < DigestReuseWindow)
+        {
+            return cached.Sha256;
+        }
+
+        var digest = HashFile(key);
+        RecentDigests[key] = new FileDigest(info.Length, info.LastWriteTimeUtc, info.CreationTimeUtc, digest, now);
+        return digest;
+    }
     private static bool SamePath(string a, string b) => Path.IsPathFullyQualified(a) && Path.IsPathFullyQualified(b)
         && string.Equals(Path.TrimEndingDirectorySeparator(Path.GetFullPath(a)),
             Path.TrimEndingDirectorySeparator(Path.GetFullPath(b)),

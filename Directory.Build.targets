@@ -23,6 +23,17 @@
     <ProjectReference Include="$(MSBuildThisFileDirectory)SwarmCore\SwarmCore.Agent\SwarmCore.Agent.csproj" />
   </ItemGroup>
 
+  <!-- Fixtures that call Path.GetTempPath() directly leaked into the user's temp folder run after
+       run. Every test head shares the owned scratch lifecycle and moves its process temp location
+       into the run root, which the lifecycle deletes (or recovers after a crash). Set
+       TalavineIsolateTestTemp=false in a project that must observe the real temp folder. -->
+  <ItemGroup Condition="'$(IsTestProject)' == 'true' and '$(MSBuildProjectExtension)' == '.csproj' and '$(TalavineIsolateTestTemp)' != 'false'">
+    <_SharedScratch Include="$(MSBuildThisFileDirectory)SwarmCore\Testing\OwnedTestScratch.cs;$(MSBuildThisFileDirectory)SwarmCore\Testing\TestTempIsolation.cs" />
+    <Compile Remove="@(_SharedScratch)" MatchOnMetadata="FullPath" MatchOnMetadataOptions="PathLike" />
+    <Compile Include="$(MSBuildThisFileDirectory)SwarmCore\Testing\OwnedTestScratch.cs" Link="TestSupport\OwnedTestScratch.cs" />
+    <Compile Include="$(MSBuildThisFileDirectory)SwarmCore\Testing\TestTempIsolation.cs" Link="TestSupport\TestTempIsolation.cs" />
+  </ItemGroup>
+
   <!-- Keep Windows firewall identity stable across projects, worktrees and
        dated release clones. VSTest still loads each project's own testhost.dll,
        deps/runtimeconfig and test assemblies through the installed dotnet host.
@@ -160,4 +171,7 @@
     </ItemGroup>
     <RemoveDir Directories="@(_UnsupportedPublishedWindowsPlaywrightRuntime)" />
   </Target>
+  <!-- Every current xUnit head gets pre-run recovery and failure-visible teardown. -->
+  <Import Project="$(MSBuildThisFileDirectory)TestSupport/OwnedTestScratch.targets"
+          Condition="Exists('$(MSBuildThisFileDirectory)TestSupport/OwnedTestScratch.targets')" />
 </Project>

@@ -5,6 +5,8 @@
     <h2 class="sc-card__title">Automatic model selection</h2>
     <p class="sc-card__copy">Choose a model for the first prompt and reconsider after a failure. Your own selection determines the starting model and still allows refusal handoff. Use /auto in a session to request a fresh starting choice.</p>
     <label class="sc-field__label"><input type="checkbox" @bind="_enabled" /> Enable automatic selection</label>
+    <label class="sc-field__label"><input type="checkbox" @bind="_autoDelegate" /> Automatically select local workers for routine delegated tasks</label>
+    <p class="sc-muted">Your chosen lead model stays in charge. New agents without an explicit model choice are assessed once; routine work can use an available local worker, while difficult or uncertain work keeps the lead model. The lead checks results and handles work that needs escalation.</p>
     <div class="sc-row">
         <div class="sc-field">
             <label class="sc-field__label" for="decision-provider">Decision service</label>
@@ -55,7 +57,7 @@
 
 @code {
     private DecisionSelectionSettings _loaded = new();
-    private bool _enabled;
+    private bool _enabled, _autoDelegate;
     private string _provider = "ollama", _endpoint = "http://127.0.0.1:11434/v1/systemone", _model = "nimble", _credential = "decision.service", _key = "";
     private string? _status;
     private readonly List<Row> _rows = [];
@@ -67,6 +69,7 @@
         {
             _loaded = await Store.ReadAsync();
             _enabled = _loaded.Enabled;
+            _autoDelegate = _loaded.AutoDelegateRoutineTasks;
             _provider = _loaded.Connection.Provider; _endpoint = _loaded.Connection.Endpoint; _model = _loaded.Connection.Model;
             _credential = _loaded.Connection.CredentialName ?? "decision.service";
             _rows.Clear();
@@ -103,7 +106,7 @@
                 await App.Vault.SetAsync(new SwarmCore.Secrets.SecretWriteRequest { Name = _credential.Trim(), Value = _key, Kind = SwarmCore.Secrets.SecretKinds.ApiKey });
                 _key = "";
             }
-            await Store.SaveAsync(_loaded with { Enabled = _enabled,
+            await Store.SaveAsync(_loaded with { Enabled = _enabled, AutoDelegateRoutineTasks = _autoDelegate,
                 Connection = new DecisionConnection { Provider = _provider, Endpoint = _endpoint.Trim(), Model = _model.Trim(), CredentialName = _provider == "ollama" ? null : _credential.Trim() },
                 Candidates = _rows.Select(r => new ModelDecisionCandidate(r.Id, r.Route, r.Model.Trim(), r.Description.Trim())).ToArray() });
             await LoadAsync();

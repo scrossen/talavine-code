@@ -16,7 +16,7 @@ public sealed class AiOverviewTests
     public async Task Overview_reads_profile_evidence_without_opening_a_workspace_or_starting_a_model_job()
     {
         await using var scratch = TestTempDirectory.Create("overview-page");
-        var paths = new SwarmCodeDataPaths(scratch.Path);
+        var paths = new SwarmCodeDataPaths(SwarmCore.Missions.SandboxPathResolver.ResolvePhysicalPath(scratch.Path));
         await File.WriteAllTextAsync(paths.UserConfigPath, """{"Coding":{"SelfImprovement":{"Enabled":false}}}""");
         var baseline = new HarnessRevision("baseline", "current", new Dictionary<string, string>());
         var report = new HarnessExperimentReport(Guid.NewGuid(), new("test-profile", "repository", HarnessEvidence.Hash("env"), HarnessEvidence.Hash("suite")),
@@ -29,7 +29,10 @@ public sealed class AiOverviewTests
         view.WaitForAssertion(() => Assert.Single(view.FindAll("details")), TimeSpan.FromSeconds(10));
         Assert.Contains("repository", view.Markup);
         Assert.Contains("No calls were recorded", view.Markup);
-        Assert.Contains("Off in Settings.", view.Markup);
+        Assert.Contains(AppState.SelfImprovementAvailable
+            ? "Off in Settings."
+            : "This build does not run the developer self-repair worker.", view.Markup);
+        if (!AppState.SelfImprovementAvailable) Assert.Null(state.SelfImprovement);
         Assert.Null(state.Workspace);
         Assert.False(state.AnyTurnRunning);
         await view.FindAll("button").Single(b => b.TextContent == "Import experiment report").ClickAsync(new());

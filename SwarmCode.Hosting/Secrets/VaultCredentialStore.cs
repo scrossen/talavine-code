@@ -34,4 +34,8 @@ public sealed class VaultCredentialStore(ISecretVault vault) : ICredentialStore
         var site = (await vault.GetEntryAsync(name, ct).ConfigureAwait(false))?.Site;
         return string.IsNullOrWhiteSpace(site) ? [] : [site];
     }
+
+    /// <summary>A secret saved without a site (for example with /secret) takes the first host it is sent to.</summary>
+    public Task<bool> TryBindHostOnFirstUseAsync(string name, string host, CancellationToken ct = default)
+        => vault.TrySetSiteAsync(name, host, onlyWhenUnset: true, ct);
 }

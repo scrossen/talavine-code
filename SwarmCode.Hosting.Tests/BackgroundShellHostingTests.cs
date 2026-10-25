@@ -40,8 +40,9 @@ public class BackgroundShellHostingTests : TempDirTest
             Assert.Equal(2, sp.GetRequiredService<IOptionsMonitor<BackgroundShellOptions>>().CurrentValue.MaxRunningPerConversation);
 
             // A native agent's bridge call reaches the workspace's shells for the conversation it was launched for.
-            using var turn = sp.GetRequiredService<SwarmCore.Coding.ActiveCodingWorkspaces>().Enter("session-1", new SwarmCore.Coding.CodingWorkspace { RepositoryRoot = repo });
-            var proxy = new SwarmCore.Coding.Native.HostToolBridgeProxy(sp.GetRequiredService<SwarmCore.Coding.Native.HostToolBridgeBroker>().GetEndpoint(), "session-1");
+            var active = sp.GetRequiredService<SwarmCore.Coding.ActiveCodingWorkspaces>();
+            using var turn = active.Enter("session-1", new SwarmCore.Coding.CodingWorkspace { RepositoryRoot = repo });
+            var proxy = new SwarmCore.Coding.Native.HostToolBridgeProxy(sp.GetRequiredService<SwarmCore.Coding.Native.HostToolBridgeBroker>().GetEndpoint(), "session-1", active.BridgeCapability("session-1"));
             static System.Text.Json.JsonElement Args(object value) => System.Text.Json.JsonSerializer.SerializeToElement(value);
             var started = await proxy.CallAsync("shell_background_start",
                 Args(new { command = "echo from-bridge" + (OperatingSystem.IsWindows() ? " & " : "; ") + Sleep(30), name = "bridge" }), default);

@@ -82,8 +82,13 @@ internal static class SubscriptionCliLoginLauncher
     internal static ProcessStartInfo CreateMacOsGeminiLoginStartInfo(string executablePath)
         => CreateMacOsLoginStartInfo(executablePath, []);
 
-    private static string QuoteForPosixShell(string value)
-        => "'" + value.Replace("'", "'\\\"'\\\"'", StringComparison.Ordinal) + "'";
+    /// <summary>
+    /// Single-quotes a value for a POSIX shell. A quote inside the value closes the
+    /// quoted string, adds an escaped quote, and reopens it: <c>a'b</c> becomes
+    /// <c>'a'\''b'</c>.
+    /// </summary>
+    internal static string QuoteForPosixShell(string value)
+        => "'" + value.Replace("'", @"'\''", StringComparison.Ordinal) + "'";
 
     private static string QuoteForAppleScript(string value)
         => "\"" + value.Replace("\\", "\\\\", StringComparison.Ordinal)

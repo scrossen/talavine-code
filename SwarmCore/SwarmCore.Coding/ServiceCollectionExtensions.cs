@@ -81,6 +81,7 @@ public static class ServiceCollectionExtensions
         services.TryAddSingleton<ModelVisionRecovery>();
         services.TryAddSingleton<HarnessDeclineTool>();
         services.TryAddSingleton<NotebookReadTool>();
+        services.TryAddSingleton<ReadJsonTool>();
         services.TryAddSingleton<NotebookEditTool>();
 
         // The repeated-call guard is offered as a concrete service. Which IToolInvocationGuard the

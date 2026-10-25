@@ -16,6 +16,15 @@ public static class MemoryForgetFingerprint
 
     public static bool IsFingerprint(string? pattern) => pattern?.StartsWith(Prefix, StringComparison.Ordinal) == true;
 
+    /// <summary>Version prefix of <see cref="Statement"/>; a stored value without it predates the current normalization.</summary>
+    public const string StatementPrefix = "st1:";
+
+    /// <summary>
+    /// Index key for "the same statement": a hash of the normalized text. Stores may persist it beside a
+    /// fact or claim so a forget can find every copy of a statement without reading all of them.
+    /// </summary>
+    public static string Statement(string? text) => StatementPrefix + Full(text ?? string.Empty);
+
     public static string Create(string text)
     {
         var terms = MemoryRelevanceRanker.DistinctiveTerms(text).Select(Short).Distinct().Order(StringComparer.Ordinal);

@@ -11,6 +11,7 @@
     <PackageReference Include="System.Drawing.Common" Version="11.0.0-rc.2.26504.105" />
     <PackageReference Include="PdfPig" Version="0.1.14" />
     <ProjectReference Include="..\SwarmCore.Agent\SwarmCore.Agent.csproj" />
+    <ProjectReference Include="..\SwarmCore.RemoteControl.Platform\SwarmCore.RemoteControl.Platform.csproj" />
     <ProjectReference Include="..\SwarmCore.Missions\SwarmCore.Missions.csproj" />
     <ProjectReference Include="..\SwarmCore.Secrets\SwarmCore.Secrets.csproj" />
     <ProjectReference Include="..\SwarmCore.HarnessLearning\SwarmCore.HarnessLearning.csproj" />

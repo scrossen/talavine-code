@@ -71,6 +71,12 @@ public sealed record CurrentTurnContext(
     /// <summary>Host-configured repository grant for an isolated repair coding mission.</summary>
     [System.Text.Json.Serialization.JsonIgnore]
     public CodingRepairGrant? CodingRepairGrant { get; init; }
+    /// <summary>Active host-owned goal inbox scope, independent of protected Mission authority.</summary>
+    [System.Text.Json.Serialization.JsonIgnore]
+    public Guid? GoalMessageGoalId { get; init; }
+    /// <summary>Current worker lease for an exact host mailbox acknowledgement; never provider input.</summary>
+    [System.Text.Json.Serialization.JsonIgnore]
+    public string? GoalMessageLeaseToken { get; init; }
     public Guid? MissionObjectiveId { get; init; }
     /// <summary>Exact host-computed learning partition/bindings for this procedure turn; never from tool input.</summary>
     [System.Text.Json.Serialization.JsonIgnore]

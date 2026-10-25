@@ -12,6 +12,7 @@ using SwarmCore.LlmRouting.Services;
 using SwarmCore.Agent.Runtime;
 using SwarmCore.Skills.Models;
 using SwarmCore.Agent.Procedures;
+using SwarmCore.Agent.Communication;
 
 namespace SwarmCore.Agent.ToolUseEngine;
 
@@ -514,8 +515,10 @@ public sealed class ToolUseAgentEngine : IToolUseAgentEngine
         // router re-admits it through Model Scout and may escape it on failure.
         // This deliberately removes the former legacy inference that silently
         // promoted every saved pair into a profile pin.
-        var allowAnyProviderFallback = session.Profile.RouteProvenance is not (
-            LlmOverrideProvenance.User or LlmOverrideProvenance.Profile);
+        var explicitRoutePin = session.Profile.RouteProvenance is
+            LlmOverrideProvenance.User or LlmOverrideProvenance.Profile;
+        // A host can fence an automatic Policy route without making it a user pin.
+        var allowAnyProviderFallback = !session.DisableRouteFallback && !explicitRoutePin;
 
         var adaptive = session.AdaptiveReasoning;
         if (adaptive is not null)
@@ -534,6 +537,7 @@ public sealed class ToolUseAgentEngine : IToolUseAgentEngine
             RequiresToolUse = toolDefs.Count > 0, RequiresVision = TranscriptContainsImage(providerTranscript),
             RoutingUserText = routingUserRequest, Interactivity = session.Interactivity,
             TaskDemand = TurnDemand(toolDefs.Count > 0),
+            DisableFallback = session.DisableRouteFallback,
             MinimumCapabilityScore = adaptiveRoute?.MinimumCapabilityScore
         };
         async Task RunAdaptiveSafelyAsync(Func<Task> work)
@@ -605,6 +609,13 @@ public sealed class ToolUseAgentEngine : IToolUseAgentEngine
                 && !adaptive.State.Decisions.Any(t => t.Decision == d.Decision && t.Outcome != AdaptiveDecisionOutcome.Proposed));
             if (proposal?.After is not { } target) return changes;
             if (adaptive.Pending?.Id == proposal.Id) return changes;
+            if (session.DisableRouteFallback && (!string.Equals(target.Provider, pinnedProvider, StringComparison.OrdinalIgnoreCase)
+                || !string.Equals(target.Model, pinnedModel, StringComparison.Ordinal)))
+            {
+                adaptive.State = await _adaptiveCoordinator.RefuseProposalAsync(adaptive.State, proposal,
+                    "host-route-fallback-disabled", "response-boundary", ct).ConfigureAwait(false);
+                return changes;
+            }
             var admission = AdaptiveOptions();
             admission.OverrideProvider = target.Provider; admission.OverrideModel = target.Model;
             admission.OverrideProvenance = allowAnyProviderFallback ? LlmOverrideProvenance.Policy : initialRouteProvenance;
@@ -777,6 +788,15 @@ public sealed class ToolUseAgentEngine : IToolUseAgentEngine
             ? await AgentProcedureRuntime.StartAsync(procedureContext,
                 session.Tools.Concat(session.DiscoverableTools).ToArray(), ct).ConfigureAwait(false) : null;
         string? procedureRepairNotice = null;
+        void NarrowToolsForDelivery(GoalDelivery delivery)
+        {
+            // Only exact authenticated authored messages can narrow this turn. Quoted content
+            // and the host envelope are never reparsed as permission. This never widens authority.
+            if (toolsWithheld || !delivery.Messages.Any(message => UserToolUseRestriction.WithholdsAuthenticatedOriginal(message.Text))) return;
+            toolsWithheld = true;
+            procedure?.Abandon();
+            toolsById.Clear(); discoverableToolsById.Clear(); toolDefs.Clear();
+        }
 
         // The host-required first tool must be the first EFFECTFUL call. An admitted read-only
         // call before it (for example reading existing drafts) has no effect and is allowed;
@@ -832,6 +852,24 @@ public sealed class ToolUseAgentEngine : IToolUseAgentEngine
                     session.WorkingContext.Authority = await refresh(ct).ConfigureAwait(false);
                 yield return new SteeringAppliedEvent(steering.SteeringId);
             }
+            // A goal inbox is drained only after prior physical operations have finished.
+            // The same session/turn and existing authority continue; no cancellation or new executor.
+            try
+            {
+                if (await GoalMailboxBoundary.BeginAsync(session.GoalMailbox, session.GoalId,
+                        session.ConversationId, session.TurnId ?? session.ConversationId, ct: ct, expectedLeaseToken: session.GoalMessageLeaseToken).ConfigureAwait(false) is { } delivery)
+                {
+                    procedure?.Abandon();
+                    NarrowToolsForDelivery(delivery);
+                    AppendTranscript(ChatMessage.Text(ChatRole.User, delivery.ContextText));
+                    routingUserRequest += "\n" + delivery.ContextText;
+                    await GoalMailboxBoundary.TryRecordAsync(session.GoalMailbox!, delivery, GoalDeliveryState.Delivered,
+                        "Placed in the same agent turn's context at a model/tool boundary; awaiting worker acknowledgement.", ct).ConfigureAwait(false);
+                }
+            }
+            catch (OperationCanceledException) when (ct.IsCancellationRequested) { throw; }
+            catch (Exception inboxError)
+            { _logger.LogWarning("Goal inbox delivery deferred ({ErrorType}); current work continues.", inboxError.GetType().Name); }
 
             // Past the hard deadline, the turn still owes the user an answer if
             // it gathered anything — spend the grace window on a wrap-up rather
@@ -1066,9 +1104,6 @@ public sealed class ToolUseAgentEngine : IToolUseAgentEngine
                         RequiresVision = TranscriptContainsImage(providerTranscript),
                         DisableFallback = session.DisableRouteFallback || nativeProtocol == ToolExecutionProtocol.ResponsesNativeAsyncSingleAgent || steeringSession?.Transport is not null,
                         ExecutionSettings = BuildUserWaitingExecutionSettings(session.Profile, session.TurnContext?.WorkspaceRoot),
-                        // Automatic agent chat can discover another working route. A
-                        // user/profile provider constraint must never silently escape.
-                        AllowAnyProviderFallback = allowAnyProviderFallback
                     }
                 };
 
@@ -2144,8 +2179,7 @@ public sealed class ToolUseAgentEngine : IToolUseAgentEngine
                                            && completedToolCalls > 0
                                            && IsActionableInabilityAnswer(response.Text)
                                            && session.Tools.Any(tool =>
-                                               tool.ToolId.Equals("code.run_csharp", StringComparison.OrdinalIgnoreCase)
-                                               || tool.ToolId.Equals("catalog.search_tools", StringComparison.OrdinalIgnoreCase));
+                                               tool.EngineRoles.HasFlag(ToolEngineRoles.StrategyRecovery));
                 if (prematureInability)
                 {
                     inabilityRecoveryUsed = true;
@@ -2294,8 +2328,7 @@ public sealed class ToolUseAgentEngine : IToolUseAgentEngine
             // identity. The router already forbids failover for that route, and
             // silently adopting the reported identity here would make the tool
             // result/final-answer pass escape the user's picker choice.
-            var exactConversationRoute = initialRouteProvenance
-                is LlmOverrideProvenance.User or LlmOverrideProvenance.Profile;
+            var exactConversationRoute = session.DisableRouteFallback || explicitRoutePin;
             if (!exactConversationRoute && !isProcedureResponse)
             {
                 pinnedProvider = response.Provider;
@@ -2339,7 +2372,7 @@ public sealed class ToolUseAgentEngine : IToolUseAgentEngine
                     OriginalRequestEffort = adaptive.OriginalRequestEffort,
                     MinimumCapabilityScore = adaptive.Pending?.After?.MinimumCapabilityScore ?? adaptiveRoute?.MinimumCapabilityScore,
                     CapabilityScore = adaptive.Pending?.After?.CapabilityScore ?? adaptiveRoute?.CapabilityScore,
-                    IsUserPinned = !allowAnyProviderFallback
+                    IsUserPinned = explicitRoutePin
                 };
                 if (adaptive.Pending is { } applied)
                 {
@@ -2463,6 +2496,25 @@ public sealed class ToolUseAgentEngine : IToolUseAgentEngine
                 {
                     continue;
                 }
+                var goalMessageAtAnswerBoundary = false;
+                try
+                {
+                    if (await GoalMailboxBoundary.BeginAsync(session.GoalMailbox, session.GoalId,
+                            session.ConversationId, session.TurnId ?? session.ConversationId, ct: ct, expectedLeaseToken: session.GoalMessageLeaseToken).ConfigureAwait(false) is { } delivery)
+                    {
+                        procedure?.Abandon();
+                        NarrowToolsForDelivery(delivery);
+                        AppendTranscript(ChatMessage.Text(ChatRole.User, delivery.ContextText));
+                        routingUserRequest += "\n" + delivery.ContextText;
+                        await GoalMailboxBoundary.TryRecordAsync(session.GoalMailbox!, delivery, GoalDeliveryState.Delivered,
+                            "Placed in the same agent turn's context at its answer boundary; awaiting worker acknowledgement.", ct).ConfigureAwait(false);
+                        goalMessageAtAnswerBoundary = true;
+                    }
+                }
+                catch (OperationCanceledException) when (ct.IsCancellationRequested) { throw; }
+                catch (Exception inboxError)
+                { _logger.LogWarning("Goal inbox delivery deferred ({ErrorType}); current work continues.", inboxError.GetType().Name); }
+                if (goalMessageAtAnswerBoundary) continue;
 
                 // A safety policy may have answered this turn on a route below
                 // the quality floor it wanted, rather than stranding the user
@@ -2598,6 +2650,7 @@ public sealed class ToolUseAgentEngine : IToolUseAgentEngine
                 }
                 async Task<object?> InvokeWithMissionFenceAsync(ToolDescriptor tool, object input, CancellationToken token)
                 {
+                    if (toolsWithheld) throw new SwarmCore.Agent.Catalog.ToolCallNotDispatchedException("The authenticated user withheld tools at a completed operation boundary; this call did not run.");
                     if (session.TurnContext?.MissionObjectiveId is not null)
                     {
                         var validate = session.TurnContext.ValidateMissionExecution
@@ -2813,7 +2866,7 @@ public sealed class ToolUseAgentEngine : IToolUseAgentEngine
                                         $"Refused by unattended-repair policy for tool '{descriptor.ToolId}': {decision.Reason}. "
                                         + "Do not retry this call. If the repair cannot proceed without it, finish with "
                                         + "FAILED: and tell the user exactly what to do.";
-                                    if (descriptor.ToolId == "services.call"
+                                    if (descriptor.EngineRoles.HasFlag(ToolEngineRoles.ServiceGateway)
                                         && call.Input["name"] is JsonValue requestedName
                                         && requestedName.TryGetValue<string>(out var nativeName)
                                         && discoverableToolsById.TryGetValue(nativeName, out var nativeTool)
@@ -2990,7 +3043,7 @@ public sealed class ToolUseAgentEngine : IToolUseAgentEngine
                 rawResult = ToolResultAnnotations.Unwrap(rawResult);
                 if (rawResult is IToolExecutionEvidence evidence && !evidence.Succeeded
                     || rawResult is SwarmCore.Abstractions.Computer.ComputerActionResult { Succeeded: false }) isError = true;
-                if (rawResult is IToolExecutionEvidence { NoPhysicalAction: true }) wasDispatched = false;
+                if (rawResult is SwarmCore.Abstractions.Tools.IToolDispatchEvidence { NoPhysicalAction: true }) wasDispatched = false;
                 if (_toolProgress?.WasCancelledByUser(call.Id) == true)
                 {
                     isError = true;
@@ -3110,7 +3163,7 @@ public sealed class ToolUseAgentEngine : IToolUseAgentEngine
                         evidenceState.SourcePacks.Add(pack);
                     else if (rawResult is SwarmCore.Abstractions.Context.ContextPack directPack)
                         evidenceState.SourcePacks.Add(directPack);
-                    else if (rawResult is SwarmCore.Abstractions.Context.IContextPackEvidence || call.Name.Equals("context.build-pack", StringComparison.OrdinalIgnoreCase))
+                    else if (rawResult is SwarmCore.Abstractions.Context.IContextPackEvidence || invokedDescriptor?.EngineRoles.HasFlag(ToolEngineRoles.SourcePackBuilder) == true)
                         evidenceState.SourceProofComplete = false;
                     else if (invokedDescriptor?.DataAccess is ToolDataAccessClass.Communication or ToolDataAccessClass.UnclassifiedExternal)
                         evidenceState.UnprovenSourceCallIds.Add(call.Id);
@@ -3193,7 +3246,7 @@ public sealed class ToolUseAgentEngine : IToolUseAgentEngine
                 if (!isError) repairPolicyDenials = 0; // A successful tool breaks the denied-call loop.
 
                 if (!isError
-                    && call.Name.Equals("catalog.search_tools", StringComparison.OrdinalIgnoreCase))
+                    && invokedDescriptor?.EngineRoles.HasFlag(ToolEngineRoles.ToolDiscovery) == true)
                 {
                     if (session.RefreshDiscoverableToolsAsync is { } refreshTools)
                     {
@@ -3234,7 +3287,7 @@ public sealed class ToolUseAgentEngine : IToolUseAgentEngine
                     wasTruncated ? $", truncated from {originalLen}" : "");
 
                 if (rawResult is IToolExecutionEvidence evidence && !evidence.Succeeded) isError = true;
-                if (rawResult is IToolExecutionEvidence { NoPhysicalAction: true }) wasDispatched = false;
+                if (rawResult is SwarmCore.Abstractions.Tools.IToolDispatchEvidence { NoPhysicalAction: true }) wasDispatched = false;
                 if (procedure is not null)
                 {
                     JsonNode? procedureResult;
@@ -4689,31 +4742,9 @@ public sealed class ToolUseAgentEngine : IToolUseAgentEngine
 
     private static SkillPermission? BuildPermissionForTool(ToolDescriptor descriptor, ToolSideEffect effectiveSideEffect)
     {
-        if (descriptor.ToolId.Equals("shell.exec", StringComparison.OrdinalIgnoreCase))
+        if (descriptor.Approval is { } approval)
         {
-            return new SkillPermission
-            {
-                PermissionId = "tool.shell.exec",
-                Name = "Run Shell Commands",
-                Description = "Run commands in the user's local shell as this app's user account.",
-                Level = PermissionLevel.Admin
-            };
-        }
-
-        if (IsCodeExecutionTool(descriptor))
-        {
-            return CodeExecutionPermission();
-        }
-
-        if (descriptor.ToolId.Equals("diagnostic.subscription-cli-setup", StringComparison.OrdinalIgnoreCase))
-        {
-            return new SkillPermission
-            {
-                PermissionId = "tool.subscription_cli.setup",
-                Name = "Install Or Repair Model CLIs",
-                Description = "Install, repair, enable, or launch sign-in for local subscription-backed model CLIs.",
-                Level = PermissionLevel.Admin
-            };
+            return approval.Permission;
         }
 
         return effectiveSideEffect switch
@@ -4740,10 +4771,6 @@ public sealed class ToolUseAgentEngine : IToolUseAgentEngine
                 Description = "Perform irreversible or hard-delete operations.",
                 Level = PermissionLevel.Admin
             },
-            // Today every Exec tool is already matched by the shell/code checks
-            // above, so this arm never runs. It exists so an Exec tool added
-            // later cannot land on the `_ => null` arm and quietly ship
-            // ungated — the fall-through, not the tier, is the hazard.
             ToolSideEffect.Exec => CodeExecutionPermission(),
             _ => null
         };
@@ -4757,21 +4784,11 @@ public sealed class ToolUseAgentEngine : IToolUseAgentEngine
         Level = PermissionLevel.Admin
     };
 
-    private static bool IsCodeExecutionTool(ToolDescriptor descriptor)
-        => descriptor.ToolId.StartsWith("code.", StringComparison.OrdinalIgnoreCase)
-           || descriptor.ToolId.Contains(".code.", StringComparison.OrdinalIgnoreCase)
-           || descriptor.ToolId.Contains("csharp", StringComparison.OrdinalIgnoreCase);
-
     private static string ToolApprovalDisplayName(ToolDescriptor descriptor, ToolSideEffect effectiveSideEffect)
     {
-        if (descriptor.ToolId.Equals("shell.exec", StringComparison.OrdinalIgnoreCase))
+        if (descriptor.Approval?.DisplayName is { Length: > 0 } displayName)
         {
-            return "Shell command";
-        }
-
-        if (descriptor.ToolId.Equals("diagnostic.subscription-cli-setup", StringComparison.OrdinalIgnoreCase))
-        {
-            return "Model CLI setup";
+            return displayName;
         }
 
         return effectiveSideEffect switch
@@ -4786,20 +4803,10 @@ public sealed class ToolUseAgentEngine : IToolUseAgentEngine
 
     private static string BuildApprovalFunctionName(ToolDescriptor descriptor, object typedInput)
     {
-        if (descriptor.ToolId.Equals("shell.exec", StringComparison.OrdinalIgnoreCase))
+        if (descriptor.Approval?.Summarize is { } summarize
+            && summarize(typedInput) is { Length: > 0 } summary)
         {
-            return ReadStringProperty(typedInput, "Command") is { Length: > 0 } command
-                ? TruncateValue(command, 180)
-                : "Run shell command";
-        }
-
-        if (descriptor.ToolId.Equals("diagnostic.subscription-cli-setup", StringComparison.OrdinalIgnoreCase))
-        {
-            var provider = ReadStringProperty(typedInput, "Provider");
-            var action = ReadStringProperty(typedInput, "Action") ?? "setup";
-            return string.IsNullOrWhiteSpace(provider)
-                ? "Set up subscription CLI"
-                : $"{action} {provider}";
+            return TruncateValue(summary, 180);
         }
 
         return BuildGenericApprovalFunctionName(descriptor, typedInput);

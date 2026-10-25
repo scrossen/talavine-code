@@ -17,7 +17,8 @@ internal static class MacProfileVerification
         try
         {
             var paths = new SwarmCodeDataPaths();
-            var keyStore = new Services.MacKeychainKeyStore(NullLogger<Services.MacKeychainKeyStore>.Instance);
+            var keyStore = new SwarmCore.Secrets.Apple.MacKeychainKeyStore(
+                NullLogger<SwarmCore.Secrets.Apple.MacKeychainKeyStore>.Instance, DesktopHost.MacKeychainServiceName);
             var protector = new EncryptionRequiredSecretProtector(new EnvelopeSecretProtector(keyStore, NullLogger.Instance));
             using var receipt = receiptPath is null ? null : JsonDocument.Parse(await File.ReadAllTextAsync(receiptPath));
             var receiptName = receipt?.RootElement.GetProperty("credentialName").GetString();

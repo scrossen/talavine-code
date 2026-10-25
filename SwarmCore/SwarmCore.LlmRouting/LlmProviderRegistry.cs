@@ -1,6 +1,5 @@
 using System.Collections.Concurrent;
 using SwarmCore.Abstractions.LlmRouting;
-using SwarmCore.LlmRouting.Services;
 using Microsoft.Extensions.Logging;
 
 namespace SwarmCore.LlmRouting;
@@ -14,7 +13,6 @@ public class LlmProviderRegistry : ILlmProviderRegistry
 {
     private readonly ConcurrentDictionary<string, ILlmProvider> _providers = new(StringComparer.OrdinalIgnoreCase);
     private readonly ILogger<LlmProviderRegistry>? _logger;
-    private readonly LlmProviderDiscoveryCoordinator _providerDiscovery;
 
     /// <summary>
     /// Creates a new provider registry with auto-registration from DI.
@@ -22,11 +20,9 @@ public class LlmProviderRegistry : ILlmProviderRegistry
     /// </summary>
     public LlmProviderRegistry(
         IEnumerable<ILlmProvider> providers,
-        ILogger<LlmProviderRegistry>? logger = null,
-        LlmProviderDiscoveryCoordinator? providerDiscovery = null)
+        ILogger<LlmProviderRegistry>? logger = null)
     {
         _logger = logger;
-        _providerDiscovery = providerDiscovery ?? LlmProviderDiscoveryCoordinator.Shared;
 
         foreach (var provider in providers)
         {
@@ -68,27 +64,6 @@ public class LlmProviderRegistry : ILlmProviderRegistry
     public bool HasProvider(string providerName)
     {
         return _providers.ContainsKey(providerName);
-    }
-
-    public IEnumerable<ILlmProvider> GetVisionCapableProviders()
-    {
-        var providers = _providers.Values.ToArray();
-        var probes = providers.Select(async provider =>
-        {
-            var models = await _providerDiscovery.GetAvailableModelsAsync(
-                    provider,
-                    TimeSpan.FromSeconds(2),
-                    highPriority: true)
-                .ConfigureAwait(false);
-            return (Provider: provider, SupportsVision: models.Any(provider.SupportsVision));
-        });
-
-        return Task.WhenAll(probes)
-            .GetAwaiter()
-            .GetResult()
-            .Where(static result => result.SupportsVision)
-            .Select(static result => result.Provider)
-            .ToArray();
     }
 
     public IEnumerable<ILlmProvider> GetEmbeddingCapableProviders()

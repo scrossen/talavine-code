@@ -1314,7 +1314,7 @@ public sealed class SubscriptionCliSetupService : ISubscriptionCliSetupService
                 SubscriptionCliStage.DesktopAppDetected,
                 path,
                 null,
-                "ChatGPT desktop is installed, but its protected package cannot provide a CLI connection directly. Select Connect to add Talavine's private ChatGPT CLI, then sign in once.");
+                "ChatGPT desktop is installed, but its protected package cannot provide a CLI connection directly. Select Connect to add a private ChatGPT CLI for this app, then sign in once.");
         }
 
         return new SubscriptionCliStatus(
@@ -1428,7 +1428,8 @@ public sealed class SubscriptionCliSetupService : ISubscriptionCliSetupService
             // The login subcommand prints a URL + opens the browser itself.
             // We launch it detached so the parent app stays responsive while
             // the user completes the OAuth dance in their browser.
-            var psi = SubscriptionCliProcessStartInfo.Create(path, spec.LoginArgs);
+            var psi = SubscriptionCliProcessStartInfo.Create(
+                path, spec.LoginArgs, privateCliDataRoot: _options.Value.PrivateCliDataRoot);
             psi.UseShellExecute = false;
             psi.CreateNoWindow = true;
             SubscriptionCliEnvironment.ScrubApiCredentialEnvironment(psi.Environment);
@@ -1585,7 +1586,8 @@ public sealed class SubscriptionCliSetupService : ISubscriptionCliSetupService
             return await overrideRunner(fileName, arguments, timeout, ct).ConfigureAwait(false);
         }
 
-        var psi = SubscriptionCliProcessStartInfo.Create(fileName, arguments);
+        var psi = SubscriptionCliProcessStartInfo.Create(
+            fileName, arguments, privateCliDataRoot: _options.Value.PrivateCliDataRoot);
         psi.RedirectStandardOutput = true;
         psi.RedirectStandardError = true;
         psi.UseShellExecute = false;

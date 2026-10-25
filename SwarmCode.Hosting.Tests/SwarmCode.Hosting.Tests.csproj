@@ -15,11 +15,13 @@
     <PackageReference Include="xunit.runner.visualstudio" Version="3.0.2" />
   </ItemGroup>
   <ItemGroup><Using Include="Xunit" /></ItemGroup>
+  <ItemGroup><Compile Include="../TestSupport/TestTempRoot.cs" Link="TestSupport/TestTempRoot.cs" /></ItemGroup>
+  <ItemGroup><Compile Include="../TestSupport/SqliteTestScratchCleanup.cs" Link="TestSupport/SqliteTestScratchCleanup.cs" /></ItemGroup>
   <ItemGroup>
     <Compile Remove="AppRuntimeFixture/**/*.cs" />
     <ProjectReference Include="AppRuntimeFixture/AppRuntimeFixture.csproj" />
   </ItemGroup>
-  <ItemGroup><Compile Include="../SwarmCore/Testing/TestGit.cs" Link="TestSupport/TestGit.cs" /><Compile Include="../SwarmCore/Testing/TestShell.cs" Link="TestSupport/TestShell.cs" /><Compile Include="../SwarmCore/Testing/PlatformFactAttributes.cs" Link="TestSupport/PlatformFactAttributes.cs" /></ItemGroup>
+  <ItemGroup><Compile Include="../SwarmCore/Testing/TestGit.cs" Link="TestSupport/TestGit.cs" /><Compile Include="../SwarmCore/SwarmCore.RemoteControl.Tests/FakeDesktopAutomation.cs" Link="TestSupport/FakeDesktopAutomation.cs" /><Compile Include="../SwarmCore/Testing/TestShell.cs" Link="TestSupport/TestShell.cs" /><Compile Include="../SwarmCore/Testing/PlatformFactAttributes.cs" Link="TestSupport/PlatformFactAttributes.cs" /></ItemGroup>
   <ItemGroup><Compile Include="../SwarmCore/Testing/PortableGitPoisonedPathTests.cs" Link="TestSupport/PortableGitPoisonedPathTests.cs" /></ItemGroup>
   <!-- Shared personal-memory recall/benefit eval kit (every host runs the same scenarios). -->
   <ItemGroup><Compile Include="../SwarmCore/Testing/PersonalMemoryEvals/*.cs" Link="PersonalMemoryEvals/%(Filename)%(Extension)" /></ItemGroup>

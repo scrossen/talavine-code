@@ -36,5 +36,8 @@
     <AssemblyAttribute Include="System.Runtime.CompilerServices.InternalsVisibleTo">
       <_Parameter1>SwarmCore.LlmRouting.Tests</_Parameter1>
     </AssemblyAttribute>
+    <AssemblyAttribute Include="System.Runtime.CompilerServices.InternalsVisibleTo">
+      <_Parameter1>Talavine.Tests</_Parameter1>
+    </AssemblyAttribute>
   </ItemGroup>
 </Project>

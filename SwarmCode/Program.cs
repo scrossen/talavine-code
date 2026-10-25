@@ -24,6 +24,9 @@ if (cli.Error is not null)
     Console.Error.WriteLine(cli.Error);
     return 2;
 }
+// This private callback must not resolve a repository, profile, credentials or providers.
+if (cli.GoalMessageHook is { } goalHook)
+    return await SwarmCore.Coding.Native.ClaudeGoalAttentionHooks.RunHelperAsync(goalHook, Console.In, Console.Out);
 if (cli.Help)
 {
     Console.WriteLine(CliOptions.HelpText);

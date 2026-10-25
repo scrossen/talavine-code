@@ -61,6 +61,25 @@ public sealed class TurnAssistanceTests
         }
     }
     [Fact]
+    public async Task Host_selected_route_fence_never_invokes_opinion_selector_panel_or_reviewer_models()
+    {
+        var seen = new List<AgentTurnRequest>(); var trace = new List<string>();
+        var services = new ServiceCollection().AddSingleton<IAgentTurnRunner>(new Runner(seen, trace, false))
+            .AddSingleton<IModelPanelCompletion>(new Completion(trace));
+        var selector = System.Reflection.DispatchProxy.Create<SwarmCore.Abstractions.LlmRouting.ILlmRouter, SelectionProxy>();
+        services.AddSingleton(selector);
+        var orchestrator = TestOrchestrator.Create(services,
+            new CodingLaneOptions { Lanes = [Worker, Reviewer], HandOffOnRefusal = true }, new CodingOptions());
+        var request = Request() with { RequireSelectedRoute = true,
+            RouteOverrideProvenance = SwarmCore.Abstractions.LlmRouting.LlmOverrideProvenance.Policy,
+            Assistance = new() { GetOpinionsFirst = true, ReviewBeforeFinishing = true } };
+        var events = await Drain(orchestrator.RunAsync(request));
+        Assert.Single(events.OfType<TurnCompleted>()); Assert.Single(seen); Assert.Equal(["work"], trace);
+        Assert.Empty(((SelectionProxy)(object)selector).Options);
+        Assert.Equal(Worker.Provider, seen[0].ProviderOverride); Assert.Equal(Worker.Model, seen[0].ModelOverride);
+        Assert.Equal(request.RouteOverrideProvenance, seen[0].RouteOverrideProvenance); Assert.False(request.SelectionPinned);
+    }
+    [Fact]
     public async Task Recommendations_use_the_existing_selector_with_finite_candidates_and_do_not_replace_pins()
     {
         var seen = new List<AgentTurnRequest>(); var trace = new List<string>();

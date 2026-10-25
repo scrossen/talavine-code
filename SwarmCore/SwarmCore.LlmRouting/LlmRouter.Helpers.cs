@@ -66,7 +66,6 @@ public partial class LlmRouter
             prompt,
             requiresVision: false,
             reason,
-            allowAnyProviderFallback: options?.AllowAnyProviderFallback == true,
             options: options);
         attemptedFallback = CarryRoutePolicy(selectedModel, new LlmModelSelection
         {
@@ -783,7 +782,7 @@ public partial class LlmRouter
 
         if (!provider.SupportsVision(fallbackModel))
         {
-            throw new InvalidOperationException($"Vision fallback model {fallbackModel} does not support vision");
+            throw new LlmNoUsableRouteException($"Vision fallback model {fallbackModel} does not support vision");
         }
 
         await AppendFallbackSelectionAuditAsync(
@@ -833,6 +832,20 @@ public partial class LlmRouter
             response = await provider.GenerateVisionResponseAsync(prompt, imageBase64, fallbackModel, executionSettings);
             stopwatch.Stop();
         }
+        catch (Exception)
+            when (IsRequestCancellationRequested(options))
+        {
+            // The caller cancelled: close the receipt as a cancellation, never as
+            // provider failure evidence or a cooldown (same rule as the text path).
+            stopwatch.Stop();
+            await TrackCancellationAsync(
+                functionType,
+                visionFallbackSelection,
+                stopwatch.ElapsedMilliseconds,
+                options,
+                fallbackUsed: true).ConfigureAwait(false);
+            throw;
+        }
         catch (Exception ex) when (ex is not SwarmCore.Abstractions.Budgets.MissionBudgetExceededException)
         {
             stopwatch.Stop();
@@ -844,6 +857,14 @@ public partial class LlmRouter
                 options,
                 ex.Message,
                 fallbackUsed: true).ConfigureAwait(false);
+            if (IsRateLimitError(ex))
+            {
+                await RecordCooldownIfRateLimitAsync(fallbackProvider, ex).ConfigureAwait(false);
+            }
+            else if (IsTimeoutOrTransientError(ex))
+            {
+                await RecordCooldownIfTimeoutOrTransientAsync(fallbackProvider, ex).ConfigureAwait(false);
+            }
             throw new FallbackExecutionException(
                 $"Vision fallback provider {fallbackProvider}/{fallbackModel} threw during execution.",
                 ex);
@@ -977,6 +998,18 @@ public partial class LlmRouter
                             await NotifyProviderExecutionStartingAsync(options).ConfigureAwait(false);
                             response = await provider.GenerateVisionResponseAsync(prompt, imageBase64, healedModel, healedSettings);
                             stopwatch.Stop();
+                        }
+                        catch (Exception)
+                            when (IsRequestCancellationRequested(options))
+                        {
+                            stopwatch.Stop();
+                            await TrackCancellationAsync(
+                                functionType,
+                                healedSelection,
+                                stopwatch.ElapsedMilliseconds,
+                                options,
+                                fallbackUsed: true).ConfigureAwait(false);
+                            throw;
                         }
                         catch (Exception ex) when (ex is not SwarmCore.Abstractions.Budgets.MissionBudgetExceededException)
                         {
@@ -1139,6 +1172,13 @@ public partial class LlmRouter
         {
             throw;
         }
+        catch (Exception)
+            when (IsRequestCancellationRequested(options))
+        {
+            // A cancelled request surfaces as cancellation, never as a failover a
+            // caller might retry.
+            throw;
+        }
         catch (FallbackExecutionException ex)
         {
             throw CreateFailoverException(
@@ -1163,17 +1203,6 @@ public partial class LlmRouter
                 wrapped,
                 primaryCategory);
         }
-    }
-
-    private static string GetVisionFallbackModel(string provider)
-    {
-        return provider.ToLowerInvariant() switch
-        {
-            "ollama" => "llava",  // Common Ollama vision model
-            _ => ModelDefaults.Frontier(provider)
-                 ?? ModelDefaults.Balanced(provider)
-                 ?? "llava"
-        };
     }
 
     /// <summary>
@@ -1308,7 +1337,7 @@ public partial class LlmRouter
                 PromptHash = ComputeHash(prompt),
                 RoutingAuditCorrelationId = model.AuditCorrelationId,
                 WasSuccessful = succeeded,
-                ErrorMessage = errorMessageOverride ?? response.ErrorMessage,
+                ErrorMessage = RoutingDiagnosticSanitizer.Sanitize(errorMessageOverride ?? response.ErrorMessage, 2_000),
                 FallbackUsed = fallbackUsed,
                 InteractivityContext = model.Context?.InteractivityKey,
                 PromptText = prompt,
@@ -1362,10 +1391,7 @@ public partial class LlmRouter
             }
             else if (successfulOverride == false && _knownGoodTracker is not null)
             {
-                _ = _knownGoodTracker.RecordFailureAndCheckRevertAsync(
-                    functionType,
-                    model.Provider,
-                    model.Model);
+                ObserveKnownGoodRevert(functionType, model.Provider, model.Model);
             }
 
             if (options?.UsageCompletionObserver is not null || HasMissionPhysicalBudget)
@@ -1509,7 +1535,7 @@ public partial class LlmRouter
 
             if (_knownGoodTracker != null)
             {
-                _ = _knownGoodTracker.RecordFailureAndCheckRevertAsync(functionType, model.Provider, model.Model);
+                ObserveKnownGoodRevert(functionType, model.Provider, model.Model);
             }
         }
         catch (RoutingAuditPersistenceException)
@@ -1544,6 +1570,33 @@ public partial class LlmRouter
             totalTokens: 0,
             estimatedCost: 0m,
             error: "request_cancelled");
+
+    /// <summary>
+    /// Starts the known-good revert check without making the caller wait for its
+    /// proof call, and logs a failure instead of leaving it unobserved.
+    /// </summary>
+    private void ObserveKnownGoodRevert(string functionType, string provider, string model)
+    {
+        Task revert;
+        try
+        {
+            revert = _knownGoodTracker!.RecordFailureAndCheckRevertAsync(functionType, provider, model);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "Known-good revert check failed for {FunctionType} on {Provider}/{Model}",
+                functionType, provider, model);
+            return;
+        }
+
+        _ = revert.ContinueWith(
+            completed => _logger.LogWarning(completed.Exception?.GetBaseException(),
+                "Known-good revert check failed for {FunctionType} on {Provider}/{Model}",
+                functionType, provider, model),
+            CancellationToken.None,
+            TaskContinuationOptions.OnlyOnFaulted | TaskContinuationOptions.ExecuteSynchronously,
+            TaskScheduler.Default);
+    }
 
     private static bool IsRequestCancellationRequested(LlmRouterOptions? options)
     {
@@ -1950,7 +2003,6 @@ public partial class LlmRouter
                         requireCurrentFunctionEvidence = fallback.RequireCurrentFunctionEvidence
                                                          || options?.RequireCurrentFunctionEvidence == true,
                         disableFallback = options?.DisableFallback == true,
-                        allowAnyProviderFallback = options?.AllowAnyProviderFallback == true,
                         overrideProvenance = options?.OverrideProvenance.ToString(),
                     },
                     spendEvaluation = new
@@ -2135,39 +2187,8 @@ public partial class LlmRouter
         ProviderExecutionSettingsMutator.SetOutputBudget(settings, retryBudget);
     }
 
-    private static string BuildGenieXJsonRecoveryPrompt(string prompt) => string.Concat(
-        prompt,
-        "\n\nSTRICT JSON RECOVERY: The previous response was not parseable. Recreate the answer from scratch as exactly one complete JSON object matching the originally requested shape. Return no prose or markdown. Use double-quoted keys and strings, valid JSON literals, no comments, and balanced braces and brackets. Check the completed object before returning it.");
-
     private static int? TryGetMaxTokens(IReadOnlyDictionary<string, object> settings)
         => ProviderExecutionSettingsMutator.ReadOutputBudget(settings);
-
-    private static bool TryConvertToInt(object? value, out int parsed)
-    {
-        switch (value)
-        {
-            case int i:
-                parsed = i;
-                return true;
-            case long l when l >= int.MinValue && l <= int.MaxValue:
-                parsed = (int)l;
-                return true;
-            case double d when d >= int.MinValue && d <= int.MaxValue:
-                parsed = (int)d;
-                return true;
-            case float f when f >= int.MinValue && f <= int.MaxValue:
-                parsed = (int)f;
-                return true;
-            case decimal m when m >= int.MinValue && m <= int.MaxValue:
-                parsed = (int)m;
-                return true;
-            case string text:
-                return int.TryParse(text, out parsed);
-            default:
-                parsed = 0;
-                return false;
-        }
-    }
 
     private static string ResolveQualityRetryKind(string qualityFailureReason, LlmRouterOptions? options)
     {
@@ -2202,18 +2223,6 @@ public partial class LlmRouter
         => string.Equals(qualityFailureReason, "empty_response", StringComparison.OrdinalIgnoreCase)
            || string.Equals(qualityFailureReason, "empty_response_with_output_tokens", StringComparison.OrdinalIgnoreCase);
 
-    private static bool IsOpenAIReasoningModel(string provider, string model)
-    {
-        if (!string.Equals(provider, "OpenAI", StringComparison.OrdinalIgnoreCase)) return false;
-        if (string.IsNullOrWhiteSpace(model)) return false;
-        var m = model.Trim().ToLowerInvariant();
-        return m.StartsWith("gpt-5") || m.StartsWith("o1") || m.StartsWith("o3") || m.StartsWith("o4");
-    }
-
-    /// <summary>
-    /// Validates that a "successful" response actually contains usable content.
-    /// Returns null if quality is acceptable, or a failure reason string if not.
-    /// </summary>
     private const string CallerResponseContractFailureReason = "caller_response_contract_failed";
 
     private static bool IsTerminalCallerContractFailure(
@@ -2225,9 +2234,10 @@ public partial class LlmRouter
                StringComparison.Ordinal)
            && options?.SuppressFallbackOnResponseContentValidationFailure == true;
 
-    private static string? ValidateResponseQuality(string? content, LlmRouterOptions? options)
-        => ValidateResponseQuality(content, options, out _);
-
+    /// <summary>
+    /// Validates that a "successful" response actually contains usable content.
+    /// Returns null if quality is acceptable, or a failure reason string if not.
+    /// </summary>
     private static string? ValidateResponseQuality(
         LlmResponse response,
         LlmRouterOptions? options,
@@ -2311,22 +2321,6 @@ public partial class LlmRouter
                || errorMessage.Contains("reasoning_channel_without_content", StringComparison.OrdinalIgnoreCase)
                || (errorMessage.Contains("thinking", StringComparison.OrdinalIgnoreCase)
                    && errorMessage.Contains("empty content", StringComparison.OrdinalIgnoreCase));
-    }
-
-    // Match the leniency of downstream JSON extractors (which scan for first-`{`/last-`}`).
-    // Local models often wrap JSON in ```json fences or prefix it with prose; rejecting those
-    // here while the parser would happily consume them defeats the gate's purpose.
-    private static bool ContainsJsonStructure(string content)
-    {
-        var firstObj = content.IndexOf('{');
-        var lastObj = content.LastIndexOf('}');
-        if (firstObj >= 0 && lastObj > firstObj) return true;
-
-        var firstArr = content.IndexOf('[');
-        var lastArr = content.LastIndexOf(']');
-        if (firstArr >= 0 && lastArr > firstArr) return true;
-
-        return false;
     }
 
     private static bool IsTimeoutOrTransientError(Exception ex) =>
@@ -2481,7 +2475,9 @@ public partial class LlmRouter
             .ConfigureAwait(false);
     }
 
-    private async Task MarkProviderCooldownAsync(
+    // Internal (not private) so the router test assembly calls it directly
+    // instead of binding to it by reflection.
+    internal async Task MarkProviderCooldownAsync(
         string providerName,
         TimeSpan retryAfter,
         string? reason,
@@ -2527,30 +2523,8 @@ public partial class LlmRouter
            && Services.LlmErrorPolicy.Classify(errorMessage, httpStatusCode)
                is LlmFailureCategory.ModelNotFound;
 
-    private static bool IsRateLimitErrorMessage(string? errorMessage, int? httpStatusCode = null)
-        => !string.IsNullOrWhiteSpace(errorMessage)
-           && Services.LlmErrorPolicy.Classify(errorMessage, httpStatusCode)
-               is LlmFailureCategory.RateLimit or LlmFailureCategory.QuotaExhausted;
-
-    private static bool IsTimeoutOrTransientErrorMessage(string? errorMessage)
-    {
-        if (string.IsNullOrWhiteSpace(errorMessage))
-        {
-            return false;
-        }
-
-        return errorMessage.Contains("timeout", StringComparison.OrdinalIgnoreCase) ||
-               errorMessage.Contains("timed out", StringComparison.OrdinalIgnoreCase) ||
-               errorMessage.Contains("temporarily unavailable", StringComparison.OrdinalIgnoreCase) ||
-               errorMessage.Contains("network", StringComparison.OrdinalIgnoreCase) ||
-               errorMessage.Contains("connection", StringComparison.OrdinalIgnoreCase);
-    }
-
     private static bool IsSameRoute(string leftProvider, string leftModel, string rightProvider, string rightModel) =>
         IsExactRouteIdentity(leftProvider, leftModel, rightProvider, rightModel);
-
-    private string ClassifyFailureReason(string? errorMessage)
-        => ClassifyFailureReasonWithCategory(errorMessage).Reason;
 
     /// <summary>
     /// Classification-time pairing of the wire-compatible legacy reason token
@@ -2566,11 +2540,7 @@ public partial class LlmRouter
     /// its reason token ("thinking_channel_without_content") is a quality-gate
     /// signal, not an LlmErrorPolicy classification, and stamping ProviderError
     /// on it would make it mid-turn-retryable where it never was.
-    /// </summary>
-    private (string Reason, LlmFailureCategory? Category) ClassifyFailureReasonWithCategory(string? errorMessage)
-        => ClassifyFailureReasonWithCategory(errorMessage, httpStatusCode: null);
-
-    /// <summary>
+    ///
     /// Failed-response overload: carries the provider's structured HTTP status
     /// into classification so the message text never has to be sniffed for one.
     /// </summary>
@@ -2615,7 +2585,6 @@ public partial class LlmRouter
         string prompt,
         bool requiresVision,
         string reason,
-        bool allowAnyProviderFallback = false,
         LlmRouterOptions? options = null)
     {
         if (HasExactValidatedAdmission(selectedModel, options))
@@ -2645,7 +2614,7 @@ public partial class LlmRouter
         {
             var noConfiguredFallbackMessage = $"No fallback route configured for {selectedModel.Provider}/{selectedModel.Model} on {functionType} (reason={reason}).";
             await ReportOperationalFailureAsync(functionType, selectedModel, requiresVision, reason, noConfiguredFallbackMessage);
-            throw new InvalidOperationException(noConfiguredFallbackMessage);
+            throw new LlmNoUsableRouteException(noConfiguredFallbackMessage);
         }
 
         string? unusableAutomaticFallback = null;
@@ -2752,7 +2721,7 @@ public partial class LlmRouter
                 requiresVision,
                 reason,
                 noProofMessage).ConfigureAwait(false);
-            throw new InvalidOperationException(noProofMessage);
+            throw new LlmNoUsableRouteException(noProofMessage);
         }
 
         if (!hasConfiguredFallback)
@@ -2765,7 +2734,7 @@ public partial class LlmRouter
                 requiresVision,
                 reason,
                 noUserFallbackMessage).ConfigureAwait(false);
-            throw new InvalidOperationException(noUserFallbackMessage);
+            throw new LlmNoUsableRouteException(noUserFallbackMessage);
         }
 
         var fallbackProvider = selectedModel.FallbackProvider!;
@@ -3339,58 +3308,6 @@ public partial class LlmRouter
             : null;
     }
 
-    private async Task<string?> ResolveVisionFallbackModelAsync(string providerName, string? modelName, ILlmProvider provider)
-    {
-        if (await RequiresAdvertisedModelForVisionFallbackAsync(providerName))
-        {
-            IReadOnlyList<string> advertised;
-            try
-            {
-                var configurationIdentity = await GetProviderDiscoveryConfigurationIdentityAsync(providerName)
-                    .ConfigureAwait(false);
-                advertised = await _providerDiscovery.GetAvailableModelsAsync(
-                        provider,
-                        ProviderDiscoveryTimeout,
-                        highPriority: true,
-                        configurationIdentity: configurationIdentity)
-                    .ConfigureAwait(false);
-            }
-            catch (Exception ex) when (ex is not SwarmCore.Abstractions.Budgets.MissionBudgetExceededException)
-            {
-                _logger.LogDebug(ex, "Could not inspect advertised models for vision fallback provider {Provider}", providerName);
-                return null;
-            }
-
-            if (!string.IsNullOrWhiteSpace(modelName)
-                && advertised.Any(m => string.Equals(m, modelName, StringComparison.OrdinalIgnoreCase))
-                && provider.SupportsVision(modelName))
-            {
-                return modelName;
-            }
-
-            return advertised.FirstOrDefault(provider.SupportsVision);
-        }
-
-        if (!string.IsNullOrWhiteSpace(modelName) && provider.SupportsVision(modelName))
-        {
-            return modelName;
-        }
-
-        var visionSwap = GetVisionFallbackModel(providerName);
-        if (!string.IsNullOrWhiteSpace(visionSwap) && provider.SupportsVision(visionSwap))
-        {
-            return visionSwap;
-        }
-
-        return null;
-    }
-
-    private async Task<bool> RequiresAdvertisedModelForVisionFallbackAsync(string providerName)
-    {
-        return await IsLocalProviderAsync(providerName)
-               || providerName.Equals("RemotePeer", StringComparison.OrdinalIgnoreCase);
-    }
-
     private async Task ReportOperationalFailureAsync(
         string functionType,
         LlmModelSelection selectedModel,
@@ -3425,9 +3342,6 @@ public partial class LlmRouter
     private static int EstimateTokenCount(string text) =>
         string.IsNullOrEmpty(text) ? 0 : (int)Math.Ceiling(text.Length / 4.0);
 
-    private decimal CalculateCost(string model, string prompt, string response) =>
-        _costService.CalculateCost(model, EstimateTokenCount(prompt), EstimateTokenCount(response));
-
     private static string ComputeHash(string input)
     {
         using var sha256 = SHA256.Create();
@@ -3458,7 +3372,8 @@ public partial class LlmRouter
                 PromptHash = ComputeHash(text),
                 RoutingAuditCorrelationId = model.AuditCorrelationId,
                 WasSuccessful = response.Success,
-                ErrorMessage = response.ErrorMessage,
+                // Provider error bodies can echo credentials, bearer tokens and addresses.
+                ErrorMessage = RoutingDiagnosticSanitizer.Sanitize(response.ErrorMessage, 2_000),
                 FallbackUsed = false
             };
 
@@ -3522,7 +3437,7 @@ public partial class LlmRouter
                 PromptHash = $"batch_{textCount}_texts",
                 RoutingAuditCorrelationId = model.AuditCorrelationId,
                 WasSuccessful = wasSuccessful,
-                ErrorMessage = errorMessage,
+                ErrorMessage = RoutingDiagnosticSanitizer.Sanitize(errorMessage, 2_000),
                 FallbackUsed = false
             };
 
@@ -3592,7 +3507,7 @@ public partial class LlmRouter
                 PromptHash = promptHash,
                 RoutingAuditCorrelationId = model.AuditCorrelationId,
                 WasSuccessful = false,
-                ErrorMessage = errorMessage,
+                ErrorMessage = RoutingDiagnosticSanitizer.Sanitize(errorMessage, 2_000),
                 FallbackUsed = false,
             };
 

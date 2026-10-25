@@ -119,11 +119,27 @@ public sealed record DirectApiProviderPack
     public IReadOnlyList<string> PreferredModels { get; init; } = [];
     public required IReadOnlyList<string> VisionModelPatterns { get; init; }
     public IReadOnlyList<string> NonVisionModelPatterns { get; init; } = [];
+    /// <summary>
+    /// Reviewed provider fact: the models that still accept sampling parameters
+    /// (temperature/top_p/top_k). Each entry matches the exact id, a dated snapshot
+    /// (<c>entry-YYYYMMDD</c>) or the <c>-latest</c> alias. Null means the provider
+    /// has no such restriction; when set, any other model never receives them,
+    /// so a newer model that rejects sampling is safe by default.
+    /// </summary>
+    public IReadOnlyList<string>? SamplingParameterModels { get; init; }
     public IReadOnlyList<string> CatalogModelPrefixes { get; init; } = [];
     public IReadOnlyList<string> ModelScoutCandidates { get; init; } = [];
     public IReadOnlyList<string> ModelScoutSuggested { get; init; } = [];
     public IReadOnlyList<string> AutomaticMeteredCandidates { get; init; } = [];
     public int QualificationPriority { get; init; } = 100;
+    /// <summary>
+    /// Reviewed billing fact: true only when the provider never bills an input
+    /// token (including a prompt-cache write) above the model's listed input
+    /// price, so the listed input/output prices bound a call's cost. When false
+    /// (the default) the tariff envelope is unknown and hard-USD mission budgets
+    /// stay fail-closed for this provider; token budgets are unaffected.
+    /// </summary>
+    public bool ListedPricesBoundCost { get; init; }
 }
 
 /// <summary>
@@ -295,6 +311,65 @@ public static class ProviderPackCatalog
                && !string.IsNullOrWhiteSpace(modelId)
                && direct.ModelFacts.TryGetValue(modelId.Trim(), out facts);
     }
+
+    /// <summary>
+    /// Whether the provider's reviewed pack declares that listed model prices
+    /// bound every billed token (see <see cref="DirectApiProviderPack.ListedPricesBoundCost"/>).
+    /// </summary>
+    /// <summary>
+    /// True when the reviewed pack lets <paramref name="model"/> receive sampling
+    /// parameters. Providers without a reviewed restriction always return true.
+    /// </summary>
+    public static bool AcceptsSamplingParameters(string? providerName, string? model)
+    {
+        if (!TryGet(providerName, out var pack)
+            || pack!.DirectApi?.SamplingParameterModels is not { } allowed)
+        {
+            return true;
+        }
+
+        var normalized = model?.Trim() ?? string.Empty;
+        if (normalized.Length == 0)
+        {
+            return false;
+        }
+
+        foreach (var entry in allowed)
+        {
+            if (normalized.Equals(entry, StringComparison.OrdinalIgnoreCase)
+                || normalized.Equals(entry + "-latest", StringComparison.OrdinalIgnoreCase)
+                || IsDatedSnapshotOf(normalized, entry))
+            {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    private static bool IsDatedSnapshotOf(string model, string entry)
+    {
+        if (model.Length != entry.Length + 9
+            || !model.StartsWith(entry, StringComparison.OrdinalIgnoreCase)
+            || model[entry.Length] != '-')
+        {
+            return false;
+        }
+
+        for (var i = entry.Length + 1; i < model.Length; i++)
+        {
+            if (!char.IsAsciiDigit(model[i]))
+            {
+                return false;
+            }
+        }
+
+        return true;
+    }
+
+    public static bool ListedPricesBoundCost(string? providerName)
+        => TryGet(providerName, out var pack)
+           && pack!.DirectApi is { ListedPricesBoundCost: true };
 
     /// <summary>
     /// Binds durable qualification evidence to the reviewed provider facts that
@@ -827,6 +902,7 @@ public static class ProviderPackCatalog
             ["Grok"] = "api.x.ai",
             ["DeepSeek"] = "api.deepseek.com",
             ["HuggingFace"] = "router.huggingface.co",
+            ["Venice"] = "api.venice.ai",
         };
         if (!approvedHosts.TryGetValue(pack.ProviderName, out var approvedHost)
             || !Uri.TryCreate(direct.BaseUrl, UriKind.Absolute, out var baseUri)
@@ -848,6 +924,7 @@ public static class ProviderPackCatalog
                 || pricedFacts.OutputCostPer1K is null)
             || direct.VisionModelPatterns.Any(InvalidOpenRouterModelValue)
             || direct.NonVisionModelPatterns.Any(InvalidOpenRouterModelValue)
+            || direct.SamplingParameterModels?.Any(InvalidOpenRouterModelValue) == true
             || direct.CatalogModelPrefixes.Any(InvalidOpenRouterModelValue)
             || direct.PreferredModels.Any(model => !direct.DefaultModels.Contains(model, StringComparer.OrdinalIgnoreCase))
             || direct.ModelScoutCandidates.Any(model => !direct.DefaultModels.Contains(model, StringComparer.OrdinalIgnoreCase))

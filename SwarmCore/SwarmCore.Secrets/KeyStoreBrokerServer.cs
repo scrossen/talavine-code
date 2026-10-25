@@ -35,11 +35,21 @@ public sealed class KeyStoreBrokerServer(IOsKeyStore keyStore, string dataDirect
             try
             {
                 ownedDirectory = Directory.CreateTempSubdirectory("sc-key-").FullName;
-                if (!OperatingSystem.IsWindows() && Path.Combine(ownedDirectory, "k").Length >= 104)
+                if (System.Text.Encoding.UTF8.GetByteCount(Path.Combine(ownedDirectory, "k")) >= 104)
                 {
                     Directory.Delete(ownedDirectory);
-                    ownedDirectory = Directory.CreateDirectory(Path.Combine("/tmp", "sc-key-" + Guid.NewGuid().ToString("N")),
-                        UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute).FullName;
+                    // Unix-domain socket limits apply on Windows too. Process-owned test
+                    // or host temp roots can be longer than the socket address permits.
+                    var shortRoot = OperatingSystem.IsWindows()
+                        ? Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "Temp")
+                        : "/tmp";
+                    var shortPath = Path.Combine(shortRoot, "sc-key-" + Guid.NewGuid().ToString("N"));
+                    if (System.Text.Encoding.UTF8.GetByteCount(Path.Combine(shortPath, "k")) >= 104)
+                        throw new ArgumentException("No private socket path fits the platform limit.");
+                    ownedDirectory = OperatingSystem.IsWindows()
+                        ? Directory.CreateDirectory(shortPath).FullName
+                        : Directory.CreateDirectory(shortPath,
+                            UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute).FullName;
                 }
                 if (!OperatingSystem.IsWindows()) File.SetUnixFileMode(ownedDirectory, UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute);
                 SocketPath = Path.Combine(ownedDirectory, "k");

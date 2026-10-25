@@ -1,21 +1,31 @@
+using System.Text;
 using System.Text.Json;
 using SwarmCore.Abstractions.LlmRouting;
 
 namespace SwarmCode.Hosting.Llm;
 
 /// <summary>
-/// Durable append-only <see cref="ILlmRoutingAuditStore"/> over an app-data
-/// JSON file, following SwarmCode' JSON storage idiom. Routing decisions and
-/// control-plane changes now survive restarts, so "why did you use that
-/// model?" stays answerable. Retention mirrors Talavine's ledger:
-/// high-volume selection/execution rows are bounded; control-plane changes
-/// are kept for years.
+/// Durable append-only <see cref="ILlmRoutingAuditStore"/> over an app-data JSON Lines file
+/// (<c>llm-routing-audit.jsonl</c>), so routing decisions and control-plane changes survive restarts and
+/// "why did you use that model?" stays answerable. Retention mirrors Talavine's ledger: high-volume
+/// selection/execution rows are bounded; control-plane changes are kept for years.
+/// <para>
+/// The router appends several rows per model call, so an append writes one line; it never rewrites the
+/// ledger. The file is compacted (pruned and rewritten) only when the high-volume rows exceed their bound
+/// by a margin, when rows age out, or when an unreadable line is found. Queries use the in-memory copy.
+/// </para>
 /// </summary>
 public sealed class JsonLlmRoutingAuditStore : ILlmRoutingAuditStore
 {
     private const int MaxHighVolumeRows = 25_000;
+
+    /// <summary>High-volume rows allowed past the bound before the file is compacted.</summary>
+    private const int CompactionSlack = 2_500;
+
     private static readonly TimeSpan HighVolumeRetention = TimeSpan.FromDays(30);
     private static readonly TimeSpan ControlPlaneRetention = TimeSpan.FromDays(365 * 7);
+    private static readonly TimeSpan AgeCheckInterval = TimeSpan.FromHours(1);
+    private static readonly UTF8Encoding Utf8NoBom = new(false);
 
     private static readonly HashSet<string> ControlPlaneKinds = new(StringComparer.OrdinalIgnoreCase)
     {
@@ -30,10 +40,19 @@ public sealed class JsonLlmRoutingAuditStore : ILlmRoutingAuditStore
     };
 
     private readonly string _path;
+    private readonly string _legacyPath;
     private readonly object _lock = new();
-    private List<LlmRoutingAuditEntry>? _entries;
 
-    public JsonLlmRoutingAuditStore(SwarmCodeDataPaths paths) => _path = paths.RoutingAuditPath;
+    // Oldest first, in append order.
+    private List<LlmRoutingAuditEntry>? _entries;
+    private int _highVolumeRows;
+    private DateTime _nextAgeCheckUtc;
+
+    public JsonLlmRoutingAuditStore(SwarmCodeDataPaths paths)
+    {
+        _legacyPath = paths.RoutingAuditPath;
+        _path = Path.ChangeExtension(paths.RoutingAuditPath, ".jsonl");
+    }
 
     public Task AppendAsync(LlmRoutingAuditEntry entry, CancellationToken ct = default)
     {
@@ -41,9 +60,16 @@ public sealed class JsonLlmRoutingAuditStore : ILlmRoutingAuditStore
         lock (_lock)
         {
             var entries = LoadLocked();
-            entries.Insert(0, entry);
-            PruneLocked(entries);
-            SaveLocked(entries);
+            entries.Add(entry);
+            if (!ControlPlaneKinds.Contains(entry.EventKind)) _highVolumeRows++;
+
+            if (_highVolumeRows > MaxHighVolumeRows + CompactionSlack || DateTime.UtcNow >= _nextAgeCheckUtc)
+            {
+                if (PruneLocked(entries)) { CompactLocked(entries); return Task.CompletedTask; }
+            }
+
+            Directory.CreateDirectory(Path.GetDirectoryName(_path)!);
+            File.AppendAllText(_path, JsonSerializer.Serialize(entry) + "\n", Utf8NoBom);
         }
         return Task.CompletedTask;
     }
@@ -101,54 +127,120 @@ public sealed class JsonLlmRoutingAuditStore : ILlmRoutingAuditStore
     private List<LlmRoutingAuditEntry> LoadLocked()
     {
         if (_entries is not null) return _entries;
+
+        var entries = new List<LlmRoutingAuditEntry>();
+        var rewrite = false;
         try
         {
-            _entries = File.Exists(_path)
-                ? JsonSerializer.Deserialize<List<LlmRoutingAuditEntry>>(File.ReadAllText(_path)) ?? []
-                : [];
+            if (File.Exists(_path))
+            {
+                var unreadable = false;
+                foreach (var line in File.ReadLines(_path))
+                {
+                    if (string.IsNullOrWhiteSpace(line)) continue;
+                    try
+                    {
+                        if (JsonSerializer.Deserialize<LlmRoutingAuditEntry>(line) is { } entry) entries.Add(entry);
+                        else unreadable = true;
+                    }
+                    catch (JsonException) { unreadable = true; } // e.g. a line cut short by a crash
+                }
+                if (unreadable)
+                {
+                    // Keep the original bytes before the compaction below drops the unreadable lines.
+                    TryCopyAside(_path);
+                    rewrite = true;
+                }
+            }
+            else if (File.Exists(_legacyPath))
+            {
+                // One-time migration from the whole-document ledger this store used to rewrite on every append.
+                entries.AddRange((JsonSerializer.Deserialize<List<LlmRoutingAuditEntry>>(File.ReadAllText(_legacyPath)) ?? [])
+                    .OrderBy(entry => entry.OccurredAtUtc));
+                rewrite = true;
+            }
         }
         catch (Exception ex) when (ex is IOException or JsonException or UnauthorizedAccessException)
         {
             // Quarantine an unreadable ledger instead of silently overwriting it.
-            TryQuarantineCorruptFile();
-            _entries = [];
+            TryQuarantine(File.Exists(_path) ? _path : _legacyPath);
+            entries.Clear();
+        }
+
+        _entries = entries;
+        _highVolumeRows = entries.Count(entry => !ControlPlaneKinds.Contains(entry.EventKind));
+        if (PruneLocked(entries) || rewrite)
+        {
+            try
+            {
+                CompactLocked(entries);
+                if (File.Exists(_legacyPath) && File.Exists(_path)) File.Delete(_legacyPath);
+            }
+            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+            {
+                // The next append or compaction retries; queries still see the loaded rows.
+            }
         }
         return _entries;
     }
 
-    private void TryQuarantineCorruptFile()
+    private static void TryCopyAside(string path)
+    {
+        try { File.Copy(path, path + $".corrupt-{DateTime.UtcNow:yyyyMMddHHmmss}", overwrite: false); }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException) { }
+    }
+
+    private static void TryQuarantine(string path)
     {
         try
         {
-            if (File.Exists(_path))
-                File.Move(_path, _path + $".corrupt-{DateTime.UtcNow:yyyyMMddHHmmss}", overwrite: false);
+            if (File.Exists(path))
+                File.Move(path, path + $".corrupt-{DateTime.UtcNow:yyyyMMddHHmmss}", overwrite: false);
         }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
         {
         }
     }
 
-    private static void PruneLocked(List<LlmRoutingAuditEntry> entries)
+    /// <summary>Drops aged-out rows and the oldest high-volume rows past the bound. True when anything was removed.</summary>
+    private bool PruneLocked(List<LlmRoutingAuditEntry> entries)
     {
         var now = DateTime.UtcNow;
-        entries.RemoveAll(entry => entry.OccurredAtUtc < now
+        _nextAgeCheckUtc = now + AgeCheckInterval;
+        var removed = entries.RemoveAll(entry => entry.OccurredAtUtc < now
             - (ControlPlaneKinds.Contains(entry.EventKind) ? ControlPlaneRetention : HighVolumeRetention));
 
         var highVolume = entries.Count(entry => !ControlPlaneKinds.Contains(entry.EventKind));
-        if (highVolume <= MaxHighVolumeRows) return;
         var toDrop = highVolume - MaxHighVolumeRows;
-        for (var index = entries.Count - 1; index >= 0 && toDrop > 0; index--)
+        if (toDrop > 0)
         {
-            if (ControlPlaneKinds.Contains(entries[index].EventKind)) continue;
-            entries.RemoveAt(index);
-            toDrop--;
+            // Oldest first: drop from the start, keeping control-plane rows.
+            var kept = new List<LlmRoutingAuditEntry>(entries.Count - toDrop);
+            foreach (var entry in entries)
+            {
+                if (toDrop > 0 && !ControlPlaneKinds.Contains(entry.EventKind)) { toDrop--; removed++; continue; }
+                kept.Add(entry);
+            }
+            entries.Clear();
+            entries.AddRange(kept);
         }
+
+        _highVolumeRows = entries.Count(entry => !ControlPlaneKinds.Contains(entry.EventKind));
+        return removed > 0;
     }
 
-    private void SaveLocked(List<LlmRoutingAuditEntry> entries)
+    private void CompactLocked(List<LlmRoutingAuditEntry> entries)
     {
+        Directory.CreateDirectory(Path.GetDirectoryName(_path)!);
         var tempPath = _path + ".tmp";
-        File.WriteAllText(tempPath, JsonSerializer.Serialize(entries));
+        using (var writer = new StreamWriter(tempPath, append: false, Utf8NoBom))
+        {
+            foreach (var entry in entries)
+            {
+                writer.Write(JsonSerializer.Serialize(entry));
+                writer.Write('\n');
+            }
+        }
         File.Move(tempPath, _path, overwrite: true);
     }
 }

@@ -20,7 +20,7 @@ public sealed record LlmFailoverAttempt(
 /// Thrown when an LLM request fails on both the primary and fallback provider/model.
 /// Intended to be user-visible (via upstream error surfaces) while still carrying the inner exceptions.
 /// </summary>
-public sealed class LlmFailoverException : Exception
+public sealed class LlmFailoverException : Exception, ILlmNoUsableRouteSignal
 {
     public string FunctionType { get; }
     public string PromptId { get; }
@@ -51,6 +51,13 @@ public sealed class LlmFailoverException : Exception
     /// </summary>
     public IReadOnlyList<LlmFailoverAttempt> Attempts { get; }
 
+    /// <summary>
+    /// True when the fallback could not run because no usable route exists
+    /// (see <see cref="LlmNoUsableRouteException"/>), as opposed to a route that
+    /// was tried and failed.
+    /// </summary>
+    public bool NoUsableRoute { get; }
+
     public LlmFailoverException(
         string functionType,
         string promptId,
@@ -74,6 +81,8 @@ public sealed class LlmFailoverException : Exception
         PrimaryCategory = primaryCategory;
         FallbackCategory = fallbackCategory;
         Attempts = attempts?.ToArray() ?? [];
+        NoUsableRoute = LlmNoUsableRouteException.IsIn(fallbackException)
+                        || LlmNoUsableRouteException.IsIn(primaryException);
 
         // Preserve the fallback exception as additional context when present.
         // Exception.Data travels into logs and user-visible error surfaces, so

@@ -7,6 +7,9 @@ public enum LocalLlmWorkloadKind
     Vision = 2
 }
 
+/// <summary>Host scheduling intent, separate from model capability and privacy.</summary>
+public enum LocalLlmSchedulingClass { Standard = 0, RoutingDecision = 1 }
+
 public enum LocalLlmRuntimeActivityKind
 {
     ModelInstall = 0,
@@ -21,6 +24,9 @@ public sealed record LocalLlmRuntimeRequest(
     LocalLlmWorkloadKind WorkloadKind = LocalLlmWorkloadKind.Text)
 {
     public LlmInteractivity Interactivity => Context?.Interactivity ?? LlmInteractivity.Background;
+    public LocalLlmSchedulingClass SchedulingClass { get; init; }
+    /// <summary>Bounds admission only; response generation has an independent deadline.</summary>
+    public TimeSpan? AdmissionTimeout { get; init; }
 }
 
 public sealed record LocalLlmRuntimeActivity(

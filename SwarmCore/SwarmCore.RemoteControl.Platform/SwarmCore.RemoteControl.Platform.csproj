@@ -1,0 +1,22 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <!-- Plain net11.0, like both adapters: the platform is chosen at run time with OperatingSystem checks. -->
+    <TargetFramework>net11.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <LangVersion>latest</LangVersion>
+    <RootNamespace>SwarmCore.RemoteControl.Platform</RootNamespace>
+    <Authors>Scott Crossen</Authors>
+    <Description>SwarmCore RemoteControl Platform - picks the Windows or macOS IDesktopAutomation at run time (created lazily, on first use) and composes the desktop-control services and agent tools a host registers: the session, the desktop.* tool descriptors with the browser-versus-desktop tool-choice guidance, and the learned-procedure runner.</Description>
+  </PropertyGroup>
+  <ItemGroup>
+    <!-- Same SkiaSharp version as Talavine.Mobile; used only to downscale screenshots (cross-platform). -->
+    <PackageReference Include="SkiaSharp" Version="3.119.1" />
+  </ItemGroup>
+  <ItemGroup>
+    <ProjectReference Include="..\SwarmCore.RemoteControl\SwarmCore.RemoteControl.csproj" />
+    <ProjectReference Include="..\SwarmCore.RemoteControl.Windows\SwarmCore.RemoteControl.Windows.csproj" />
+    <ProjectReference Include="..\SwarmCore.RemoteControl.Mac\SwarmCore.RemoteControl.Mac.csproj" />
+    <ProjectReference Include="..\SwarmCore.RemoteControl.Agent\SwarmCore.RemoteControl.Agent.csproj" />
+  </ItemGroup>
+</Project>

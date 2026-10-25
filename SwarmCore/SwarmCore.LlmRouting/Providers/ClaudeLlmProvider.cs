@@ -163,7 +163,7 @@ public class ClaudeLlmProvider : LlmProviderBase, ILlmModelCatalogProvider
             // log stays short and doesn't leak prompt content.
             if (Logger.IsEnabled(LogLevel.Debug))
             {
-                var shapeDoc = JsonDocument.Parse(json);
+                using var shapeDoc = JsonDocument.Parse(json);
                 var shape = ExtractClaudeRequestShape(shapeDoc.RootElement);
                 Logger.LogDebug("Claude request shape: {Shape}", shape);
             }
@@ -458,16 +458,16 @@ public class ClaudeLlmProvider : LlmProviderBase, ILlmModelCatalogProvider
 
             // Vision request with image
             var mediaType = DetectMediaType(imageBase64);
-            var request = new
+            var request = new ClaudeCompletionRequest
             {
-                model = effectiveModel,
-                max_tokens = 8192,
-                messages = new[]
-                {
-                    new
+                Model = effectiveModel,
+                MaxTokens = 8192,
+                Messages =
+                [
+                    new()
                     {
-                        role = "user",
-                        content = new object[]
+                        Role = "user",
+                        Content = new object[]
                         {
                             new
                             {
@@ -477,8 +477,11 @@ public class ClaudeLlmProvider : LlmProviderBase, ILlmModelCatalogProvider
                             new { type = "text", text = prompt }
                         }
                     }
-                }
+                ]
             };
+
+            // Output budget and temperature follow the same rules as text requests.
+            ApplyExecutionSettings(request, executionSettings);
 
             var json = JsonSerializer.Serialize(request);
             var content = new StringContent(json, Encoding.UTF8, "application/json");
@@ -556,24 +559,13 @@ public class ClaudeLlmProvider : LlmProviderBase, ILlmModelCatalogProvider
         if (effort is not null) request.OutputConfig = new() { ["effort"] = effort };
 
         if (executionSettings.TryGetValue("temperature", out var temp)
-            && SupportsTemperature(request.Model))
+            && ProviderPackCatalog.AcceptsSamplingParameters("Claude", request.Model))
         {
             request.Temperature = Convert.ToDouble(temp);
         }
 
         if (executionSettings.TryGetValue("max_tokens", out var maxTokens))
             request.MaxTokens = Convert.ToInt32(maxTokens);
-    }
-
-    private static bool SupportsTemperature(string model)
-    {
-        if (string.IsNullOrWhiteSpace(model))
-        {
-            return true;
-        }
-
-        var normalized = model.Trim().ToLowerInvariant();
-        return !normalized.StartsWith("claude-opus-4-7", StringComparison.Ordinal);
     }
 
     private static string ExtractTextContent(ClaudeCompletionResponse? response)

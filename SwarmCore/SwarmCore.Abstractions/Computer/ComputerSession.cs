@@ -32,11 +32,13 @@ public sealed record ComputerObservation(string SessionId, string SurfaceId, str
 public sealed record ComputerActionBatch(string SessionId, string SurfaceId, string ObservationId,
     IReadOnlyList<ComputerAction> Actions);
 public sealed record ComputerActionResult(bool Succeeded, int CompletedActions, ComputerObservation? Observation,
-    string? Error = null) : SwarmCore.Abstractions.LlmRouting.IToolResultImages, SwarmCore.Abstractions.Context.IContextPackEvidence
+    string? Error = null) : SwarmCore.Abstractions.LlmRouting.IToolResultImages, SwarmCore.Abstractions.Context.IContextPackEvidence,
+    SwarmCore.Abstractions.Tools.IToolDispatchEvidence
 {
     public string Mode { get; init; } = "browser";
     public string? BeforeObservationId { get; init; }
     public bool OutcomeUncertain { get; init; }
+    [JsonIgnore] public bool NoPhysicalAction { get; init; }
     IReadOnlyList<SwarmCore.Abstractions.LlmRouting.ImagePart> SwarmCore.Abstractions.LlmRouting.IToolResultImages.Images
         => Observation is SwarmCore.Abstractions.LlmRouting.IToolResultImages images ? images.Images : [];
     SwarmCore.Abstractions.Context.ContextPack? SwarmCore.Abstractions.Context.IContextPackEvidence.WorkingContextSourcePack => null;

@@ -9,6 +9,22 @@ namespace SwarmCore.Missions;
 /// <summary>Kernel-enforced local process boundary. No command-string inspection grants authority.</summary>
 internal static class MissionProcessSandbox
 {
+    private static int _sweptStaleScratch;
+
+    /// <summary>Once per host lifetime, reap mission scratch whose host died before cleaning it. Windows has its own
+    /// sweep; macOS and Linux keep per-mission scratch (packages, build state) that nothing else removes. Recent
+    /// activity anywhere in a directory protects it, and a locked entry is skipped.</summary>
+    private static void SweepStaleScratchOnce()
+    {
+        if (Interlocked.Exchange(ref _sweptStaleScratch, 1) != 0) return;
+        try
+        {
+            SwarmCore.Abstractions.IO.ManagedScratch.PruneDirectories(
+                Path.Combine(Path.GetTempPath(), "swarmcore-mission-process"), "*", keepNewest: 0, maxAge: TimeSpan.FromHours(48));
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException) { }
+    }
+
     public static SwarmCore.Abstractions.Processes.IChildProcess Start(ProcessStartInfo start, CancellationToken ct = default)
     {
         MissionPrimitiveFence.ValidateAsync(ct).GetAwaiter().GetResult();
@@ -25,6 +41,7 @@ internal static class MissionProcessSandbox
             MissionEffect.Execute, turn.ProfileId?.ToString("D") ?? "");
         if (!authority.Evaluate(action).Allowed)
             throw new MissionActionSkippedException("Process working directory is outside mission authority.");
+        SweepStaleScratchOnce();
         if (OperatingSystem.IsLinux())
         {
             LinuxMissionProcessSandbox.Apply(start, authority, id);

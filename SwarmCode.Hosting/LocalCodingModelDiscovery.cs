@@ -14,7 +14,10 @@ internal static class LocalCodingModelDiscovery
     internal static async Task RefreshAsync(IServiceProvider services, CancellationToken ct = default)
     {
         var laneOptions = services.GetRequiredService<IOptions<CodingLaneOptions>>().Value;
-        var configured = new ModelSourcesStore(services.GetRequiredService<SwarmCodeDataPaths>()).Read();
+        // A damaged sources file must not stop discovery; it is reported and treated as empty.
+        var configured = new ModelSourcesStore(services.GetRequiredService<SwarmCodeDataPaths>()).ReadOrEmpty(out var sourcesProblem);
+        if (sourcesProblem is not null)
+            services.GetRequiredService<ILoggerFactory>().CreateLogger(typeof(LocalCodingModelDiscovery)).LogWarning("{Problem}", sourcesProblem);
         var sources = new[]
         {
             new ConfiguredModelSource { Name = "lmstudio", Kind = "LMStudio", RequiresApiKey = false,

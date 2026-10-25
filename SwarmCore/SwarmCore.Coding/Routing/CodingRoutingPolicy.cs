@@ -4,7 +4,7 @@ namespace SwarmCore.Coding.Routing;
 public static class CodingRoutingPolicy
 {
     public static bool CanHandOff(CodingTurnRequest request, bool configured)
-        => !request.SelectionPinned && (request.AllowHandOff ?? configured);
+        => !request.SelectionPinned && !request.RequireSelectedRoute && (request.AllowHandOff ?? configured);
 
     // Lane names and descriptions are presentation metadata, not new execution routes.
     // Model IDs remain case-sensitive because compatible servers may distinguish them.

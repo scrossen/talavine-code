@@ -266,13 +266,18 @@ public sealed class DefaultSubscriptionCliProcessRunner : ISubscriptionCliProces
     internal int StandardErrorCaptureLimitChars { get; set; } =
         DefaultStandardErrorCaptureLimitChars;
 
-    public DefaultSubscriptionCliProcessRunner(ICrashBreadcrumbSink? crashBreadcrumbs = null)
+    public DefaultSubscriptionCliProcessRunner(
+        ICrashBreadcrumbSink? crashBreadcrumbs = null,
+        IOptions<SubscriptionCliProviderOptions>? options = null)
         : this(
             crashBreadcrumbs,
             SubscriptionCliProcessExecutionPolicy.SharedGate,
             SubscriptionCliProcessExecutionPolicy.RequiresSerialization)
     {
+        _options = options;
     }
+
+    private readonly IOptions<SubscriptionCliProviderOptions>? _options;
 
     internal DefaultSubscriptionCliProcessRunner(
         ICrashBreadcrumbSink? crashBreadcrumbs,
@@ -443,7 +448,8 @@ public sealed class DefaultSubscriptionCliProcessRunner : ISubscriptionCliProces
         var startInfo = SubscriptionCliProcessStartInfo.Create(
             request.FileName,
             request.Arguments,
-            request.ChildEnvironmentSnapshot);
+            request.ChildEnvironmentSnapshot,
+            _options?.Value.PrivateCliDataRoot);
         startInfo.UseShellExecute = false;
         startInfo.RedirectStandardOutput = true;
         startInfo.RedirectStandardError = true;
@@ -922,6 +928,12 @@ public abstract class SubscriptionCliLlmProviderBase : ILlmProvider, ILlmModelCa
 
     public virtual bool SupportsVision(string model) => false;
 
+    /// <summary>
+    /// The CLI's read-only model catalog exchange, or null when the CLI has no
+    /// machine-readable catalog. Each CLI provider declares its own.
+    /// </summary>
+    private protected virtual SubscriptionCliCatalogExchange? CatalogExchange => null;
+
     public async Task<List<string>> GetAvailableModelsAsync()
     {
         if (!ExecutableOptions.Enabled)
@@ -950,25 +962,20 @@ public abstract class SubscriptionCliLlmProviderBase : ILlmProvider, ILlmModelCa
     public async Task<LlmModelCatalog> GetModelCatalogAsync(CancellationToken cancellationToken = default)
     {
         if (!ExecutableOptions.Enabled) throw new InvalidOperationException("This CLI route is disabled.");
-        var protocol = ProviderName == SubscriptionCliProviders.CodexCli ? SubscriptionCliCatalogProtocol.CodexAppServer
-            : ProviderName == SubscriptionCliProviders.ClaudeCode ? SubscriptionCliCatalogProtocol.ClaudeInitialize
-            : throw new InvalidOperationException("This CLI does not expose a machine-readable model catalog. Use its default or enter a custom model ID.");
+        var exchange = CatalogExchange
+            ?? throw new InvalidOperationException("This CLI does not expose a machine-readable model catalog. Use its default or enter a custom model ID.");
         var readiness = await ResolveAuthenticatedExecutableAsync(true, SubscriptionCliProcessPriority.Foreground, cancellationToken).ConfigureAwait(false);
         if (readiness.Executable is null) throw new InvalidOperationException(readiness.Message);
-        var arguments = protocol == SubscriptionCliCatalogProtocol.CodexAppServer
-            ? new[] { "app-server" }
-            : new[] { "--print", "--input-format", "stream-json", "--output-format", "stream-json", "--verbose", "--no-session-persistence", "--setting-sources", "" };
-        var request = new SubscriptionCliProcessRequest(readiness.Executable, arguments, null, Path.GetTempPath(), TimeSpan.FromSeconds(12),
-            ProviderName: ProviderName, Operation: SubscriptionCliProcessOperation.ModelDiscovery, Priority: SubscriptionCliProcessPriority.Foreground, CatalogProtocol: protocol);
+        var request = new SubscriptionCliProcessRequest(readiness.Executable, exchange.Arguments, null, Path.GetTempPath(), TimeSpan.FromSeconds(12),
+            ProviderName: ProviderName, Operation: SubscriptionCliProcessOperation.ModelDiscovery, Priority: SubscriptionCliProcessPriority.Foreground, CatalogProtocol: exchange.Protocol);
         var result = await _runner.RunAsync(request, cancellationToken).ConfigureAwait(false);
         if (result.OutputWasTruncated) throw new InvalidDataException("The CLI model catalog was incomplete.");
-        var catalog = SubscriptionCliModelDiscovery.ParseCatalog(result.StandardOutput, protocol,
-            protocol == SubscriptionCliCatalogProtocol.CodexAppServer ? "codex-cli" : "claude-code");
+        var catalog = SubscriptionCliModelDiscovery.ParseCatalog(result.StandardOutput, exchange.Protocol, exchange.ModelPrefix);
         if (catalog.Models.Count == 0) throw new InvalidOperationException("The installed CLI did not return a model catalog. Update it or enter a custom model ID.");
         return catalog with
         {
-            ReasoningEfforts = SubscriptionCliModelDiscovery.ParseReasoningEfforts(result.StandardOutput, protocol,
-                protocol == SubscriptionCliCatalogProtocol.CodexAppServer ? "codex-cli" : "claude-code",
+            ReasoningEfforts = SubscriptionCliModelDiscovery.ParseReasoningEfforts(result.StandardOutput, exchange.Protocol,
+                exchange.ModelPrefix,
                 ProviderPackCatalog.GetRequired(ProviderName).SubscriptionCli!.ReasoningEfforts)
         };
     }
@@ -1233,7 +1240,7 @@ public abstract class SubscriptionCliLlmProviderBase : ILlmProvider, ILlmModelCa
     /// non-penalizing, fallback-eligible. Keep the two in sync.
     /// </summary>
     private string LaunchDeclinedMessage =>
-        $"{ProviderName} CLI launch was declined: another Talavine process is using the subscription CLI. The call can be retried.";
+        $"{ProviderName} CLI launch was declined: another app process is using the subscription CLI. The call can be retried.";
 
     private void LogSafeStopFailure(SubscriptionCliSafeStopException exception)
     {
@@ -1319,6 +1326,15 @@ public abstract class SubscriptionCliLlmProviderBase : ILlmProvider, ILlmModelCa
             return FailedResponse(model, stopwatch, $"{ProviderName} is disabled.");
         }
 
+        // Checked before the readiness probe so an unsupported request spends no
+        // CLI launch, and reported like every other failure here.
+        var attachments = executionSettings?.GetValueOrDefault(CliImageAttachments.ExecutionSetting) as CliImageAttachments;
+        if (attachments is not null && !SupportsVision(model))
+        {
+            stopwatch.Stop();
+            return FailedResponse(model, stopwatch, "Selected subscription CLI model does not support images.");
+        }
+
         // Provider boundary: never invoke inference merely because a CLI path
         // exists. Every direct call must use a candidate that recently proved a
         // subscription session, so Console/API auth cannot silently incur spend.
@@ -1332,10 +1348,6 @@ public abstract class SubscriptionCliLlmProviderBase : ILlmProvider, ILlmModelCa
             stopwatch.Stop();
             return FailedResponse(model, stopwatch, readiness.Message);
         }
-
-        var attachments = executionSettings?.GetValueOrDefault(CliImageAttachments.ExecutionSetting) as CliImageAttachments;
-        if (attachments is not null && !SupportsVision(model))
-            throw new NotSupportedException("Selected subscription CLI model does not support images.");
         using var imageFiles = CliImageAttachmentLease.Create(attachments, GetWorkingDirectory());
         if (imageFiles.Paths.Count > 0)
         {
@@ -1381,7 +1393,7 @@ public abstract class SubscriptionCliLlmProviderBase : ILlmProvider, ILlmModelCa
         catch (Exception ex) when (ex is SubscriptionCliSafeStopException
                                        or SubscriptionCliPreemptedException)
         {
-            // Deliberate cross-process co-run decline: another live Talavine
+            // Deliberate cross-process co-run decline: another live app
             // process holds the subscription CLI slot (or the pre-launch orphan
             // sweep was blocked), so this launch was refused before the CLI ran.
             // Nothing is wrong with the CLI or its login — keep the cached auth
@@ -1984,6 +1996,10 @@ public sealed class ClaudeCodeLlmProvider : SubscriptionCliLlmProviderBase
     }
 
     public override string ProviderName => SubscriptionCliProviders.ClaudeCode;
+    private protected override SubscriptionCliCatalogExchange? CatalogExchange { get; } = new(
+        SubscriptionCliCatalogProtocol.ClaudeInitialize,
+        ["--print", "--input-format", "stream-json", "--output-format", "stream-json", "--verbose", "--no-session-persistence", "--setting-sources", ""],
+        ProviderPackCatalog.GetRequired(SubscriptionCliProviders.ClaudeCode).ModelPrefix);
     protected override string CommandName => CliPack.Command;
     protected override SubscriptionCliExecutableOptions ExecutableOptions => _options.Value.ClaudeCode;
     protected override IReadOnlyList<string> BuiltInModels => CliPack.BuiltInModels;
@@ -2041,7 +2057,7 @@ public sealed class ClaudeCodeLlmProvider : SubscriptionCliLlmProviderBase
 
 }
 
-public sealed class CodexCliLlmProvider : SubscriptionCliLlmProviderBase
+public sealed class CodexCliLlmProvider : SubscriptionCliLlmProviderBase, ILegacyReasoningSettings
 {
     private static readonly ProviderPackDocument Pack =
         ProviderPackCatalog.GetRequired(SubscriptionCliProviders.CodexCli);
@@ -2062,12 +2078,17 @@ public sealed class CodexCliLlmProvider : SubscriptionCliLlmProviderBase
     }
 
     public override string ProviderName => SubscriptionCliProviders.CodexCli;
+    private protected override SubscriptionCliCatalogExchange? CatalogExchange { get; } = new(
+        SubscriptionCliCatalogProtocol.CodexAppServer, ["app-server"], Pack.ModelPrefix);
     public override bool SupportsVision(string model)
     {
         var normalized = NormalizeCliModel(model);
         if (normalized is null) return false; // A moving/default alias is not model capability proof.
         var (exact, _) = SplitModelAndEffort(normalized);
-        return exact is "gpt-6-astra" or "gpt-5.6-sol" or "gpt-5.6-terra" or "gpt-5.6-luna";
+        // Image input is a reviewed fact of the exact foundation model, read
+        // from its provider pack, not a list of names compiled into the CLI.
+        return CliPack.FoundationProviders.Any(provider =>
+            ProviderPackCatalog.TryGetModelFacts(provider, exact, out var facts) && facts?.SupportsVision == true);
     }
 
     protected override ChatUsage? ReadReportedUsage(SubscriptionCliProcessResult result)
@@ -2143,6 +2164,29 @@ public sealed class CodexCliLlmProvider : SubscriptionCliLlmProviderBase
             workDir,
             GetTimeout(executionSettings),
             outputPath);
+    }
+
+    void ILegacyReasoningSettings.ApplyReasoning(Dictionary<string, object> settings, string model, LlmReasoningMode reasoning)
+    {
+        if (reasoning == LlmReasoningMode.Disabled)
+        {
+            // Background JSON and validation callers share a portable suppression
+            // hint. Codex has no reviewed off switch: preserve its default (or
+            // the selected @effort tier), as the legacy path did, and disclose
+            // the omission instead of rejecting a healthy Scout-admitted route.
+            var diagnostics = LlmReservedExecutionSettings.GetExecutionParameterDiagnostics(settings).ToList();
+            diagnostics.Add(new("reasoning", LlmExecutionParameterDisposition.Omitted,
+                "Codex CLI does not support disabling reasoning; the selected model's default or pinned effort is retained."));
+            settings[LlmReservedExecutionSettings.ExecutionParameterDiagnostics] = diagnostics;
+            return;
+        }
+
+        var effort = reasoning.ToString().ToLowerInvariant();
+        if (!ModelRouteCapabilities.ReasoningEfforts(ProviderName, model).Contains(effort, StringComparer.Ordinal))
+            throw new NotSupportedException($"The selected Codex CLI route does not support reasoning effort {effort}.");
+        settings["reasoning_effort"] = effort;
+        // Rejects an effort that conflicts with a model pinned to another tier (model@effort).
+        _ = ResolveReasoningEffort(model, settings);
     }
 
     internal static string? ResolveReasoningEffort(string model, IReadOnlyDictionary<string, object>? executionSettings)

@@ -38,6 +38,7 @@ export function initialize(root) {
     });
 }
 export function dispose(root) { instances.get(root)?.(); instances.delete(root); }
+export function close(root) { root.querySelector('[popover]')?.hidePopover(); }
 export function open(root) {
     const panel = root.querySelector('[popover]');
     panel.querySelector('details').open = true;

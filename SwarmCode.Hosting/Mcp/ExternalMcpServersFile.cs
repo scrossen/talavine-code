@@ -76,7 +76,9 @@ public sealed class ExternalMcpServersFile(SwarmCodeDataPaths paths)
             if (trusted) entry[ExternalMcpServer.TrustedProperty] = true;
             if (required) entry[ExternalMcpServer.RequiredProperty] = true;
             servers[name] = entry;
-            var text = root.ToJsonString(new System.Text.Json.JsonSerializerOptions { WriteIndented = true }) + snapshot.NewLine;
+            // Same escaping and line endings as every other edit of this shared, Claude-Desktop-compatible file.
+            var options = WriteOptions(snapshot);
+            var text = root.ToJsonString(options) + options.NewLine;
             return text == snapshot.Content ? McpClientConfigEdit.Unchanged() : McpClientConfigEdit.Changed(text);
         });
         return result.Outcome is McpClientConfigWriteOutcome.Changed or McpClientConfigWriteOutcome.Unchanged ? null
@@ -129,11 +131,33 @@ public sealed class ExternalMcpServersFile(SwarmCodeDataPaths paths)
     /// </summary>
     public string? Upsert(string name, McpServerLaunchEntry launch, bool trusted, bool required)
     {
-        var problem = Upsert(name, launch);
-        if (problem is not null) return problem;
-        var result = _store.Update(Path, snapshot => SetFlags(snapshot, name, trusted, required));
+        ArgumentNullException.ThrowIfNull(launch);
+        if (NameProblem(name) is { } nameProblem) return nameProblem;
+        Directory.CreateDirectory(System.IO.Path.GetDirectoryName(Path)!);
+        // One edit: the launch and its flags change together or not at all (one backup, one atomic swap).
+        var result = _store.Update(Path, snapshot =>
+        {
+            var launchEdit = _format.Upsert(snapshot.Content, name, launch, new McpClientConfigTextStyle(snapshot.NewLine));
+            if (launchEdit.Outcome == McpClientConfigEditOutcome.Refused) return launchEdit;
+            var withLaunch = launchEdit.Outcome == McpClientConfigEditOutcome.Changed ? snapshot with { Content = launchEdit.Content } : snapshot;
+            var flagsEdit = SetFlags(withLaunch, name, trusted, required);
+            return flagsEdit.Outcome == McpClientConfigEditOutcome.Unchanged ? launchEdit : flagsEdit;
+        });
         return result.Outcome is McpClientConfigWriteOutcome.Changed or McpClientConfigWriteOutcome.Unchanged ? null : result.Problem ?? "The MCP server list could not be saved.";
     }
+
+    private static string? NameProblem(string name)
+        => !IsValidName(name) ? "Use a name made of letters, digits, '_' and '-'."
+            : string.Equals(name, McpServerLaunch.DefaultServerName, StringComparison.OrdinalIgnoreCase)
+                ? $"\"{name}\" is reserved for Talavine Code's own credential bridge."
+                : null;
+
+    private static System.Text.Json.JsonSerializerOptions WriteOptions(McpClientConfigSnapshot snapshot) => new()
+    {
+        WriteIndented = true,
+        NewLine = snapshot.NewLine == "\r\n" ? "\r\n" : "\n",
+        Encoder = System.Text.Encodings.Web.JavaScriptEncoder.UnsafeRelaxedJsonEscaping,
+    };
 
     private static McpClientConfigEdit SetFlags(McpClientConfigSnapshot snapshot, string name, bool trusted, bool required)
     {
@@ -147,12 +171,7 @@ public sealed class ExternalMcpServersFile(SwarmCodeDataPaths paths)
         Set(server, ExternalMcpServer.TrustedProperty, trusted);
         Set(server, ExternalMcpServer.RequiredProperty, required);
         if (server.ToJsonString() == before) return McpClientConfigEdit.Unchanged();
-        var options = new System.Text.Json.JsonSerializerOptions
-        {
-            WriteIndented = true,
-            NewLine = snapshot.NewLine == "\r\n" ? "\r\n" : "\n",
-            Encoder = System.Text.Encodings.Web.JavaScriptEncoder.UnsafeRelaxedJsonEscaping,
-        };
+        var options = WriteOptions(snapshot);
         return McpClientConfigEdit.Changed(root.ToJsonString(options) + options.NewLine);
 
         static void Set(System.Text.Json.Nodes.JsonObject server, string key, bool value)
@@ -166,9 +185,7 @@ public sealed class ExternalMcpServersFile(SwarmCodeDataPaths paths)
     public string? Upsert(string name, McpServerLaunchEntry launch)
     {
         ArgumentNullException.ThrowIfNull(launch);
-        if (!IsValidName(name)) return "Use a name made of letters, digits, '_' and '-'.";
-        if (string.Equals(name, McpServerLaunch.DefaultServerName, StringComparison.OrdinalIgnoreCase))
-            return $"\"{name}\" is reserved for Talavine Code's own credential bridge.";
+        if (NameProblem(name) is { } nameProblem) return nameProblem;
         Directory.CreateDirectory(System.IO.Path.GetDirectoryName(Path)!);
         var result = _store.Update(Path, snapshot => _format.Upsert(snapshot.Content, name, launch, new McpClientConfigTextStyle(snapshot.NewLine)));
         return result.Outcome is McpClientConfigWriteOutcome.Changed or McpClientConfigWriteOutcome.Unchanged ? null : result.Problem ?? "The MCP server list could not be saved.";

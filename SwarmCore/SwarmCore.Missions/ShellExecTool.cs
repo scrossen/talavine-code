@@ -221,7 +221,27 @@ public sealed partial class ShellExecTool
                 TimedOut = timedOut,
                 LocalProcessCompleted = MissionPrimitiveFence.IsMission && proc.HasExited
             };
-        });
+        }) with { Approval = Approval };
+
+    /// <summary>How a shell call is presented when the user approves it.</summary>
+    public static ToolApproval Approval { get; } = new()
+    {
+        Permission = new SwarmCore.Skills.Models.SkillPermission
+        {
+            PermissionId = "tool.shell.exec",
+            Name = "Run Shell Commands",
+            Description = "Run commands in the user's local shell as this app's user account.",
+            Level = SwarmCore.Skills.Models.PermissionLevel.Admin
+        },
+        DisplayName = "Shell command",
+        Summarize = input => input is Input shell
+            ? shell.Command is { Length: > 0 } command
+                ? command
+                : shell.FileName is { Length: > 0 } fileName
+                    ? string.Join(' ', (shell.ArgumentList ?? []).Prepend(fileName))
+                    : "Run shell command"
+            : null,
+    };
 
     /// <summary>Characters of each stream a result returns.</summary>
     internal const int MaxCapturedCharacters = 64 * 1024;

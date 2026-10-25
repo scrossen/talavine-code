@@ -67,6 +67,23 @@ public class VaultCredentialStoreBindingTests : TempDirTest
         Assert.Empty(await store.GetBoundHostsAsync("loose-key"));
         Assert.Empty(await store.GetBoundHostsAsync("absent"));
     }
+
+    [Fact]
+    public async Task A_secret_without_a_site_takes_its_first_host_and_a_chosen_site_is_never_replaced()
+    {
+        var vault = new SqliteSecretVault(Paths.SecretsDbPath, new EnvelopeSecretProtector(new NoOpKeyStore(), NullLogger<EnvelopeSecretProtector>.Instance));
+        await vault.SetAsync(new SecretWriteRequest { Name = "billing-key", Value = "synthetic-value", Site = "api.billing.example" });
+        await vault.SetAsync(new SecretWriteRequest { Name = "loose-key", Value = "synthetic-value-2" });
+        ICredentialStore store = new VaultCredentialStore(vault);
+
+        Assert.True(await store.TryBindHostOnFirstUseAsync("loose-key", "api.first.example"));
+        Assert.Equal(["api.first.example"], await store.GetBoundHostsAsync("loose-key"));
+        Assert.False(await store.TryBindHostOnFirstUseAsync("loose-key", "api.second.example"));
+        Assert.False(await store.TryBindHostOnFirstUseAsync("billing-key", "api.second.example"));
+        Assert.False(await store.TryBindHostOnFirstUseAsync("absent", "api.first.example"));
+        Assert.Equal(["api.billing.example"], await store.GetBoundHostsAsync("billing-key"));
+        Assert.Equal("synthetic-value-2", await vault.GetValueAsync("loose-key")); // the value is untouched
+    }
 }
 
 public class VaultKeyProviderTests : TempDirTest
@@ -279,6 +296,7 @@ public class SecretIntakeTests : TempDirTest
 
         var prompt = await intake.HandleCommandAsync("/secret only-name");
         Assert.Equal("only-name", prompt.PromptForValueName);
+        Assert.Null(prompt.PromptForValueSite);
 
         var list = await intake.HandleCommandAsync("/secrets");
         Assert.Contains("npm-token", list.Message);
@@ -287,6 +305,48 @@ public class SecretIntakeTests : TempDirTest
         var forgot = await intake.HandleCommandAsync("/forget npm-token");
         Assert.Contains("Forgot", forgot.Message);
         Assert.False(await intake.Vault.HasAsync("npm-token"));
+    }
+}
+
+public class SecretSiteCommandTests : TempDirTest
+{
+    private SecretIntake Intake() => new(new SqliteSecretVault(Paths.SecretsDbPath, new EnvelopeSecretProtector(new NoOpKeyStore(), NullLogger<EnvelopeSecretProtector>.Instance)));
+
+    [Theory]
+    [InlineData("/secret --site api.billing.example billing-key synthetic-value")]
+    [InlineData("/secret --site=https://api.billing.example/v2 billing-key synthetic-value")]
+    public async Task Secret_with_site_saves_the_value_bound_to_that_host(string command)
+    {
+        var intake = Intake();
+        var saved = await intake.HandleCommandAsync(command);
+
+        Assert.Equal(["billing-key"], saved.StoredNames);
+        Assert.Contains("api.billing.example", saved.Message);
+        Assert.DoesNotContain("synthetic-value", saved.Message);
+        Assert.Equal("api.billing.example", (await intake.Vault.GetEntryAsync("billing-key"))!.Site);
+        Assert.Equal("synthetic-value", await intake.Vault.GetValueAsync("billing-key"));
+    }
+
+    [Fact]
+    public async Task Secret_with_site_and_no_value_rebinds_a_saved_secret_or_prompts_with_the_site()
+    {
+        var intake = Intake();
+        await intake.HandleCommandAsync("/secret loose-key synthetic-value");
+        Assert.Null((await intake.Vault.GetEntryAsync("loose-key"))!.Site);
+
+        var bound = await intake.HandleCommandAsync("/secret --site api.loose.example loose-key");
+        Assert.Contains("api.loose.example", bound.Message);
+        Assert.Equal("api.loose.example", (await intake.Vault.GetEntryAsync("loose-key"))!.Site);
+        Assert.Equal("synthetic-value", await intake.Vault.GetValueAsync("loose-key"));
+
+        var prompt = await intake.HandleCommandAsync("/secret --site api.new.example new-key");
+        Assert.Equal("new-key", prompt.PromptForValueName);
+        Assert.Equal("api.new.example", prompt.PromptForValueSite);
+
+        var bad = await intake.HandleCommandAsync("/secret --site :// some-key value");
+        Assert.Empty(bad.StoredNames);
+        Assert.Contains("is not a host", bad.Message);
+        Assert.False(await intake.Vault.HasAsync("some-key"));
     }
 }
 

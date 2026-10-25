@@ -2,7 +2,6 @@ using System.Diagnostics;
 using System.Text.Json;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.DependencyInjection;
-using Microsoft.Extensions.Options;
 using SwarmCore.Abstractions.Json;
 using SwarmCore.Abstractions.LlmRouting;
 using SwarmCore.LlmRouting.Configuration;
@@ -20,17 +19,15 @@ public sealed class LocalLlmCompatibilityProbe : ILocalLlmCompatibilityProbe
     private readonly ILlmProviderRegistry? _providerRegistry;
     private readonly IServiceScopeFactory? _auditScopes;
 
+    // Provider adapters own transport and the provider registry owns endpoint
+    // selection, so the probe takes neither an HTTP factory nor provider options.
     public LocalLlmCompatibilityProbe(
-        IHttpClientFactory httpClientFactory,
         ILocalLlmRuntimeManager localRuntime,
-        IOptions<OllamaProviderOptions> ollamaOptions,
         ILogger<LocalLlmCompatibilityProbe> logger,
         ILlmProviderRegistry? providerRegistry = null,
         IServiceScopeFactory? auditScopes = null)
     {
-        _ = httpClientFactory; // Retained constructor compatibility; provider adapters own transport.
         _localRuntime = localRuntime;
-        _ = ollamaOptions; // Retained constructor compatibility; provider registry owns endpoint selection.
         _logger = logger;
         _providerRegistry = providerRegistry;
         _auditScopes = auditScopes;

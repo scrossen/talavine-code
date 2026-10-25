@@ -1,5 +1,6 @@
 @using SwarmCore.Coding.Files
 @implements IDisposable
+@inject IJSRuntime JS
 
 <aside class="sess-artifacts" aria-label="Artifacts" @onkeydown:stopPropagation>
     <div class="sess-artifacts__head">
@@ -20,7 +21,7 @@
             <button type="button" class="sess-btn" @onclick="OpenExternalAsync">Open in default app</button>
             @if (_preview.Text is not null && _preview.Kind is CodingFilePreviewKind.Markdown or CodingFilePreviewKind.Html)
             {
-                <button type="button" class="sess-btn" aria-pressed="@_source" @onclick="() => _source = !_source">@(_source ? "Preview" : "Source")</button>
+                <button type="button" class="sess-btn" aria-pressed="@(_source ? "true" : "false")" @onclick="() => _source = !_source">@(_source ? "Preview" : "Source")</button>
             }
         }
     </div>
@@ -55,7 +56,10 @@
             }
             else if (preview.Kind == CodingFilePreviewKind.Pdf)
             {
-                <iframe class="sess-artifacts__frame" title="@preview.Name" src="@("pdf-preview.html#" + preview.DataUrl!.Split(',', 2)[1])"></iframe>
+                @* The bytes are posted to the frame after it renders (see OnAfterRenderAsync): a URL longer than
+                   2 MB is invalid in Chromium, so PDFs over ~1.5 MB showed an empty frame. Keyed per preview so a
+                   new file gets a fresh frame. *@
+                <iframe @key="preview" @ref="_pdfFrame" class="sess-artifacts__frame" title="@preview.Name" src="pdf-preview.html"></iframe>
             }
             else if (!_source && preview.Kind == CodingFilePreviewKind.Html)
             {
@@ -78,6 +82,21 @@
     private bool _loading, _source, _browse;
     private int _generation;
     private readonly CancellationTokenSource _lifetime = new();
+    private ElementReference _pdfFrame;
+    private CodingFilePreview? _postedPdf;
+
+    protected override async Task OnAfterRenderAsync(bool firstRender)
+    {
+        // Hand the rendered PDF frame its bytes once per preview (by postMessage; see pdf-preview.js).
+        if (_preview is not { Kind: CodingFilePreviewKind.Pdf, DataUrl: { } dataUrl } preview || ReferenceEquals(preview, _postedPdf)) return;
+        _postedPdf = preview;
+        try { await JS.InvokeVoidAsync("swarmcode.showPdfPreview", _pdfFrame, dataUrl.Split(',', 2)[1]); }
+        catch (Exception ex) when (ex is JSException or JSDisconnectedException or InvalidOperationException)
+        {
+            _error = "Could not show this PDF here. Use Open in default app.";
+            StateHasChanged();
+        }
+    }
 
     protected override async Task OnParametersSetAsync()
     {

@@ -1,6 +1,7 @@
 using System.Diagnostics;
 using System.Text;
 using SwarmCore.Abstractions.Processes;
+using SwarmCore.LlmRouting.Services;
 
 namespace SwarmCore.Agent.CodingTasks;
 
@@ -129,11 +130,8 @@ public sealed class DefaultCodingTaskProcessRunner : ICodingTaskProcessRunner
 
     /// <summary>
     /// npm on Windows commonly exposes the coding CLIs as .cmd shims, which
-    /// cannot be started with UseShellExecute=false directly — bridge those
-    /// through cmd.exe. Every argument here is internally generated (fixed
-    /// flags plus the worktree path) and the prompt travels on stdin, so
-    /// nothing user-controlled reaches this command line; the characters cmd
-    /// would reinterpret are still rejected defensively.
+    /// cannot be started with UseShellExecute=false directly; they go through
+    /// the shared <see cref="WindowsBatchLaunch"/> bridge. The prompt travels on stdin.
     /// </summary>
     internal static ProcessStartInfo CreateStartInfo(CodingTaskProcessRequest request)
     {
@@ -158,10 +156,7 @@ public sealed class DefaultCodingTaskProcessRunner : ICodingTaskProcessRunner
             else startInfo.Environment[name] = value;
         }
 
-        var isBatchShim = OperatingSystem.IsWindows()
-            && (request.FileName.EndsWith(".cmd", StringComparison.OrdinalIgnoreCase)
-                || request.FileName.EndsWith(".bat", StringComparison.OrdinalIgnoreCase));
-        if (!isBatchShim)
+        if (!WindowsBatchLaunch.IsBatchFile(request.FileName))
         {
             startInfo.FileName = request.FileName;
             foreach (var argument in request.Arguments)
@@ -172,29 +167,9 @@ public sealed class DefaultCodingTaskProcessRunner : ICodingTaskProcessRunner
             return startInfo;
         }
 
-        foreach (var value in request.Arguments.Prepend(request.FileName))
-        {
-            if (value.IndexOfAny(['\0', '\r', '\n', '"', '%']) >= 0)
-            {
-                throw new InvalidOperationException(
-                    "Windows batch-shim CLI paths and arguments cannot contain quotes, percent signs, or line breaks.");
-            }
-        }
-
-        startInfo.FileName = Environment.GetEnvironmentVariable("ComSpec")
-                             ?? Path.Combine(
-                                 Environment.GetFolderPath(Environment.SpecialFolder.System),
-                                 "cmd.exe");
-        var command = new StringBuilder();
-        command.Append('"').Append(request.FileName).Append('"');
-        foreach (var argument in request.Arguments)
-        {
-            command.Append(" \"").Append(argument).Append('"');
-        }
-
-        // cmd.exe parses text after /c from the raw command line; ArgumentList
-        // escaping would surface literal backslashes, so use Arguments directly.
-        startInfo.Arguments = $"/d /s /c \"{command}\"";
+        // npm .cmd/.bat shims run through the shared bridge, which passes the
+        // path and arguments as cleared environment values instead of command text.
+        WindowsBatchLaunch.Configure(startInfo, request.FileName, request.Arguments);
         return startInfo;
     }
 }

@@ -59,8 +59,9 @@ internal sealed class BridgedWorkspace : IAsyncDisposable
     /// <summary>Starts a coding turn for the conversation, as the orchestrator does for the turn's duration.</summary>
     public HostToolBridgeProxy Turn(string conversationId, bool planMode = false)
     {
-        _turns.Add(Services.GetRequiredService<ActiveCodingWorkspaces>().Enter(conversationId, new CodingWorkspace { RepositoryRoot = Repo }, planMode));
-        return new HostToolBridgeProxy(Broker.GetEndpoint(), conversationId);
+        var active = Services.GetRequiredService<ActiveCodingWorkspaces>();
+        _turns.Add(active.Enter(conversationId, new CodingWorkspace { RepositoryRoot = Repo }, planMode));
+        return new HostToolBridgeProxy(Broker.GetEndpoint(), conversationId, active.BridgeCapability(conversationId));
     }
 
     public static JsonElement Args(object value) => JsonSerializer.SerializeToElement(value);
@@ -93,10 +94,10 @@ public class HostToolBridgeHostingTests : TempDirTest
                  {
                      "agents_spawn", "plan_update", "shell_background_start", "credentials_list", "shell_exec", "web_search",
                      "notebook_read", "github_pr_status", "git_push", "apps_list", "browser_observe", "computer_act",
-                     "personal_memory_remember", "repo_memory_search",
+                     "personal_memory_remember", "repo_memory_search", "code_grep", "fs_read_file",
                  })
             Assert.Contains(name, names);
-        foreach (var name in new[] { "code_edit_file", "code_grep", "fs_write_file", "git_commit", "git_status", "harness_decline" })
+        foreach (var name in new[] { "code_edit_file", "fs_write_file", "git_commit", "git_status", "harness_decline" })
             Assert.DoesNotContain(name, names);
     }
 
@@ -107,6 +108,8 @@ public class HostToolBridgeHostingTests : TempDirTest
         var tools = await host.Turn("session-1", planMode: true).ListAsync(default);
         Assert.Contains(tools, t => t.Name == "plan_update");
         Assert.Contains(tools, t => t.Name == "github_pr_status");
+        Assert.Contains(tools, t => t.Name == "code_grep");
+        Assert.Contains(tools, t => t.Name == "fs_read_file");
         Assert.All(tools, t => Assert.True(t.ReadOnly, t.Name));
         foreach (var acting in new[] { "shell_exec", "agents_spawn", "git_push", "browser_act", "personal_memory_remember" })
             Assert.DoesNotContain(tools, t => t.Name == acting);
@@ -222,8 +225,7 @@ public class HostToolBridgeHostingTests : TempDirTest
         await using var host = await BridgedWorkspace.StartAsync(Paths, Repo);
         var idle = new HostToolBridgeProxy(host.Broker.GetEndpoint(), "session-9");
         await Assert.ThrowsAsync<InvalidOperationException>(() => idle.ListAsync(default));
-        var refused = await idle.CallAsync("credentials_list", BridgedWorkspace.Args(new { }), default);
-        Assert.True(refused.IsError);
+        await Assert.ThrowsAsync<InvalidOperationException>(() => idle.CallAsync("credentials_list", BridgedWorkspace.Args(new { }), default));
     }
 
     private sealed class FixedComputer(ComputerObservation observation) : ICodingComputer
@@ -240,8 +242,14 @@ public class HostToolBridgeHostingTests : TempDirTest
 
 /// <summary>The host tool bridge over SwarmCode's memory tools alone: a conversation is admitted while its memory turn runs.</summary>
 internal sealed class MemoryBridgeHost(SwarmCode.Hosting.Memory.SwarmCodeMemoryTools tools, SwarmCode.Hosting.Memory.SwarmCodeMemoryTurns turns,
-    Func<string, bool> running) : IHostToolBridgeHost
+    Func<string, bool> running) : IHostToolBridgeHost, IHostToolBridgeAttemptHost
 {
+    // Test-only host admission. Production workspace fixtures above use the actual private launch capability.
+    public const string AttemptCapability = "memory-test-attempt";
+    public IDisposable? BeginAttempt(string conversationId, string? capability)
+        => capability == AttemptCapability && running(conversationId) ? new Nothing() : null;
+    public bool IsAttemptCurrent(string conversationId) => running(conversationId);
+    public CancellationToken AttemptCancellation(string conversationId) => running(conversationId) ? default : new(true);
     public HostToolProfile? Admit(string conversationId) => running(conversationId) ? HostToolProfile.Full : null;
     public Task<IReadOnlyList<SwarmCore.Agent.Catalog.ToolDescriptor>> ToolsAsync(string conversationId, CancellationToken ct) => Task.FromResult(tools.Descriptors);
     public Task<SwarmCore.Agent.Runtime.ToolGuardDecision> InspectAsync(SwarmCore.Agent.Runtime.ToolInvocationRequest request, CancellationToken ct)

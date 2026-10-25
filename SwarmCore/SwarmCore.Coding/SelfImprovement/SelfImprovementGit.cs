@@ -60,6 +60,31 @@ public static class SelfImprovementGit
         return exit == 0 ? GitProcess.FirstLine(head) : null;
     }
 
+    public static async Task<bool> ContainsCommitAsync(string repositoryRoot, string commit, CancellationToken ct = default)
+    {
+        if (string.IsNullOrWhiteSpace(commit)) return false;
+        var (exit, _, _) = await GitProcess.RunAsync(repositoryRoot, ["merge-base", "--is-ancestor", commit, "HEAD"], Timeout, ct).ConfigureAwait(false);
+        return exit == 0;
+    }
+
+    /// <summary>Install only the exact independently verified commit; never create an untested merge tree.</summary>
+    public static async Task<(bool Merged, string Message)> TryApplyVerifiedAsync(string repositoryRoot, string branch, string commit, CancellationToken ct = default)
+    {
+        var (branchExit, head, _) = await GitProcess.RunAsync(repositoryRoot, ["rev-parse", "--verify", "refs/heads/" + branch], Timeout, ct).ConfigureAwait(false);
+        if (branchExit != 0 || !GitProcess.FirstLine(head).Equals(commit, StringComparison.OrdinalIgnoreCase))
+            return (false, "Installation postponed: the repair branch changed after verification.");
+        var (parentExit, parent, _) = await GitProcess.RunAsync(repositoryRoot, ["rev-parse", "--verify", commit + "^"], Timeout, ct).ConfigureAwait(false);
+        if (parentExit != 0) return (false, "Installation postponed: the verified repair's parent could not be checked.");
+        if (await HasChangesAsync(repositoryRoot, ct).ConfigureAwait(false)
+            || !string.Equals(await HeadAsync(repositoryRoot, ct).ConfigureAwait(false), GitProcess.FirstLine(parent), StringComparison.OrdinalIgnoreCase))
+            return (false, "Installation postponed: the source checkout changed after verification.");
+        var (mergeExit, stdout, stderr) = await GitProcess.RunAsync(repositoryRoot, ["merge", "--ff-only", "-q", commit], Timeout, ct).ConfigureAwait(false);
+        if (mergeExit != 0) return (false, "Installation postponed: " + GitProcess.ErrorText(mergeExit, stdout, stderr));
+        return string.Equals(await HeadAsync(repositoryRoot, ct).ConfigureAwait(false), commit, StringComparison.OrdinalIgnoreCase)
+            ? (true, "Merged exact verified repair commit (fast-forward).")
+            : (false, "Installation postponed: source HEAD does not match the verified commit.");
+    }
+
     /// <summary>
     /// Merges the branch into the checkout (fast-forward when possible, a merge commit otherwise). git itself refuses
     /// when uncommitted changes would be overwritten; a conflicting merge is aborted so the checkout is left as it was.

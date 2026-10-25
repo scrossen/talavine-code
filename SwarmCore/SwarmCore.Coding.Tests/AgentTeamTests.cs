@@ -1,5 +1,6 @@
 using System.Collections.Concurrent;
 using System.Text.Json;
+using System.Threading.Channels;
 using SwarmCore.Coding.Agents;
 using SwarmCore.Coding.Native;
 using Xunit;
@@ -17,14 +18,28 @@ public class AgentTeamTests
         public ConcurrentBag<string> Cancelled { get; } = [];
         public ConcurrentDictionary<string, bool> Busy { get; } = new();
         public bool DeliverResult { get; set; } = true;
+        public AgentConversationRequest? LastCreate { get; private set; }
+        public AgentConversation? SelectedConversation { get; set; }
+        public ConcurrentQueue<(string? Lane, string? Model)> StartedModels { get; } = new();
+        private readonly Channel<bool> _starts = Channel.CreateUnbounded<bool>();
+        public Task WaitForStartAsync() => _starts.Reader.ReadAsync().AsTask().WaitAsync(TimeSpan.FromSeconds(5));
 
         public Task<string> CreateConversationAsync(string parentConversationId, string title, string? lane, string? model, CancellationToken ct)
             => Task.FromResult($"agent{Interlocked.Increment(ref _next)}");
 
+        public async Task<AgentConversation> CreateAgentConversationAsync(AgentConversationRequest request, CancellationToken ct)
+        {
+            LastCreate = request;
+            return SelectedConversation ?? new AgentConversation(await CreateConversationAsync(request.ParentConversationId,
+                request.Title, request.Lane, request.Model, ct));
+        }
+
         public Task<bool> StartTurnAsync(string conversationId, string message, string? lane, string? model, CancellationToken ct)
         {
             Started.Enqueue((conversationId, message));
+            StartedModels.Enqueue((lane, model));
             Busy[conversationId] = true;
+            _starts.Writer.TryWrite(true);
             return Task.FromResult(true);
         }
 
@@ -53,6 +68,22 @@ public class AgentTeamTests
         return team.ReportTurnFinishedAsync(id, new AgentTurnOutcome(!cancelled && error is null, cancelled, error, text, 2));
     }
 
+    private sealed class GatedSaveStore : IAgentTeamStore
+    {
+        private readonly InMemoryAgentTeamStore _inner = new();
+        private readonly TaskCompletionSource _release = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        public TaskCompletionSource Saving { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        public void Release() => _release.TrySetResult();
+        public Task<IReadOnlyList<AgentRecord>> LoadAsync(CancellationToken ct) => _inner.LoadAsync(ct);
+        public Task DeleteAsync(string id, CancellationToken ct) => _inner.DeleteAsync(id, ct);
+        public async Task SaveAsync(AgentRecord record, CancellationToken ct)
+        {
+            Saving.TrySetResult();
+            await _release.Task.WaitAsync(ct);
+            await _inner.SaveAsync(record, ct);
+        }
+    }
+
     [Fact]
     public async Task Spawn_creates_a_conversation_and_starts_it_with_a_self_contained_brief()
     {
@@ -68,6 +99,54 @@ public class AgentTeamTests
         Assert.Contains("Check the build of service A", message);
         Assert.Contains("Build A", message);
         Assert.Contains("may start your own agents", message); // depth 1 of 2
+        Assert.Equal("Check the build of service A", host.LastCreate!.Task);
+        Assert.False(host.LastCreate.ExplicitModelSelection);
+    }
+
+    [Fact]
+    public async Task Host_selected_worker_and_receipt_survive_followup_and_are_returned_for_review()
+    {
+        var store = new GatedSaveStore();
+        var (team, host) = Build(store: store);
+        await using var teamLifetime = team;
+        host.SelectedConversation = new AgentConversation("agent1", Lane: "local-worker", Model: "worker-artifact",
+            RoutingNote: "Routine task selected for local execution; coordinator verification required.");
+        AgentRecord agent;
+        try
+        {
+            agent = await team.SpawnAsync("root", new AgentSpawnRequest("Extract the three receipt IDs and compare the count."));
+            // Spawn returns the queued/running record; a concurrent pump can still be entering the host.
+            await host.WaitForStartAsync();
+            Assert.Equal(("local-worker", "worker-artifact"), Assert.Single(host.StartedModels));
+            Assert.Equal("local-worker", agent.Lane);
+            await store.Saving.Task.WaitAsync(TimeSpan.FromSeconds(5));
+            Assert.Empty(await store.LoadAsync(default)); // host admission does not drain queued persistence
+        }
+        finally { store.Release(); }
+        await team.FlushAsync().WaitAsync(TimeSpan.FromSeconds(5));
+        Assert.Equal(host.SelectedConversation.RoutingNote, Assert.Single(await store.LoadAsync(default)).RoutingNote);
+        Assert.Contains("coordinator verification required", Assert.Single(host.Started).Message);
+
+        host.Busy["root"] = true;
+        await Finish(team, host, agent.Id, "Three receipt IDs extracted.");
+        await team.SendAsync("root", agent.Id, "Check the same IDs for duplicates.");
+        await host.WaitForStartAsync();
+        Assert.Equal(2, host.StartedModels.Count);
+        Assert.All(host.StartedModels, choice => Assert.Equal(("local-worker", "worker-artifact"), choice));
+        var handback = AgentTeamPrompts.HandBack([team.Get(agent.Id)!]);
+        Assert.Contains("Routine task selected", handback);
+        Assert.Contains("does not prove the task passed", handback);
+        Assert.Contains("reconcile uncertain external actions", handback);
+    }
+
+    [Theory]
+    [InlineData("chosen-lane", null)]
+    [InlineData(null, "chosen-model")]
+    public async Task Explicit_spawn_selection_is_marked_for_host_to_preserve(string? lane, string? model)
+    {
+        var (team, host) = Build();
+        await team.SpawnAsync("root", new AgentSpawnRequest("Work", Lane: lane, Model: model));
+        Assert.True(host.LastCreate!.ExplicitModelSelection);
     }
 
     [Fact]
@@ -350,6 +429,7 @@ public class AgentTeamTests
         await Assert.ThrowsAsync<InvalidOperationException>(() => proxy.ListAsync(default)); // no turn running yet
         using (active.Enter("root", new CodingWorkspace { RepositoryRoot = Path.GetTempPath() }))
         {
+            proxy = new HostToolBridgeProxy(broker.GetEndpoint(), "root", active.BridgeCapability("root"));
             Assert.Contains(await proxy.ListAsync(default), t => t.Name == "agents_spawn");
             var spawned = await proxy.CallAsync("agents_spawn", JsonSerializer.SerializeToElement(new { task = "over the pipe", title = "Pipe" }), default);
             Assert.False(spawned.IsError, spawned.Text);

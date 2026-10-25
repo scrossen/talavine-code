@@ -60,6 +60,34 @@ internal static class SourceTree
     public static string ReadAllText(params string[] parts) => System.IO.File.ReadAllText(File(parts));
 
     /// <summary>
+    /// The text of a source file with line endings normalized to "\n", so substring guards
+    /// that span lines behave the same on CRLF and LF checkouts.
+    /// </summary>
+    public static string ReadNormalizedText(string path) => System.IO.File.ReadAllText(path).ReplaceLineEndings("\n");
+
+    /// <summary>
+    /// The source with C# and Razor comments removed (<c>/* */</c>, <c>@* *@</c>,
+    /// <c>&lt;!-- --&gt;</c> and <c>//</c> comments that start a line or follow whitespace), so a
+    /// structural guard is satisfied only by code, never by a word that appears in a comment. A
+    /// <c>//</c> inside a URL literal such as <c>https://</c> is kept.
+    /// </summary>
+    public static string StripComments(string source)
+    {
+        var text = System.Text.RegularExpressions.Regex.Replace(source, @"/\*.*?\*/|@\*.*?\*@|<!--.*?-->", " ",
+            System.Text.RegularExpressions.RegexOptions.Singleline);
+        return System.Text.RegularExpressions.Regex.Replace(text, @"(^|\s)//.*$", "$1",
+            System.Text.RegularExpressions.RegexOptions.Multiline);
+    }
+
+    /// <summary>True only when both snippets are present and <paramref name="first"/> starts before <paramref name="second"/>.</summary>
+    public static bool AppearsBefore(string text, string first, string second)
+    {
+        var firstIndex = text.IndexOf(first, StringComparison.Ordinal);
+        var secondIndex = text.IndexOf(second, StringComparison.Ordinal);
+        return firstIndex >= 0 && secondIndex >= 0 && firstIndex < secondIndex;
+    }
+
+    /// <summary>
     /// The repository's files that match any of <paramref name="patterns"/>
     /// (such as "*.cs"), relative to <see cref="Root"/> with '/' separators. A
     /// git checkout lists them with git: tracked and untracked, never ignored.

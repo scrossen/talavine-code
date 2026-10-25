@@ -9,6 +9,7 @@ using Microsoft.Extensions.Options;
 using SwarmCore.Abstractions.LlmRouting;
 using SwarmCore.Abstractions.Processes;
 using SwarmCore.Agent.Runtime;
+using SwarmCore.Agent.Communication;
 using SwarmCore.Agent.ToolUseEngine;
 using SwarmCore.Coding.Routing;
 using SwarmCore.LlmRouting.Services;
@@ -24,7 +25,7 @@ namespace SwarmCore.Coding.Native;
 /// SwarmCode's vault tools. A thread Codex no longer knows is forgotten and the turn retried
 /// once fresh; a cancelled turn keeps its receipts.
 /// </summary>
-public sealed class CodexNativeLaneRunner(
+public sealed partial class CodexNativeLaneRunner(
     IConversationStore conversations,
     IAgentSessionStore sessions,
     IOptions<CodingOptions> coding,
@@ -38,6 +39,7 @@ public sealed class CodexNativeLaneRunner(
     public const string FileChangeToolName = "codex.file_change";
     public const string McpToolName = "codex.mcp_tool";
     public const string WebSearchToolName = "codex.web_search";
+    public const string NativeOperationToolName = "codex.native_operation";
 
     internal Func<string?> ExecutableResolver { get; init; } = ResolveExecutable;
     internal Func<ProcessStartInfo, IChildProcess> ProcessStarter { get; init; } = ChildProcessLauncher.Start;
@@ -48,8 +50,13 @@ public sealed class CodexNativeLaneRunner(
     public const string ConfinementUnavailableReason =
         "Codex was not started: confined execution requires a successful CLI help probe advertising both --ignore-user-config and --ignore-rules. Install a CLI with those boundaries or use an admitted non-native lane.";
 
+    public bool SupportsReadOnlyInspection => ExecutableResolver() is { } executable && HasReadOnlyInspectionCapabilities(executable);
+
     public bool SupportsContainment(NativeLaneContainment containment)
         => containment == NativeLaneContainment.Bypass || ExecutableResolver() is { } executable && HasRequiredConfinementCapabilities(executable);
+
+    internal static bool HasReadOnlyInspectionCapabilities(string executable)
+        => HasRequiredConfinementCapabilities(executable) && NativeCliCapabilities.Supports(executable, "read-only", "exec", "--help");
 
     internal static bool HasRequiredConfinementCapabilities(string executable)
         => NativeCliCapabilities.Supports(executable, IgnoreUserConfigFlag, "exec", "--help")
@@ -68,6 +75,17 @@ public sealed class CodexNativeLaneRunner(
         {
             yield return new TurnErrored(turnId, "Codex CLI executable was not found on this machine; install it and sign in to use the native lane.")
             { FailureCategory = LlmFailureCategory.ModelNotFound };
+            yield break;
+        }
+
+        if (turn.ReadOnlyInspection)
+        {
+            if (!turn.PlanMode || !HasReadOnlyInspectionCapabilities(executable))
+            {
+                yield return new TurnErrored(turnId, "Codex read-only inspection is unavailable without its verified containment controls.");
+                yield break;
+            }
+            await foreach (var item in RunReadOnlyInspectionAsync(turn, executable, ct).ConfigureAwait(false)) yield return item;
             yield break;
         }
 
@@ -93,6 +111,7 @@ public sealed class CodexNativeLaneRunner(
 
         var resumeId = string.IsNullOrWhiteSpace(threadId) ? null : threadId;
         var retried = false;
+        using var hostReceiptScope = NativeHostReceiptJournal.Begin(turn.ConversationId, turn.HostToolBridgeCapability);
         ParseState state;
         List<ChatMessage> transcript;
         StringBuilder stderr;
@@ -100,7 +119,8 @@ public sealed class CodexNativeLaneRunner(
         var persistedCount = 1;
         while (true)
         {
-            state = new ParseState { Model = "configured:" + turn.Lane.Model };
+            state = new ParseState { Model = "configured:" + turn.Lane.Model,
+                ConversationId = turn.ConversationId, HostToolBridgeCapability = turn.HostToolBridgeCapability };
             transcript = [ChatMessage.Text(ChatRole.User, turn.UserMessage)];
             stderr = new StringBuilder();
             exitCode = -1;
@@ -109,7 +129,9 @@ public sealed class CodexNativeLaneRunner(
             // External MCP servers are mounted only unconfined (confined runs pass mcp_servers={}).
             var prompt = NativeLaneSupport.BuildPrompt(turn, isFirstTurn: resumeId is null, mcp, "AGENTS.md", sharedHistory, options.MaxNativeHandoffCharacters,
                 confined ? null : options.NativeAgents.ExternalMcpServers);
-            var psi = BuildStartInfo(executable, turn, resumeId, options.NativeAgents,
+            var liveAttention = turn.GoalId is not null && turn.GoalMailbox is not null && !confined && !turn.PlanMode
+                && NativeCliCapabilities.Supports(executable, "--listen", "app-server", "--help");
+            var psi = liveAttention ? BuildAppServerStartInfo(executable, turn, options.NativeAgents) : BuildStartInfo(executable, turn, resumeId, options.NativeAgents,
                 ignoreUserConfigSupported: confinedExecution,
                 ignoreRulesSupported: confinedExecution);
             var channel = Channel.CreateUnbounded<TurnEvent>(new UnboundedChannelOptions { SingleReader = true });
@@ -123,8 +145,22 @@ public sealed class CodexNativeLaneRunner(
                 IChildProcess? process = null;
                 Process? diagnosticsProcess = null;
                 ChildProcessLifetimeContainment? containment = null;
+                GoalDelivery? initialDelivery = null;
+                var initialMayHaveBeenSent = false;
+                var initialAccepted = false;
                 try
                 {
+                    if (!liveAttention)
+                    {
+                        try
+                        {
+                            initialDelivery = await GoalMailboxBoundary.BeginAsync(turn.GoalMailbox, turn.GoalId,
+                                turn.ConversationId, turnId, ct: pumpCt, expectedLeaseToken: turn.GoalMessageLeaseToken).ConfigureAwait(false);
+                            if (initialDelivery is not null) prompt += "\n\n" + initialDelivery.ContextText;
+                        }
+                        catch (OperationCanceledException) when (pumpCt.IsCancellationRequested) { throw; }
+                        catch (Exception inboxError) { logger.LogWarning("Goal inbox delivery deferred ({ErrorType}).", inboxError.GetType().Name); }
+                    }
                     foreach (var notice in await NativeLaneSupport.PrepareHttpEnvironmentAsync(psi, options.NativeAgents,
                         confined, vault, pumpCt).ConfigureAwait(false))
                         channel.Writer.TryWrite(new CodingLaneNotice(turnId, turn.Lane.Name, notice));
@@ -144,14 +180,44 @@ public sealed class CodexNativeLaneRunner(
                             turn.RepositoryRoot, options.NativeAgents.AllowCodexAppConnectors) is { } mounted)
                         channel.Writer.TryWrite(new CodingLaneNotice(turnId, turn.Lane.Name, mounted));
                     process.BeginErrorReadLine();
+                    using var killOnCancel = pumpCt.Register(() => { try { process.Kill(entireProcessTree: true); } catch { /* best effort */ } });
+                    if (liveAttention)
+                    {
+                        channel.Writer.TryWrite(new CodingLaneNotice(turnId, turn.Lane.Name,
+                            "Goal inbox: native boundary delivery is available; Read requires the worker's explicit acknowledgement."));
+                        await using var connection = new CodexAppServerConnection(process.StandardOutput, process.StandardInput, pumpCt);
+                        await CodexGoalAttention.RunAsync(connection, turn, turnId, prompt, resumeId, async evt =>
+                        {
+                            var before = capturedState.ThreadId;
+                            var pending = Channel.CreateUnbounded<TurnEvent>();
+                            HandleEvent(evt, turnId, pending.Writer, capturedTranscript, capturedState);
+                            persistedCount = await NativeLaneSupport.FlushAsync(sessions, turn.ConversationId, capturedTranscript, persistedCount, pumpCt).ConfigureAwait(false);
+                            while (pending.Reader.TryRead(out var progress)) await channel.Writer.WriteAsync(progress, pumpCt).ConfigureAwait(false);
+                            if (capturedState.ThreadId is { } id && id != before)
+                                await NativeLaneSupport.WriteStateAsync(conversations, logger, turn.ConversationId, ThreadStateKey, id, CancellationToken.None).ConfigureAwait(false);
+                        }, async delivery =>
+                        {
+                            // Usually the completed batch is already closed. On a lost connection,
+                            // retain the accepted inbox context after conservative unknown-result repair.
+                            NativeLaneSupport.RepairDanglingToolCalls(capturedTranscript);
+                            capturedTranscript.Add(ChatMessage.Text(ChatRole.User, delivery.ContextText));
+                            persistedCount = await NativeLaneSupport.FlushAsync(sessions, turn.ConversationId, capturedTranscript, persistedCount, CancellationToken.None).ConfigureAwait(false);
+                        }, pumpCt).ConfigureAwait(false);
+                        process.StandardInput.Close();
+                        await process.WaitForExitAsync(pumpCt).ConfigureAwait(false);
+                        return process.ExitCode;
+                    }
+                    if (turn.GoalId is not null && turn.GoalMailbox is not null)
+                        channel.Writer.TryWrite(new CodingLaneNotice(turnId, turn.Lane.Name,
+                            "Goal inbox: live boundary delivery is unavailable in this native mode; new messages wait for the next turn without interrupting current work."));
                     try
                     {
+                        initialMayHaveBeenSent = initialDelivery is not null;
                         await process.StandardInput.WriteAsync(prompt).ConfigureAwait(false);
                         process.StandardInput.Close();
                     }
                     catch (IOException ex) { logger.LogDebug(ex, "Codex closed stdin early."); }
 
-                    using var killOnCancel = pumpCt.Register(() => { try { process.Kill(entireProcessTree: true); } catch { /* best effort */ } });
                     while (await process.StandardOutput.ReadLineAsync(pumpCt).ConfigureAwait(false) is { } line)
                     {
                         if (string.IsNullOrWhiteSpace(line)) continue;
@@ -159,6 +225,13 @@ public sealed class CodexNativeLaneRunner(
                         try { evt = ParseEvent(line); }
                         catch (JsonException) { evt = null; }
                         if (evt is null) { logger.LogDebug("Codex emitted a non-JSON line: {Line}", NativeLaneSupport.Truncate(line, 200)); continue; }
+                        if (!initialAccepted && initialDelivery is not null && (string?)evt["type"] is "turn.started" or "item.started" or "item.completed" or "turn.completed")
+                        {
+                            initialAccepted = true;
+                            capturedTranscript.Add(ChatMessage.Text(ChatRole.User, initialDelivery.ContextText));
+                            await GoalMailboxBoundary.TryRecordAsync(turn.GoalMailbox!, initialDelivery, GoalDeliveryState.Delivered,
+                                "Codex admitted the complete input at the beginning of this native turn; worker acknowledgement is pending.", CancellationToken.None).ConfigureAwait(false);
+                        }
                         var before = capturedState.ThreadId;
                         var pendingEvents = Channel.CreateUnbounded<TurnEvent>();
                         HandleEvent(evt, turnId, pendingEvents.Writer, capturedTranscript, capturedState);
@@ -178,6 +251,11 @@ public sealed class CodexNativeLaneRunner(
                 }
                 finally
                 {
+                    if (initialDelivery is not null && !initialAccepted)
+                        await GoalMailboxBoundary.TryRecordAsync(turn.GoalMailbox!, initialDelivery,
+                            initialMayHaveBeenSent ? GoalDeliveryState.Uncertain : GoalDeliveryState.Received,
+                            initialMayHaveBeenSent ? "Native input admission was not acknowledged; inspect before retrying."
+                                : "The native process did not receive the inbox input; retained for a later turn.", CancellationToken.None).ConfigureAwait(false);
                     containment?.Dispose();
                     diagnosticsProcess?.Dispose();
                     process?.Dispose();
@@ -258,6 +336,8 @@ public sealed class CodexNativeLaneRunner(
     internal sealed class ParseState
     {
         public string Model = "codex";
+        public string? ConversationId;
+        public string? HostToolBridgeCapability;
         public string? ThreadId;
         public string? LastMessage;
         public string? Error;
@@ -366,7 +446,18 @@ public sealed class CodexNativeLaneRunner(
                 }
                 var (result, isError) = DescribeResult(item);
                 transcript.Add(new ChatMessage(ChatRole.Tool, [new ToolResultPart(id, result, isError)]));
-                writer.TryWrite(new ToolCallCompleted(turnId, id, toolName, result, isError, DateTime.UtcNow - startedAt) { SideEffect = NativeToolSideEffects.Codex(toolName, input as JsonObject) });
+                NativeHostReceiptJournal.Evidence? hostEvidence = null;
+                if (toolName == McpToolName && input["server"] is JsonValue server && server.TryGetValue<string>(out var serverName)
+                    && serverName == McpServerLaunch.DefaultServerName && input["tool"] is JsonValue tool && tool.TryGetValue<string>(out var bridgeTool)
+                    && input["arguments"] is JsonObject arguments && item["result"] is JsonObject bridgeResult)
+                    NativeHostReceiptJournal.TryTake(state.ConversationId, state.HostToolBridgeCapability,
+                        bridgeTool, arguments, bridgeResult, out hostEvidence, isError);
+                writer.TryWrite(new ToolCallCompleted(turnId, id, toolName, result, isError, DateTime.UtcNow - startedAt)
+                {
+                    SideEffect = hostEvidence?.SideEffect ?? NativeToolSideEffects.Codex(toolName, input as JsonObject),
+                    WasDispatched = hostEvidence?.WasDispatched ?? true,
+                    LocalProcessCompleted = hostEvidence?.LocalProcessCompleted ?? false,
+                });
                 break;
         }
     }
@@ -377,6 +468,7 @@ public sealed class CodexNativeLaneRunner(
         "file_change" => (FileChangeToolName, new JsonObject { ["changes"] = item["changes"]?.DeepClone() }),
         "mcp_tool_call" => (McpToolName, new JsonObject { ["server"] = (string?)item["server"], ["tool"] = (string?)item["tool"], ["arguments"] = item["arguments"]?.DeepClone() }),
         "web_search" => (WebSearchToolName, new JsonObject { ["query"] = (string?)item["query"] }),
+        "native_operation" => (NativeOperationToolName, new JsonObject { ["nativeType"] = item["nativeType"]?.DeepClone(), ["input"] = item["nativeInput"]?.DeepClone() }),
         _ => (null, new JsonObject()),
     };
 
@@ -392,7 +484,9 @@ public sealed class CodexNativeLaneRunner(
                 return (new JsonObject { ["exitCode"] = exit, ["output"] = output }.ToJsonString(), failed || exit is not null and not 0);
             case "mcp_tool_call":
                 return (NativeLaneSupport.SanitizeReceipt(item["result"])?.ToJsonString()
-                    ?? NativeLaneSupport.SanitizeReceipt(item["error"])?.ToJsonString() ?? status, failed || item["error"] is not null);
+                    ?? NativeLaneSupport.SanitizeReceipt(item["error"])?.ToJsonString() ?? status,
+                    failed || item["error"] is not null || item["result"] is JsonObject mcpResult
+                        && mcpResult["isError"] is JsonValue error && error.TryGetValue<bool>(out var isError) && isError);
             default:
                 return (item.ToJsonString(), failed);
         }
@@ -464,11 +558,23 @@ public sealed class CodexNativeLaneRunner(
         var (model, effort) = NormalizeModel(turn.Lane.Model);
         if (model is not null) { args.Add("-m"); args.Add(model); }
         if (effort is not null) { args.Add("-c"); args.Add($"model_reasoning_effort={NativeLaneSupport.Toml(effort)}"); }
-        if (!confined) args.AddRange(NativeLaneSupport.CodexMcpOverrides(native.McpServer, turn.RepositoryRoot, native.ExternalMcpServers, turn.ConversationId));
+        if (!confined) args.AddRange(NativeLaneSupport.CodexMcpOverrides(native.McpServer, turn.RepositoryRoot, native.ExternalMcpServers, turn.ConversationId, turn.HostToolBridgeCapability));
         if (!string.IsNullOrWhiteSpace(threadId)) { args.Add("resume"); args.Add(threadId); }
         foreach (var image in turn.Attachments.Where(a => a.IsImage)) { args.Add("--image"); args.Add(image.LocalPath); }
         args.Add("-"); // prompt on stdin
 
+        var psi = NativeLaneSupport.TurnStartInfo(executable, args, turn.RepositoryRoot);
+        NativeLaneSupport.ScrubApiKeys(psi.EnvironmentVariables);
+        return psi;
+    }
+
+    internal static ProcessStartInfo BuildAppServerStartInfo(string executable, NativeLaneTurn turn, NativeAgentOptions native)
+    {
+        if (turn.EffectiveContainment(native) != NativeLaneContainment.Bypass || turn.PlanMode)
+            throw new InvalidOperationException("Live native inbox delivery is unavailable in this containment mode.");
+        var args = new List<string> { "app-server", "--listen", "stdio://", "-c", "approval_policy='never'", "-c", "sandbox_mode='danger-full-access'" };
+        if (!native.AllowCodexAppConnectors) { args.Add("-c"); args.Add(AppConnectorsOff); }
+        args.AddRange(NativeLaneSupport.CodexMcpOverrides(native.McpServer, turn.RepositoryRoot, native.ExternalMcpServers, turn.ConversationId, turn.HostToolBridgeCapability));
         var psi = NativeLaneSupport.TurnStartInfo(executable, args, turn.RepositoryRoot);
         NativeLaneSupport.ScrubApiKeys(psi.EnvironmentVariables);
         return psi;

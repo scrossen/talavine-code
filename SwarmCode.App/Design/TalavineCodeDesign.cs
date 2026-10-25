@@ -3,7 +3,7 @@ namespace SwarmCode.App.Design;
 
 internal static class TalavineCodeDesign
 {
-    internal const string Version = "1.0.9";
+    internal const string Version = "1.0.16";
     internal const double FontBody = 14;
     internal const double FontSmall = 12;
     internal const double FontMeta = 10;

@@ -32,20 +32,28 @@ public sealed record HostToolManifest(string Name, string Description, JsonObjec
 public sealed record HostToolImage(string Base64, string MediaType);
 
 /// <summary>A host tool's result: the text the model reads, any images, and whether it reports a failure.</summary>
-public sealed record HostToolResult(string Text, IReadOnlyList<HostToolImage> Images, bool IsError);
+public sealed record HostToolResult(string Text, IReadOnlyList<HostToolImage> Images, bool IsError)
+{
+    // Physical adapter evidence travels separately from text. Native receipt enrichment only
+    // accepts the same-process journal; echoing these fields in tool output grants no evidence.
+    public bool WasDispatched { get; init; } = true;
+    public bool LocalProcessCompleted { get; init; }
+    public ToolSideEffect? SideEffect { get; init; }
+}
 
 /// <summary>
 /// Which host tools a native agent is offered and under what MCP names. The CLI already edits files, searches code and runs
-/// git and shell commands itself, so SwarmCode's equivalents are left out; the person's external MCP servers are mounted
+/// git and shell commands itself, so mutating equivalents are left out. Structured file reads and searches stay available
+/// to retain host-owned read-only receipts when parsing fails; the person's external MCP servers are mounted
 /// on the CLI directly, so their projections are left out too. Everything else the conversation's profile offers (agents,
 /// task list, background shells, schedules, GitHub, notebooks, web, apps, Chrome and desktop, credentials, memory) is served.
 /// </summary>
 public static class HostToolBridgeCatalog
 {
-    /// <summary>Host tools with a native CLI equivalent. <c>shell.exec</c> stays: it expands vault references in commands.</summary>
+    /// <summary>Native equivalents except structured reads. <c>shell.exec</c> stays: it expands vault references in commands.</summary>
     public static readonly IReadOnlySet<string> NativeEquivalentToolIds = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
     {
-        "code.edit_file", "code.grep", "code.glob", "fs.read_file", "fs.write_file", "fs.list_files",
+        "code.edit_file", "fs.write_file",
         "git.status", "git.diff", "git.log", "git.commit", "harness.decline",
     };
 
@@ -97,6 +105,14 @@ public interface IHostToolBridgeHost
     IDisposable BeginCall(string conversationId);
 }
 
+/// <summary>Private native process admission; a conversation id alone cannot borrow a later turn's authority.</summary>
+public interface IHostToolBridgeAttemptHost
+{
+    IDisposable? BeginAttempt(string conversationId, string? capability);
+    bool IsAttemptCurrent(string conversationId);
+    CancellationToken AttemptCancellation(string conversationId);
+}
+
 /// <summary>
 /// A host built from a service provider: <see cref="IProfileResolver"/> for the tools, <see cref="IToolInvocationGuard"/>
 /// for the guard, and <see cref="ICurrentTurnContextAccessor"/> for the ambient owner. The host supplies admission and
@@ -105,9 +121,22 @@ public interface IHostToolBridgeHost
 public sealed class ServiceHostToolBridgeHost(
     IServiceProvider services,
     Func<string, HostToolProfile?> admit,
-    Func<string, IDisposable?>? beginExtra = null) : IHostToolBridgeHost
+    Func<string, IDisposable?>? beginExtra = null) : IHostToolBridgeHost, IHostToolBridgeAttemptHost
 {
     public HostToolProfile? Admit(string conversationId) => admit(conversationId);
+
+    public IDisposable? BeginAttempt(string conversationId, string? capability)
+    {
+        var active = services.GetService<ActiveCodingWorkspaces>();
+        var binding = active?.BindBridgeAttempt(conversationId, capability);
+        if (binding is null) return null;
+        var permissions = services.GetService<Permissions.ActiveCodingPermissions>()?.BindBridgePolicy(conversationId, active!.BridgePermissions(conversationId));
+        return new Scope(() => { permissions?.Dispose(); binding.Dispose(); });
+    }
+    public bool IsAttemptCurrent(string conversationId) => services.GetService<ActiveCodingWorkspaces>()?.IsBridgeAttemptCurrent(conversationId) == true;
+    public CancellationToken AttemptCancellation(string conversationId)
+        => services.GetService<ActiveCodingWorkspaces>()?.BridgeAttemptCancellation(conversationId) ?? new(true);
+
 
     public async Task<IReadOnlyList<ToolDescriptor>> ToolsAsync(string conversationId, CancellationToken ct)
     {
@@ -134,6 +163,8 @@ public sealed class ServiceHostToolBridgeHost(
                 CommunicationScopeUserInitiated: true)
             {
                 WorkspaceRoot = services.GetService<ActiveCodingWorkspaces>()?.Get(conversationId)?.FullRoot,
+                GoalMessageGoalId = services.GetService<ActiveCodingWorkspaces>()?.GoalMessageGoalId(conversationId),
+                GoalMessageLeaseToken = services.GetService<ActiveCodingWorkspaces>()?.GoalMessageLeaseToken(conversationId),
             };
         var extra = beginExtra?.Invoke(conversationId);
         return new Scope(() =>
@@ -217,7 +248,7 @@ internal static class HostToolBridgeWire
     public const int MaxResponseBytes = 32 * 1024 * 1024; // screenshots travel as images
     public static readonly JsonSerializerOptions Json = new(JsonSerializerDefaults.Web) { MaxDepth = 64 };
 
-    public sealed record Request(string Operation, string ConversationId, string? Tool = null, JsonElement? Input = null);
+    public sealed record Request(string Operation, string ConversationId, string? Tool = null, JsonElement? Input = null, string? AttemptCapability = null);
 
     public sealed record Response(bool Ok, string? Error, IReadOnlyList<HostToolManifest>? Tools = null, HostToolResult? Result = null);
 }
@@ -233,6 +264,10 @@ internal static class HostToolBridgeWire
 public sealed class HostToolBridgeBroker : IAsyncDisposable, IDisposable
 {
     public const string PipeEnvironmentVariable = "SWARMCODE_HOST_TOOLS_PIPE";
+    public const string AttemptEnvironmentVariable = "SWARMCODE_HOST_TOOLS_ATTEMPT";
+    private readonly AsyncLocal<bool> _boundWire = new();
+    private bool AttemptCurrent(string conversationId) => !_boundWire.Value
+        || _host is IHostToolBridgeAttemptHost attempt && attempt.IsAttemptCurrent(conversationId);
     private static readonly JsonSerializerOptions ToolJson = ToolUseAgentEngine.CreateToolJsonOptions();
     private readonly IHostToolBridgeHost _host;
     private readonly TimeSpan _requestTimeout;
@@ -272,6 +307,7 @@ public sealed class HostToolBridgeBroker : IAsyncDisposable, IDisposable
     {
         if (!Agents.AgentIds.IsValid(conversationId) || _host.Admit(conversationId) is not { } profile) return null;
         var tools = HostToolBridgeCatalog.Select(await _host.ToolsAsync(conversationId, ct).ConfigureAwait(false), profile);
+        if (!AttemptCurrent(conversationId)) return null;
         return tools.Select(t => HostToolBridgeCatalog.Manifest(t.Key, t.Value)).ToList();
     }
 
@@ -279,10 +315,11 @@ public sealed class HostToolBridgeBroker : IAsyncDisposable, IDisposable
     public async Task<HostToolResult> CallAsync(string conversationId, string name, JsonElement? arguments, CancellationToken ct)
     {
         if (!Agents.AgentIds.IsValid(conversationId) || _host.Admit(conversationId) is not { } profile)
-            return Error("Talavine Code tools are available only while this Talavine Code conversation is running a turn.");
+            return NotDispatched("Talavine Code tools are available only while this Talavine Code conversation is running a turn.");
         var tools = HostToolBridgeCatalog.Select(await _host.ToolsAsync(conversationId, ct).ConfigureAwait(false), profile);
+        if (!AttemptCurrent(conversationId)) return NotDispatched("This native worker attempt is no longer active.");
         if (!tools.TryGetValue(name, out var tool))
-            return Error(profile == HostToolProfile.Plan ? $"{name} is not available in plan mode." : $"Unknown Talavine Code tool {name}.");
+            return NotDispatched(profile == HostToolProfile.Plan ? $"{name} is not available in plan mode." : $"Unknown Talavine Code tool {name}.");
 
         object input;
         try
@@ -290,24 +327,27 @@ public sealed class HostToolBridgeBroker : IAsyncDisposable, IDisposable
             var json = arguments is { ValueKind: JsonValueKind.Object } a ? a.GetRawText() : "{}";
             input = JsonSerializer.Deserialize(json, tool.InputType, ToolJson) ?? throw new JsonException("missing input");
         }
-        catch (JsonException ex) { return Error("Invalid input for " + name + ": " + ex.Message); }
+        catch (JsonException ex) { return NotDispatched("Invalid input for " + name + ": " + ex.Message); }
 
         using var scope = _host.BeginCall(conversationId);
-        var decision = await _host.InspectAsync(new ToolInvocationRequest(tool.ToolId, tool.EffectiveSideEffect(input), input, conversationId), ct)
+        var effect = tool.EffectiveSideEffect(input);
+        var decision = await _host.InspectAsync(new ToolInvocationRequest(tool.ToolId, effect, input, conversationId), ct)
             .ConfigureAwait(false);
-        if (!decision.Allowed) return Error(decision.BlockReason ?? "Talavine Code refused this call.");
+        if (!decision.Allowed) return NotDispatched(decision.BlockReason ?? "Talavine Code refused this call.", effect);
         // No one can answer an approval prompt on a native agent's call: escalation refuses with the reason.
-        if (decision.RequiresApproval) return Error((decision.BlockReason ?? "This call needs the person's approval.") + " Ask the person to run it themselves.");
+        if (decision.RequiresApproval) return NotDispatched((decision.BlockReason ?? "This call needs the person's approval.") + " Ask the person to run it themselves.", effect);
 
+        if (!AttemptCurrent(conversationId)) return NotDispatched("This native worker attempt is no longer active.", effect);
+        ct.ThrowIfCancellationRequested();
         object? value;
         try { value = await tool.Invoke(input, ct).ConfigureAwait(false); }
         // Exactly what an API lane's model reads for the same failure (ToolUseAgentEngine): the refusal text for a call
         // that never ran, else the exception type and message. Logs keep only the type.
-        catch (ToolCallNotDispatchedException ex) { return Error(ex.Message); }
+        catch (ToolCallNotDispatchedException ex) { return NotDispatched(ex.Message, effect); }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
             _logger.LogWarning("Bridged tool {Tool} threw ({Error}).", tool.ToolId, ex.GetType().Name);
-            return Error($"{ex.GetType().Name}: {ex.Message}");
+            return Error($"{ex.GetType().Name}: {ex.Message}") with { SideEffect = effect };
         }
         // The CLI reads the annotated text (hook notes included); images and failure-as-data come from the tool's own object.
         var own = ToolResultAnnotations.Unwrap(value);
@@ -320,10 +360,18 @@ public sealed class HostToolBridgeBroker : IAsyncDisposable, IDisposable
             string s => s,
             _ => JsonSerializer.Serialize(value, value.GetType(), ToolJson),
         };
-        return new HostToolResult(text, images, IsFailure(own));
+        return new HostToolResult(text, images, IsFailure(own))
+        {
+            SideEffect = effect,
+            WasDispatched = own is not SwarmCore.Abstractions.Tools.IToolDispatchEvidence { NoPhysicalAction: true },
+            LocalProcessCompleted = own is IToolExecutionEvidence { LocalProcessCompleted: true }
+                && effect is not (ToolSideEffect.ExternalSend or ToolSideEffect.Destructive),
+        };
     }
 
     private static HostToolResult Error(string message) => new(message, [], true);
+    private static HostToolResult NotDispatched(string message, ToolSideEffect? effect = null)
+        => Error(message) with { WasDispatched = false, SideEffect = effect };
 
     /// <summary>Results that report a failure as data (Success/Succeeded false) are marked as errors for the CLI.</summary>
     private static bool IsFailure(object? value)
@@ -337,6 +385,20 @@ public sealed class HostToolBridgeBroker : IAsyncDisposable, IDisposable
 
     private async Task<HostToolBridgeWire.Response> HandleAsync(HostToolBridgeWire.Request request, CancellationToken ct)
     {
+        using var attempt = _host is IHostToolBridgeAttemptHost boundHost
+            ? boundHost.BeginAttempt(request.ConversationId, request.AttemptCapability) : null;
+        if (attempt is null)
+            return new(false, "This native worker attempt is no longer active.");
+        using var lifetime = _host is IHostToolBridgeAttemptHost binding
+            ? CancellationTokenSource.CreateLinkedTokenSource(ct, binding.AttemptCancellation(request.ConversationId)) : null;
+        var prior = _boundWire.Value;
+        _boundWire.Value = attempt is not null;
+        try { return await HandleBoundAsync(request, lifetime?.Token ?? ct).ConfigureAwait(false); }
+        finally { _boundWire.Value = prior; }
+    }
+
+    private async Task<HostToolBridgeWire.Response> HandleBoundAsync(HostToolBridgeWire.Request request, CancellationToken ct)
+    {
         switch (request.Operation)
         {
             case "list":
@@ -344,7 +406,10 @@ public sealed class HostToolBridgeBroker : IAsyncDisposable, IDisposable
                     ? new(true, null, tools)
                     : new(false, "Talavine Code tools are available only while this Talavine Code conversation is running a turn.");
             case "call" when !string.IsNullOrWhiteSpace(request.Tool):
-                return new(true, null, Result: await CallAsync(request.ConversationId, request.Tool, request.Input, ct).ConfigureAwait(false));
+                var result = await CallAsync(request.ConversationId, request.Tool, request.Input, ct).ConfigureAwait(false);
+                NativeHostReceiptJournal.Record(request.ConversationId, request.AttemptCapability,
+                    request.Tool, request.Input, result);
+                return new(true, null, Result: result);
             default:
                 return new(false, "Unknown bridge operation.");
         }
@@ -457,7 +522,7 @@ public sealed class HostToolBridgeBroker : IAsyncDisposable, IDisposable
 }
 
 /// <summary>The bridge-process side: lists and calls the host's tools for the conversation named at launch.</summary>
-public sealed class HostToolBridgeProxy(string endpoint, string conversationId)
+public sealed class HostToolBridgeProxy(string endpoint, string conversationId, string? attemptCapability = null)
 {
     public string ConversationId { get; } = conversationId;
 
@@ -467,17 +532,17 @@ public sealed class HostToolBridgeProxy(string endpoint, string conversationId)
            && LocalPipeEndpoint.IsValid(pipe, HostToolBridgeWire.EndpointPrefix)
            && Environment.GetEnvironmentVariable(NativeLaneSupport.ConversationEnvironmentVariable) is { } conversation
            && Agents.AgentIds.IsValid(conversation)
-            ? new HostToolBridgeProxy(pipe, conversation) : null;
+            ? new HostToolBridgeProxy(pipe, conversation, Environment.GetEnvironmentVariable(HostToolBridgeBroker.AttemptEnvironmentVariable)) : null;
 
     public async Task<IReadOnlyList<HostToolManifest>> ListAsync(CancellationToken ct)
     {
-        var response = await SendAsync(new HostToolBridgeWire.Request("list", ConversationId), ct).ConfigureAwait(false);
+        var response = await SendAsync(new HostToolBridgeWire.Request("list", ConversationId, AttemptCapability: attemptCapability), ct).ConfigureAwait(false);
         return response.Tools ?? [];
     }
 
     public async Task<HostToolResult> CallAsync(string name, JsonElement? arguments, CancellationToken ct)
     {
-        var response = await SendAsync(new HostToolBridgeWire.Request("call", ConversationId, name, arguments), ct).ConfigureAwait(false);
+        var response = await SendAsync(new HostToolBridgeWire.Request("call", ConversationId, name, arguments, attemptCapability), ct).ConfigureAwait(false);
         return response.Result ?? new HostToolResult("The host returned no result.", [], true);
     }
 

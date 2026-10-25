@@ -14,9 +14,10 @@ public sealed partial class CodingTurnOrchestrator
     public async IAsyncEnumerable<TurnEvent> RunAsync(CodingTurnRequest request, [EnumeratorCancellation] CancellationToken ct = default)
     {
         await using var assistanceOwnership = await AssistanceExecutions.AcquireAsync(request.ConversationId, ct);
-        if (!request.Assistance.Enabled)
+        if (!request.Assistance.Enabled || request.RequireSelectedRoute)
         {
-            await foreach (var e in RunCoreAsync(request, ct).ConfigureAwait(false)) yield return e;
+            var selected = request.RequireSelectedRoute ? request with { Assistance = new() } : request;
+            await foreach (var e in RunCoreAsync(selected, ct).ConfigureAwait(false)) yield return e;
             yield break;
         }
         using var budget = CancellationTokenSource.CreateLinkedTokenSource(ct);

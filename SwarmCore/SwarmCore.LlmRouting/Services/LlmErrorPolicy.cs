@@ -421,6 +421,14 @@ public static class LlmErrorPolicy
         LlmFailureCategory category,
         bool isSubscriptionCli,
         string? errorMessage = null)
+        => Resolve(category, isSubscriptionCli, errorMessage, DateTimeOffset.UtcNow);
+
+    /// <summary>Clock-explicit form: date and wall-clock retry hints are measured from <paramref name="utcNow"/>.</summary>
+    internal static LlmFailurePolicy Resolve(
+        LlmFailureCategory category,
+        bool isSubscriptionCli,
+        string? errorMessage,
+        DateTimeOffset utcNow)
         => category switch
         {
             LlmFailureCategory.RateLimit => new LlmFailurePolicy(
@@ -428,7 +436,7 @@ public static class LlmErrorPolicy
                 "rate_limit",
                 FailoverEligible: true,
                 PenalizeProvider: true,
-                ProviderCooldown: RateLimitRetryAfterParser.ParseOrDefault(errorMessage),
+                ProviderCooldown: RateLimitRetryAfterParser.ParseOrDefault(errorMessage, utcNow),
                 SurfaceToUser: false),
             LlmFailureCategory.QuotaExhausted => new LlmFailurePolicy(
                 category,
@@ -439,7 +447,7 @@ public static class LlmErrorPolicy
                 PenalizeProvider: true,
                 ProviderCooldown: Max(
                     QuotaExhaustedCooldown,
-                    RateLimitRetryAfterParser.TryParse(errorMessage)),
+                    RateLimitRetryAfterParser.TryParse(errorMessage, utcNow)),
                 SurfaceToUser: true),
             LlmFailureCategory.AuthInvalid => new LlmFailurePolicy(
                 category,

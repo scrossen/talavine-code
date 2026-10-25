@@ -139,6 +139,10 @@ public sealed record ToolDescriptor
     /// denied consent context; ordinary tools remain completely uninvoked.
     /// </summary>
     public bool RecordsDeniedAction { get; init; }
+    /// <summary>Host-supplied approval permission and wording; null derives both from the side effect.</summary>
+    public ToolApproval? Approval { get; init; }
+    /// <summary>Host-declared loop behaviours for this tool (see <see cref="ToolEngineRoles"/>).</summary>
+    public ToolEngineRoles EngineRoles { get; init; }
     /// <summary>Host adapter enforces concrete mission effects/resources at physical execution.</summary>
     public bool EnforcesMissionResourceBoundary { get; init; }
     /// <summary>Trusted host operation owns atomic idempotency and may re-evaluate an identical mission request.
@@ -281,5 +285,9 @@ public enum ToolSideEffect
     /// value already recorded elsewhere.
     /// </para>
     /// </summary>
-    Exec = 4
+    Exec = 4,
+
+    /// <summary>Host-owned execution/inbox bookkeeping only. Cannot mutate requested resources,
+    /// send externally, authorize/start work or change authority. Still a local mutation, not read-only.</summary>
+    ExecutionMetadata = 5
 }

@@ -29,6 +29,26 @@ public class WorkingContextCheckpointStoreTests : TempDirTest
     };
 
     [Fact]
+    public async Task Compare_and_swap_waits_for_another_process_holding_the_checkpoint_lock()
+    {
+        var time = new ManualTime();
+        var store = new FileWorkingContextCheckpointStore(Paths, time: time);
+        var lockPath = Path.Combine(Paths.SessionsDirectory, "context", ".lock");
+
+        Task<bool> save;
+        using (new FileStream(lockPath, FileMode.OpenOrCreate, FileAccess.ReadWrite, FileShare.None)) // another process
+        {
+            save = store.TrySaveAsync(Checkpoint(1, time), expectedGeneration: 0);
+            await Task.Delay(300);
+            Assert.False(save.IsCompleted);
+        }
+
+        Assert.True(await save.WaitAsync(TimeSpan.FromSeconds(10)));
+        // The second writer of the same generation, from another instance (process), loses the swap.
+        Assert.False(await new FileWorkingContextCheckpointStore(Paths, time: time).TrySaveAsync(Checkpoint(1, time), expectedGeneration: 0));
+    }
+
+    [Fact]
     public async Task Save_Load_RoundTrip_WithCompareAndSwap()
     {
         var time = new ManualTime();

@@ -9,6 +9,12 @@ namespace SwarmCode.App;
 
 public static class DesktopHost
 {
+    /// <summary>
+    /// Persisted Keychain service name of SwarmCode's vault key-encryption key.
+    /// Renaming it orphans every secret written so far.
+    /// </summary>
+    internal const string MacKeychainServiceName = "com.swarmfamily.swarmcode.secret-protector";
+
     private static IServiceProvider? _services;
     private static string? _logPath;
     private static readonly ConcurrentQueue<string> _pendingLog = new();
@@ -73,6 +79,7 @@ public static class DesktopHost
         builder.Services.AddSingleton<SwarmCore.Chat.IDictationLauncher, SwarmCore.Chat.SystemDictationLauncher>();
         builder.Services.AddSingleton(paths);
         builder.Services.AddSingleton<AppPreferencesStore>();
+        builder.Services.AddSingleton<StarInvitationStore>();
         builder.Services.AddSingleton<WorkspaceSessionCatalog>();
         builder.Services.AddSingleton<UserSettingsFile>();
         builder.Services.AddHttpClient();
@@ -99,7 +106,8 @@ public static class DesktopHost
         // console, so both read one secrets.db), Keychain on macOS.
         // Mac vault storage requires encryption and fails closed without usable Keychain access.
 #if MACOS
-        builder.Services.AddSingleton<IOsKeyStore, Platforms.macOS.Services.MacKeychainKeyStore>();
+        builder.Services.AddSingleton<IOsKeyStore>(sp => new SwarmCore.Secrets.Apple.MacKeychainKeyStore(
+            sp.GetRequiredService<ILogger<SwarmCore.Secrets.Apple.MacKeychainKeyStore>>(), MacKeychainServiceName));
         builder.Services.AddSingleton<SwarmCore.Coding.Computer.IMacDesktopDriver, Platforms.macOS.Services.MacDesktopDriver>();
 #else
         builder.Services.AddSingleton<IOsKeyStore>(sp => KeyStoreFactory.Create(sp.GetRequiredService<ILoggerFactory>(), SwarmCodeHostComposer.KeyStoreApplicationScope));

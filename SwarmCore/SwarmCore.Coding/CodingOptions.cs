@@ -127,6 +127,16 @@ public sealed record CodingExecutionLimits
     /// <summary>Per-lane-attempt model iterations (API engine and Claude native). Codex does not expose comparable rounds.</summary>
     public int MaxIterations { get; init; }
     public long MaxCumulativeTokens { get; init; }
+
+    /// <summary>
+    /// Changes only the iteration limit, retaining independently configured time, tool and token budgets.
+    /// Zero explicitly means unlimited iterations; the configured snapshot is never mutated.
+    /// </summary>
+    public CodingExecutionLimits WithMaxIterations(int maxIterations)
+    {
+        ArgumentOutOfRangeException.ThrowIfNegative(maxIterations);
+        return this with { MaxIterations = maxIterations };
+    }
 }
 
 /// <summary>How native coding-agent CLIs are launched and what they are given.</summary>

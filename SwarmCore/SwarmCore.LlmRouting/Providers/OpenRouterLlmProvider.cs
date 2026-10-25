@@ -31,7 +31,7 @@ public class OpenRouterLlmProvider : OpenAILlmProvider
         // This endpoint retains the account's provider/privacy/guardrail preferences.
         using var response = await client.GetAsync($"{BaseUrl}/models/user", cancellationToken).ConfigureAwait(false);
         response.EnsureSuccessStatusCode();
-        using var document = JsonDocument.Parse(await response.Content.ReadAsStringAsync(cancellationToken).ConfigureAwait(false));
+        using var document = await OpenRouterCatalogContract.ReadBoundedDocumentAsync(response.Content, cancellationToken).ConfigureAwait(false);
         var details = ParseCatalog(document.RootElement);
         return new LlmModelCatalog(details.Select(m => m.Id).ToArray(), "Account-filtered provider API catalog") { Details = details, ReasoningEfforts = ParseReasoningEfforts(document.RootElement) };
     }
@@ -49,32 +49,34 @@ public class OpenRouterLlmProvider : OpenAILlmProvider
         return choices;
     }
 
+    /// <summary>
+    /// Reads the account catalog through the shared OpenRouter catalog
+    /// contract, which owns the vendor schema and its sanity bounds.
+    /// </summary>
     internal static IReadOnlyList<LlmCatalogModel> ParseCatalog(JsonElement root)
     {
-        var result = new List<LlmCatalogModel>();
-        foreach (var model in root.GetProperty("data").EnumerateArray())
+        if (root.ValueKind != JsonValueKind.Object
+            || !root.TryGetProperty("data", out var data)
+            || data.ValueKind != JsonValueKind.Array)
         {
-            if (!model.TryGetProperty("id", out var id) || string.IsNullOrWhiteSpace(id.GetString())) continue;
-            var tools = model.TryGetProperty("supported_parameters", out var parameters)
-                && parameters.ValueKind == JsonValueKind.Array && parameters.EnumerateArray().Any(p => p.GetString() == "tools");
-            int? context = model.TryGetProperty("context_length", out var window) && window.TryGetInt32(out var size) ? size : null;
-            decimal? input = null, output = null;
-            if (model.TryGetProperty("pricing", out var prices))
-            {
-                input = Price(prices, "prompt");
-                output = Price(prices, "completion");
-            }
-            bool? moderated = model.TryGetProperty("top_provider", out var provider)
-                && provider.TryGetProperty("is_moderated", out var moderation) && moderation.ValueKind is JsonValueKind.True or JsonValueKind.False
+            throw new InvalidDataException("The OpenRouter model catalog response did not contain a model list.");
+        }
+
+        var result = new List<LlmCatalogModel>();
+        foreach (var item in data.EnumerateArray())
+        {
+            if (!OpenRouterCatalogContract.TryReadModel(item, out var model)) continue;
+            bool? moderated = item.TryGetProperty("top_provider", out var provider)
+                && provider.ValueKind == JsonValueKind.Object
+                && provider.TryGetProperty("is_moderated", out var moderation)
+                && moderation.ValueKind is JsonValueKind.True or JsonValueKind.False
                 ? moderation.GetBoolean() : null;
-            result.Add(new LlmCatalogModel(id.GetString()!, context, tools, input, output, moderated));
+            result.Add(new LlmCatalogModel(model.Id, model.ContextTokens, model.Capabilities.SupportsTools,
+                PerMillion(model.PromptPricePerToken), PerMillion(model.CompletionPricePerToken), moderated));
         }
         return result;
 
-        static decimal? Price(JsonElement prices, string key)
-            => prices.TryGetProperty(key, out var price)
-                && decimal.TryParse(price.ToString(), NumberStyles.Float, CultureInfo.InvariantCulture, out var value) && value >= 0
-                    ? value * 1_000_000m : null;
+        static decimal? PerMillion(decimal? perToken) => perToken * 1_000_000m;
     }
     public override LlmProviderExecutionContractDescriptor ExecutionContract => _executionContract.Descriptor;
     public override LlmProviderExecutionTranslation TranslateExecution(

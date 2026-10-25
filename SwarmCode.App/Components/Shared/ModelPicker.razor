@@ -4,10 +4,10 @@
 @implements IAsyncDisposable
 <div class="model-picker @(OpenAbove ? "model-picker--above" : "")" @ref="_element">
     <input class="sc-input" role="combobox" aria-label="Model" aria-autocomplete="list"
-           aria-expanded="@_open" aria-controls="@_listId" aria-activedescendant="@(_active >= 0 ? _listId + "-" + _active : null)"
+           aria-expanded="@(_open ? "true" : "false")" aria-controls="@_listId" aria-activedescendant="@(_active >= 0 ? _listId + "-" + _active : null)"
            placeholder="Choose or search models…" value="@(_typing ? _query : Value)" disabled="@Disabled"
            @onfocus="Open" @onclick="Open" @oninput="Search" @onkeydown="KeyAsync" @onkeydown:stopPropagation @onblur="CloseLaterAsync" />
-    <button type="button" class="model-picker__arrow" aria-label="Show models" aria-expanded="@_open"
+    <button type="button" class="model-picker__arrow" aria-label="Show models" aria-expanded="@(_open ? "true" : "false")"
             disabled="@Disabled" @onmousedown:preventDefault @onclick="Toggle">▾</button>
     @if (_open && !Disabled)
     {
@@ -18,7 +18,7 @@
                 var index = i;
                 var model = matches[i];
                 <button type="button" tabindex="-1" role="option" id="@(_listId + "-" + index)"
-                        aria-selected="@(model == Value)" class="model-picker__option @(index == _active ? "is-active" : "")"
+                        aria-selected="@(model == Value ? "true" : "false")" class="model-picker__option @(index == _active ? "is-active" : "")"
                         @onclick="() => SelectAsync(model)">@model</button>
             }
             @if (matches.Count == 0) { <div class="model-picker__empty">No matching models</div> }

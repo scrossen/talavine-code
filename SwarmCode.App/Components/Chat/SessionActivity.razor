@@ -1,0 +1,29 @@
+@namespace SwarmCode.App.Components.Chat
+
+<section class="sess-current" aria-label="Current activity">
+    <div class="sess-current__heading" role="status">
+        @if (Activity.Busy) { <span class="sc-spinner" aria-hidden="true"></span> }
+        <strong>@Activity.State</strong><span>@Activity.Action</span>
+    </div>
+    @if (Activity.Reason is { } reason) { <p class="sess-current__reason">@reason</p> }
+    @if (Activity.PlanStep is { } planStep) { <p class="sess-current__plan">@planStep</p> }
+    <p class="sess-current__update"><span class="sess-current__update-label">@Activity.UpdateLabel</span>@Activity.Update</p>
+    <div class="sess-current__meta">
+        @if (Activity.ActionStartedAt is { } actionAt) { <span>Action started <time datetime="@actionAt.ToString("O")">@actionAt.ToLocalTime().ToString("g")</time></span> }
+        @if (Activity.RecordedAt is { } at) { <span>@Activity.RecordedAtLabel <time datetime="@at.ToString("O")">@at.ToLocalTime().ToString("g")</time></span> }
+        @if (Activity.PlanRecordedAt is { } planAt) { <span>Plan recorded <time datetime="@planAt.ToString("O")">@planAt.ToLocalTime().ToString("g")</time></span> }
+        @if (Activity.RetryAt is { } retry) { <span>Retry scheduled <time datetime="@retry.ToString("O")">@retry.ToLocalTime().ToString("g")</time></span> }
+        @if (InboxUrl is not null) { <a href="@InboxUrl">Agent inbox and replies</a> }
+    </div>
+    @Controls
+    @if (Activity.Diagnostics is { Length: > 0 } diagnostics)
+    {
+        <details class="sess-current__diagnostics"><summary>Details</summary><pre>@diagnostics</pre></details>
+    }
+</section>
+
+@code {
+    [Parameter, EditorRequired] public SessionActivityView Activity { get; set; } = default!;
+    [Parameter] public string? InboxUrl { get; set; }
+    [Parameter] public RenderFragment? Controls { get; set; }
+}

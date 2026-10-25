@@ -80,6 +80,8 @@
 
   <ItemGroup Condition="'$(TargetFramework)' == 'net11.0-macos'">
     <Compile Remove="App.xaml.cs;MainPage.xaml.cs;Platforms/Windows/**/*.cs" />
+    <!-- Shared AppKit Keychain store (empty in the net11.0 SwarmCore.Secrets build). -->
+    <Compile Include="..\SwarmCore\SwarmCore.Secrets\Apple\MacKeychainKeyStore.cs" Link="Platforms\macOS\Services\MacKeychainKeyStore.cs" />
     <BundleResource Include="wwwroot/**/*" LogicalName="wwwroot/%(RecursiveDir)%(Filename)%(Extension)" />
     <BundleResource Include="appsettings.json" />
     <BundleResource Include="$(IntermediateOutputPath)appicon.icns" LogicalName="appicon.icns" />

@@ -11,6 +11,17 @@ public sealed record NativeLaneTurn(
     string Authority,
     bool IsContinuation)
 {
+    /// <summary>Opaque own-bridge attempt binding; runtime/configuration only, never model input.</summary>
+    [System.Text.Json.Serialization.JsonIgnore]
+    public string? HostToolBridgeCapability { get; init; }
+    /// <summary>Host-only inspection of supplied context; never permission to perform its described actions.</summary>
+    [System.Text.Json.Serialization.JsonIgnore]
+    public bool ReadOnlyInspection { get; init; }
+    public Guid? GoalId { get; init; }
+    [System.Text.Json.Serialization.JsonIgnore]
+    public string? GoalMessageLeaseToken { get; init; }
+    [System.Text.Json.Serialization.JsonIgnore]
+    public SwarmCore.Agent.Communication.IGoalMailbox? GoalMailbox { get; init; }
     public CodingExecutionLimits? ExecutionLimits { get; init; }
     /// <summary>Value-free host intake evidence; never model-authored metadata.</summary>
     public SwarmCore.Coding.Secrets.CredentialIntakeReceipt? CredentialIntake { get; init; }
@@ -38,6 +49,8 @@ public sealed record NativeLaneTurn(
     public NativeLaneContainment? Containment { get; init; }
     /// <summary>Host plan mode (<see cref="CodingTurnRequest.PlanMode"/>): run the CLI in its read-only plan mode.</summary>
     public bool PlanMode { get; init; }
+    /// <summary>The host offers its agent team; this advertises delegation without granting tool authority.</summary>
+    public bool AgentTeamEnabled { get; init; }
 
     /// <summary>
     /// Host context blocks for the CLI prompt (from <see cref="CodingOptions.NativeLaneInjectorNames"/>): reference data such
@@ -80,6 +93,9 @@ public interface INativeLaneRunner
     /// The orchestrator never uses a lane without one for a plan-mode request.
     /// </summary>
     bool SupportsPlanMode => false;
+
+    /// <summary>Verified non-mutating inspection of supplied context, independent of ordinary plan-mode support.</summary>
+    bool SupportsReadOnlyInspection => false;
 
     IAsyncEnumerable<TurnEvent> RunAsync(NativeLaneTurn turn, CancellationToken ct = default);
 }

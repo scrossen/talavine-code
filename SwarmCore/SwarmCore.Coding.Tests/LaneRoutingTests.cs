@@ -96,6 +96,22 @@ public class RefusalDetectorTests
 
 public class CodingTurnOrchestratorTests
 {
+    [Fact]
+    public async Task Automatic_route_keeps_policy_provenance_at_engine_boundary()
+    {
+        var (orchestrator, seen) = Build([_ => [new TurnCompleted("t", "done", TimeSpan.Zero)]]);
+        await Collect(orchestrator, new CodingTurnRequest
+        {
+            ConversationId = "automatic-child", UserMessage = "Extract receipt fields",
+            RouteOverrideProvenance = SwarmCore.Abstractions.LlmRouting.LlmOverrideProvenance.Policy,
+            RoutingInteractivity = SwarmCore.Abstractions.LlmRouting.LlmInteractivity.Background,
+        });
+        Assert.Equal(SwarmCore.Abstractions.LlmRouting.LlmOverrideProvenance.Policy,
+            Assert.Single(seen).RouteOverrideProvenance);
+        Assert.Equal(SwarmCore.Abstractions.LlmRouting.LlmInteractivity.Background, seen[0].RoutingInteractivity);
+        Assert.False(seen[0].UnattendedAgentTurn);
+    }
+
     private sealed class ScriptedRunner(Queue<Func<AgentTurnRequest, IEnumerable<TurnEvent>>> script, List<AgentTurnRequest> seen) : IAgentTurnRunner
     {
         public async IAsyncEnumerable<TurnEvent> RunAsync(AgentTurnRequest request, [EnumeratorCancellation] CancellationToken ct = default)

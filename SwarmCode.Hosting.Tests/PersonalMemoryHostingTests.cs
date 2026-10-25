@@ -535,7 +535,7 @@ public class PersonalMemoryBridgeTests : TempDirTest
     {
         var (broker, turns, tools) = Create();
         await using var _ = broker;
-        var proxy = new SwarmCore.Coding.Native.HostToolBridgeProxy(broker.GetEndpoint(), "c1");
+        var proxy = new SwarmCore.Coding.Native.HostToolBridgeProxy(broker.GetEndpoint(), "c1", MemoryBridgeHost.AttemptCapability);
         async Task<JsonDocument> Pipe(string tool, object input)
             => JsonDocument.Parse((await proxy.CallAsync("personal_memory_" + tool, MemoryBridgeHost.Args(input), default)).Text);
 

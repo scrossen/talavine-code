@@ -329,6 +329,8 @@ public sealed class AgentTurnRunner : IAgentTurnRunner
             ToolsWithheldByUser = UserToolUseRestriction.WithholdsAllTools(request),
             AuthenticatedOriginalUserMessage = request.MissionObjectiveId is not null ? request.MissionOriginalUserIntent : request.AuthenticatedOriginalUserMessage,
             RepairAuthority = request.RepairAuthority,
+            GoalMessageGoalId = request.GoalId,
+            GoalMessageLeaseToken = request.GoalMessageLeaseToken,
             MissionObjectiveId = request.MissionObjectiveId,
             MissionAttempt = request.MissionAttempt,
             MissionBudgetReference = request.MissionBudgetReference,
@@ -454,6 +456,7 @@ public sealed class AgentTurnRunner : IAgentTurnRunner
         }
         var session = new AgentSession
         {
+            GoalId = request.GoalId, GoalMailbox = request.GoalMailbox, GoalMessageLeaseToken = request.GoalMessageLeaseToken,
             VisionRecovery = request.VisionRecovery,
             DisableRouteFallback = request.DisableRouteFallback,
             CompactWorkingContextFirst = request.CompactWorkingContextFirst,
@@ -487,9 +490,9 @@ public sealed class AgentTurnRunner : IAgentTurnRunner
             // Nobody waits on an unattended turn or an autonomous agent's cycle;
             // routing them as background keeps them off frontier routes and lets
             // a person's turn go first on a shared local node.
-            Interactivity = currentTurnContext.IsUnattended
+            Interactivity = request.RoutingInteractivity ?? (currentTurnContext.IsUnattended
                 ? SwarmCore.Abstractions.LlmRouting.LlmInteractivity.Background
-                : SwarmCore.Abstractions.LlmRouting.LlmInteractivity.UserWaiting,
+                : SwarmCore.Abstractions.LlmRouting.LlmInteractivity.UserWaiting),
             RoutingDemand = request.RoutingDemand,
         };
 
@@ -1515,8 +1518,8 @@ public sealed class AgentTurnRunner : IAgentTurnRunner
         AgentProfileSnapshot profile,
         AgentTurnRequest request)
     {
-        // Only a complete pair is a user-directed route. A partial override
-        // remains source-compatible but cannot inherit user-pinned provenance.
+        // A host can distinguish an automatic route from a person's explicit pair.
+        // Partial overrides never inherit user-pinned provenance.
         var paired = !string.IsNullOrWhiteSpace(request.ProviderOverride)
                      && !string.IsNullOrWhiteSpace(request.ModelOverride);
         var partial = !paired
@@ -1528,7 +1531,7 @@ public sealed class AgentTurnRunner : IAgentTurnRunner
             Model = request.ModelOverride ?? profile.Model,
             ReasoningEffort = request.ReasoningEffort ?? profile.ReasoningEffort,
             RouteProvenance = paired
-                ? LlmOverrideProvenance.User
+                ? request.RouteOverrideProvenance ?? LlmOverrideProvenance.User
                 : partial
                     ? LlmOverrideProvenance.Unspecified
                     : profile.RouteProvenance,

@@ -40,8 +40,9 @@ public interface ISkillPermissionConsentService
     /// untouched. Default implementation is a no-op for services that keep no session state.
     /// </summary>
     /// <param name="sessionId">
-    /// The session/conversation id. Pass null to clear the process-wide fallback bucket
-    /// used when a conversation grant was made without a session id.
+    /// The session/conversation id. A conversation grant is only ever stored against a
+    /// session id (one made without a session id applies to that request only), so null
+    /// clears nothing.
     /// </param>
     void ClearSession(string? sessionId) { }
 
@@ -49,7 +50,7 @@ public interface ISkillPermissionConsentService
     /// Revoke a single <see cref="PermissionGrantScope.Conversation"/> grant within a
     /// session. Returns true if a grant was removed. Default implementation revokes nothing.
     /// </summary>
-    /// <param name="sessionId">The session/conversation id, or null for the process-wide fallback bucket.</param>
+    /// <param name="sessionId">The session/conversation id; null owns no conversation grants.</param>
     /// <param name="permissionId">The permission to revoke.</param>
     bool RevokeSessionGrant(string? sessionId, string permissionId) => false;
 }

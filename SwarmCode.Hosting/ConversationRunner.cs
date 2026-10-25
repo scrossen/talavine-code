@@ -16,6 +16,7 @@ using SwarmCore.Abstractions.LlmRouting;
 using SwarmCore.Agent.ToolUseEngine;
 using SwarmCore.Coding.Permissions;
 using SwarmCore.Coding.Extensions;
+using SwarmCore.Coding.Engagement;
 
 namespace SwarmCode.Hosting;
 
@@ -25,7 +26,7 @@ namespace SwarmCode.Hosting;
 /// consumer side, so a UI only has to re-render on <see cref="Changed"/>. One runner per
 /// open session; create it from the workspace host's service provider.
 /// </summary>
-public sealed class ConversationRunner : IDisposable, IAsyncDisposable
+public sealed partial class ConversationRunner : IDisposable, IAsyncDisposable
 {
     private const string InterruptedNotice = "Work was interrupted. Saved receipts are shown below; actions with no result have an unknown outcome. Continue to inspect the workspace before taking further action.";
     private readonly IServiceProvider _services;
@@ -49,6 +50,7 @@ public sealed class ConversationRunner : IDisposable, IAsyncDisposable
     private readonly IDisposable? _brokerSubscription;
     private readonly IDisposable? _questionSubscription;
     private CancellationTokenSource? _turnCts;
+    private bool _completionCommitted;
     private Task? _turnTask;
     private AssistantEntry? _streaming;
     private readonly Dictionary<string, ToolCallEntry> _openTools = new();
@@ -96,6 +98,7 @@ public sealed class ConversationRunner : IDisposable, IAsyncDisposable
         public bool IsSteering { get; init; }
         public string? OriginalTask { get; init; }
         public CodingContinuationContext? Continuation { get; init; }
+        public Guid? GoalId { get; init; }
         public IReadOnlyList<CodingAttachment> Attachments { get; init; } = [];
         /// <summary>The permission mode the follow-up runs with (auto, ask-risky, ask). Jobs saved before modes carry only <see cref="RequireApproval"/>.</summary>
         public string? PermissionMode { get; init; }
@@ -123,6 +126,19 @@ public sealed class ConversationRunner : IDisposable, IAsyncDisposable
         if (_questions is not null) _questionSubscription = _questions.Subscribe(OnQuestionRequested);
         _plans = services.GetService<IConversationPlanStore>();
         if (_plans is not null) _plans.Changed += OnPlanChanged;
+        _runAdmission = services.GetService<ConversationRunAdmission>() ?? ConversationRunAdmission.Shared;
+        _runAdmission.Available += OnRunAdmissionAvailable;
+    }
+
+    private readonly ConversationRunAdmission _runAdmission;
+    private void OnRunAdmissionAvailable()
+    {
+        StartNextQueued();
+        _ = Task.Run(async () =>
+        {
+            try { await TryContinueAfterInstalledRepairAsync(CancellationToken.None).ConfigureAwait(false); }
+            catch (Exception ex) { _logger.LogWarning(ex, "Could not continue installed repair for {Conversation}.", ConversationId); }
+        });
     }
 
     /// <summary>The session's task list (plan.update or a native agent's own todo list), updated live.</summary>
@@ -264,7 +280,8 @@ public sealed class ConversationRunner : IDisposable, IAsyncDisposable
     /// from the job's embedded entries or from the stores and migrated into the journal. Tool
     /// calls the provider transcript knows but the final turn's entries do not (a turn cut off
     /// by a crash) are appended as cards, and receipts that landed after the last journal write
-    /// update their cards, so nothing that ran is hidden. Loading never resumes an action.
+    /// update their cards, so nothing that ran is hidden. Only an independently verified newly installed harness repair
+    /// may resume its exact bound goal after restoration; ordinary history loading never resumes an action.
     /// </summary>
     public async Task LoadHistoryAsync(CancellationToken ct = default)
     {
@@ -272,6 +289,7 @@ public sealed class ConversationRunner : IDisposable, IAsyncDisposable
         // caller on the UI dispatcher must not pay for file reads, migration writes, or
         // JSON folding of a long session.
         var (entries, saved) = await Task.Run(() => LoadHistoryCoreAsync(ct), ct).ConfigureAwait(false);
+        await LoadGoalAsync(ct).ConfigureAwait(false);
         if (_services.GetService<WorkspaceSessionCatalog>() is { } catalog)
             await catalog.RestoreLegacySelectionAsync(ConversationId, saved?.ActiveLane, saved?.ActiveModel, ct).ConfigureAwait(false);
         if (_plans is not null)
@@ -303,6 +321,7 @@ public sealed class ConversationRunner : IDisposable, IAsyncDisposable
                 _jobContinuation = saved.Continuation ?? (saved.Request is null ? null : new(saved.Request, []));
                 _jobAttachments = saved.Attachments;
                 _jobState = saved.State == "Running" ? "Interrupted" : saved.State;
+                _jobIsGoal = saved.IsGoal;
                 _elapsed = saved.Elapsed;
                 _completedToolCalls = saved.CompletedToolCalls;
                 _reportedTokens = saved.ReportedTokens;
@@ -314,6 +333,7 @@ public sealed class ConversationRunner : IDisposable, IAsyncDisposable
         }
         if (saved is not null) await PersistAsync().ConfigureAwait(false);
         Changed?.Invoke();
+        await TryContinueAfterInstalledRepairAsync(ct).ConfigureAwait(false);
     }
 
     private async Task<(List<TranscriptEntry> Entries, ConversationJob? Saved)> LoadHistoryCoreAsync(CancellationToken ct)
@@ -369,32 +389,63 @@ public sealed class ConversationRunner : IDisposable, IAsyncDisposable
     public bool TrySend(string text, string? laneName, CodingPermissionMode permissionMode = CodingPermissionMode.Auto, bool? allowHandOff = null, string? modelOverride = null, bool isContinuation = false, IReadOnlyList<CodingAttachment>? attachments = null, TurnOrigin? origin = null)
         => TrySendCore(text, laneName, permissionMode, allowHandOff, modelOverride, isContinuation, attachments, origin, null);
 
-    private bool TrySendCore(string text, string? laneName, CodingPermissionMode permissionMode, bool? allowHandOff, string? modelOverride, bool isContinuation, IReadOnlyList<CodingAttachment>? attachments, TurnOrigin? origin, CodingContinuationContext? continuation)
+    /// <summary>Automatic agent reports cannot resume stopped work or replace an unfinished goal with an ordinary turn.</summary>
+    public bool TrySendAgentReport(string text, string? laneName, CodingPermissionMode permissionMode = CodingPermissionMode.Auto,
+        bool? allowHandOff = null, string? modelOverride = null, TurnOrigin? origin = null)
+    {
+        lock (_gate)
+        {
+            if (_queuePaused || _runningGoal || _goal is { } goal && !GoalEnded(goal)) return false;
+            // Keep the eligibility check and dispatch under the same gate as Pause/Stop.
+            return TrySendCore(text, laneName, permissionMode, allowHandOff, modelOverride,
+                true, null, origin, null);
+        }
+    }
+
+    private bool TrySendCore(string text, string? laneName, CodingPermissionMode permissionMode, bool? allowHandOff, string? modelOverride, bool isContinuation, IReadOnlyList<CodingAttachment>? attachments, TurnOrigin? origin, CodingContinuationContext? continuation, bool startGoal = false, Guid? goalId = null)
     {
         if (string.IsNullOrWhiteSpace(text)) return false;
         lock (_gate)
         {
             // An undo writing files must finish first; the caller queues the message instead.
             if (_disposed || _running || _undoing || _forking) return false;
+            var runAdmission = _runAdmission.TryEnterTurn();
+            if (runAdmission is null) return false;
             // A fresh request starts a new queue cycle. An earlier stop/failure must not
             // strand follow-ups added to it, but older paused work still needs Resume.
             // Steering/recovery continues the old cycle and retains its pause.
             if (!isContinuation && _queue.Count == 0) _queuePaused = false;
             _turnCts?.Dispose();
             _turnCts = new CancellationTokenSource();
+            _completionCommitted = false;
             var ct = _turnCts.Token;
             _running = true;
+            _runningGoal = startGoal || goalId is not null;
+            _jobIsGoal = _runningGoal;
+            if (startGoal) _goal = null;
             ++_turnSequence;
             _jobRequest = null;
             if (!isContinuation) { _jobAssistance = null; _jobOpinionsObtained = false; }
-            _turnTask = Task.Run(() => RunTurnAsync(text, laneName, permissionMode, allowHandOff, modelOverride, isContinuation, attachments?.ToArray() ?? [], ct, origin, continuation), CancellationToken.None);
+            _turnTask = Task.Run(async () =>
+            {
+                using (runAdmission)
+                    await RunTurnAsync(text, laneName, permissionMode, allowHandOff, modelOverride, isContinuation,
+                        attachments?.ToArray() ?? [], ct, origin, continuation, startGoal, goalId).ConfigureAwait(false);
+            }, CancellationToken.None);
             return true;
         }
     }
 
     public void Cancel()
     {
-        lock (_gate) { ++_stopGeneration; _resumeSteering = false; _queuePaused = true; _turnCts?.Cancel(); }
+        lock (_gate)
+        {
+            ++_stopGeneration;
+            _resumeSteering = false;
+            _queuePaused = true;
+            // Once terminal success enters its durable commit, Stop applies to the queue.
+            if (!_completionCommitted) _turnCts?.Cancel();
+        }
         // A stopped turn cannot take an answer: close its question cards rather than leave them waiting.
         DeclinePendingQuestions();
     }
@@ -533,7 +584,7 @@ public sealed class ConversationRunner : IDisposable, IAsyncDisposable
         {
             lock (_gate)
             {
-                if (_disposed || !_running || _jobRequest is null || _resumeSteering || _turnSequence != turnSequence) return false;
+                if (_disposed || !_running || _jobRequest is null || _resumeSteering || _turnSequence != turnSequence || (_runningGoal && _goal is null)) return false;
                 stopGeneration = _stopGeneration;
                 if (queuedId is not null)
                 {
@@ -551,7 +602,7 @@ public sealed class ConversationRunner : IDisposable, IAsyncDisposable
                 _queuePaused = true;
                 steering = new QueuedTurn(correction, laneName, permissionMode != CodingPermissionMode.Auto, allowHandOff)
                     { PermissionMode = CodingPermissionPolicy.Name(permissionMode), ModelOverride = modelOverride, IsSteering = true, OriginalTask = _jobRequest,
-                        Continuation = (_jobContinuation ?? new(_jobRequest, [])).WithUpdate(correction),
+                        Continuation = (_jobContinuation ?? new(_jobRequest, [])).WithUpdate(correction), GoalId = _runningGoal ? _goal?.Id : null,
                         Attachments = _jobAttachments.Concat(original?.Attachments ?? attachments ?? []).DistinctBy(a => a.Id).ToArray() };
                 _queue.Insert(0, steering);
             }
@@ -603,6 +654,7 @@ public sealed class ConversationRunner : IDisposable, IAsyncDisposable
 
     public bool ContinueInterruptedWork(string? laneName, CodingPermissionMode permissionMode, bool? allowHandOff, string? modelOverride = null)
     {
+        if (HasUnfinishedGoal) return ResumeGoal(laneName, permissionMode, allowHandOff, modelOverride);
         string? request;
         lock (_gate) { if (_jobState != "Interrupted" || _disposed || _running) return false; request = _jobRequest; }
         if (request is null) return false;
@@ -617,27 +669,87 @@ public sealed class ConversationRunner : IDisposable, IAsyncDisposable
             if (_disposed || _running || _undoing || _forking || _queueMutations > 0 || _queue.Count == 0) return;
             if (_queuePaused && !(_resumeSteering && _queue[0].IsSteering)) return;
             var next = _queue[0];
-            _queue.RemoveAt(0);
-            _resumeSteering = false;
             var context = next.IsSteering ? next.Continuation ?? new CodingContinuationContext(next.OriginalTask ?? "Inspect the saved conversation.", [next.Text]) : null;
             var message = context is null ? next.Text : CodingContinuationPrompt.Resume(context);
-            TrySendCore(message, next.Lane, next.Mode, next.AllowHandOff, next.ModelOverride, next.IsSteering, next.Attachments, null, context);
+            if (!TrySendCore(message, next.Lane, next.Mode, next.AllowHandOff, next.ModelOverride, next.IsSteering, next.Attachments, null, context,
+                    goalId: next.GoalId)) return;
+            _queue.RemoveAt(0);
+            _resumeSteering = false;
         }
         Changed?.Invoke();
     }
 
     private async Task FinishAsync(TurnResult result)
     {
+        CancellationToken cancellation;
         lock (_gate)
         {
+            if (_runningGoal && _goal?.Status != SwarmCore.Agent.Continual.ContinualObjectiveStatus.Completed)
+                result.Completed = false;
+            cancellation = _turnCts?.Token ?? CancellationToken.None;
+            if (cancellation.IsCancellationRequested) result.Cancelled = true;
             _jobState = result.Cancelled ? "Stopped" : result.Error is not null ? "Failed" : result.Completed ? "Completed" : "Incomplete";
             if (result.Cancelled || result.Error is not null || !result.Completed) _queuePaused = true;
+            _runningGoal = false;
         }
-        await PersistSafelyAsync().ConfigureAwait(false);
-        _running = false;
+        var saved = await PersistSafelyAsync().ConfigureAwait(false);
+        // Snapshot while this turn still owns the runner. Queued work can reset mutable acceptance state
+        // immediately after TurnFinished, so observers must never reconstruct this evidence after an await.
+        if (result.CompletionEvidence is { } evidence)
+        {
+            lock (_gate)
+                result.CompletionEvidence = evidence with
+                {
+                    Completed = result.Completed, Cancelled = result.Cancelled || _turnCts?.IsCancellationRequested == true,
+                    HasError = result.Error is not null,
+                    JournalSaved = saved && _jobs is not null,
+                    AcceptancePassed = _acceptance?.Status == CodingAcceptanceStatus.Passed,
+                    AcceptanceFailed = _acceptance?.Status == CodingAcceptanceStatus.Failed,
+                };
+            if (_services.GetService<StarInvitationStore>() is { } invitations)
+            {
+                try { await invitations.RecordAsync(result.CompletionEvidence, cancellation, CommitCompletion).ConfigureAwait(false); }
+                catch (OperationCanceledException) when (cancellation.IsCancellationRequested) { }
+                catch (Exception) { _logger.LogWarning("Could not save optional invitation eligibility."); }
+            }
+        }
+        // A skipped/already-saved invitation, unavailable store or failed optional write still needs
+        // one atomic completion boundary. Stop remains meaningful until this boundary or the
+        // preference mutation's boundary above, including while waiting for another writer's lease.
+        var persistFinalState = false;
+        lock (_gate)
+        {
+            if (!_completionCommitted && cancellation.IsCancellationRequested && !result.Cancelled)
+            {
+                result.Cancelled = true;
+                if (result.CompletionEvidence is { } finalEvidence)
+                    result.CompletionEvidence = finalEvidence with { Cancelled = true };
+                _jobState = "Stopped";
+                _queuePaused = true;
+                persistFinalState = true;
+            }
+            if (result.Completed && !result.Cancelled && result.Error is null) _completionCommitted = true;
+            // A Stop during the eligibility commit pauses follow-ups without rewriting success.
+            persistFinalState |= _completionCommitted && _queuePaused;
+            if (!persistFinalState) _running = false;
+        }
+        if (persistFinalState)
+        {
+            await PersistSafelyAsync().ConfigureAwait(false);
+            lock (_gate) _running = false;
+        }
         Changed?.Invoke();
         TurnFinished?.Invoke(result);
         if (_resumeSteering || (!result.Cancelled && result.Error is null)) StartNextQueued();
+
+        void CommitCompletion()
+        {
+            lock (_gate)
+            {
+                cancellation.ThrowIfCancellationRequested();
+                _completionCommitted = true;
+            }
+        }
     }
 
     /// <summary>
@@ -775,7 +887,7 @@ public sealed class ConversationRunner : IDisposable, IAsyncDisposable
         finally { lock (_gate) _clearing = false; }
     }
 
-    private async Task RunTurnAsync(string text, string? laneName, CodingPermissionMode permissionMode, bool? allowHandOff, string? modelOverride, bool isContinuation, IReadOnlyList<CodingAttachment> attachments, CancellationToken ct, TurnOrigin? origin = null, CodingContinuationContext? continuation = null)
+    private async Task RunTurnAsync(string text, string? laneName, CodingPermissionMode permissionMode, bool? allowHandOff, string? modelOverride, bool isContinuation, IReadOnlyList<CodingAttachment> attachments, CancellationToken ct, TurnOrigin? origin = null, CodingContinuationContext? continuation = null, bool startGoal = false, Guid? goalId = null)
     {
         var result = new TurnResult();
         var started = DateTime.UtcNow;
@@ -882,6 +994,8 @@ public sealed class ConversationRunner : IDisposable, IAsyncDisposable
 
         // Session titles are also persisted user text: only the protected message may become a title.
         var temporary = false;
+        var directUserRequest = false;
+        var runtimeSchedulingOwner = ConversationId;
         var assistance = new SwarmCore.Abstractions.Collaboration.TurnAssistanceOptions();
         string? assistanceSettingsError = null;
         if (_services.GetService<WorkspaceSessionCatalog>() is { } catalog)
@@ -892,8 +1006,10 @@ public sealed class ConversationRunner : IDisposable, IAsyncDisposable
             {
                 var session = await catalog.GetAsync(ConversationId, ct).ConfigureAwait(false);
                 if (session is null) throw new InvalidOperationException("The conversation was deleted.");
+                runtimeSchedulingOwner = await catalog.GetSchedulingOwnerIdAsync(ConversationId, ct).ConfigureAwait(false);
                 assistance = session.Assistance;
                 temporary = session?.Temporary == true;
+                directUserRequest = session!.ParentSessionId is null && origin is null;
                 // An agent's session never runs with less caution than the session that started it.
                 permissionMode = SwarmCodePermissions.ForSession(permissionMode, session);
             }
@@ -916,6 +1032,8 @@ public sealed class ConversationRunner : IDisposable, IAsyncDisposable
         var orchestrator = _services.GetRequiredService<ICodingTurnOrchestrator>();
         bool planMode, compactFirst;
         lock (_gate) { planMode = _planMode; _planProposed = false; compactFirst = _compactNextTurn; _compactNextTurn = false; }
+        result.CompletionEvidence = new(false, false, false, false, directUserRequest, planMode, temporary, isContinuation,
+            JournalSaved: false, SuccessfulWorkTool: false, AcceptanceFailed: false);
         // The person's rules plus the repository's own (deny always; allow once approved), read fresh for this turn.
         var permissionPolicy = await SwarmCodePermissions.PolicyAsync(permissionMode, _services).ConfigureAwait(false);
         var request = SwarmCodeTurnPolicy.Apply(new CodingTurnRequest
@@ -943,7 +1061,7 @@ public sealed class ConversationRunner : IDisposable, IAsyncDisposable
         var reassessModel = true;
         var producer = Task.Run(async () =>
         {
-            using var runtimeOwner = LocalLlmRuntimeOwnerScope.Enter(ConversationId, "Talavine Code");
+            using var runtimeOwner = LocalLlmRuntimeOwnerScope.Enter(ConversationId, "Talavine Code", runtimeSchedulingOwner);
             // Ambient for everything the orchestrator runs on this flow: recall injectors, memory tools, native host context.
             using var memoryScope = memoryTurn is null ? null : memoryTurns!.Begin(memoryTurn);
             try
@@ -957,10 +1075,26 @@ public sealed class ConversationRunner : IDisposable, IAsyncDisposable
                         orchestrator.Lanes, isContinuation, ct).ConfigureAwait(false);
                     selectionRevision = selection.Revision;
                     // Picker choices select the first attempt; the person's hand-off preference still governs retries.
-                    request = request with { LaneName = selection.Lane, ModelOverride = selection.Model };
+                    request = request with { LaneName = selection.Lane, ModelOverride = selection.Model,
+                        RouteOverrideProvenance = selection.Provenance,
+                        // A failed local worker returns its evidence to the stronger coordinator.
+                        // Neither the outer lane loop nor the inner router may silently repeat it elsewhere.
+                        AllowHandOff = selection.RoutineDelegation ? false : request.AllowHandOff,
+                        DisableRouteFallback = selection.RoutineDelegation || request.DisableRouteFallback,
+                        RoutingInteractivity = selection.RoutineDelegation
+                            ? SwarmCore.Abstractions.LlmRouting.LlmInteractivity.Background : request.RoutingInteractivity,
+                        RoutingDemand = selection.RoutineDelegation
+                            ? new SwarmCore.Abstractions.LlmRouting.LlmTaskDemand
+                            {
+                                Complexity = SwarmCore.Abstractions.LlmRouting.LlmTaskComplexity.Routine,
+                                Signals = ["automatic-routine-delegation"],
+                            } : request.RoutingDemand };
                     if (selection.Notice is { } notice) AddNotice(NoticeKind.Info, notice);
                 }
-                await foreach (var evt in orchestrator.RunAsync(request, ct).ConfigureAwait(false))
+                var stream = startGoal || goalId is not null
+                    ? RunGoalStreamAsync(request, startGoal, goalId, continuation, ct)
+                    : orchestrator.RunAsync(request, ct);
+                await foreach (var evt in stream.ConfigureAwait(false))
                     await channel.Writer.WriteAsync((Interlocked.Increment(ref _producedEvents), evt), CancellationToken.None).ConfigureAwait(false);
                 channel.Writer.TryComplete();
             }
@@ -996,11 +1130,7 @@ public sealed class ConversationRunner : IDisposable, IAsyncDisposable
         }
         catch (Exception ex)
         {
-            // A failed journal must stop dispatch. Drain the bounded relay so its producer
-            // can exit even when cancellation races with already produced events.
-            lock (_gate) _turnCts?.Cancel();
-            try { await foreach (var _ in channel.Reader.ReadAllAsync(CancellationToken.None).ConfigureAwait(false)) { } }
-            catch (Exception) { }
+            // A failed journal must stop dispatch (the finally below stops the turn and drains the relay).
             _logger.LogError(ex, "Turn failed for {Conversation}", ConversationId);
             result.Error ??= ex.Message;
             diagnostics.Add(new Improvement.TurnDiagnostic(Improvement.TurnDiagnosticKind.Exception, ex.Message, Exception: ex));
@@ -1008,7 +1138,25 @@ public sealed class ConversationRunner : IDisposable, IAsyncDisposable
         }
         finally
         {
+            // However the consumer left (a cancelled observation, a failed journal), its producer may be
+            // blocked writing into the full bounded relay with CancellationToken.None, where it never sees
+            // cancellation. Stop the turn and drain until the producer completes, or awaiting it never returns.
+            if (!channel.Reader.Completion.IsCompleted)
+            {
+                lock (_gate) _turnCts?.Cancel();
+                try { await foreach (var _ in channel.Reader.ReadAllAsync(CancellationToken.None).ConfigureAwait(false)) { } }
+                catch (Exception) { }
+            }
             await producer.ConfigureAwait(false);
+            if (startGoal || goalId is not null)
+            {
+                try { await LoadGoalAsync(CancellationToken.None).ConfigureAwait(false); }
+                catch (Exception)
+                {
+                    result.Error ??= "Could not read the saved goal status. Check the data folder before resuming.";
+                    AddNotice(NoticeKind.Error, result.Error);
+                }
+            }
             if (ct.IsCancellationRequested && !result.Cancelled)
             {
                 result.Cancelled = true;
@@ -1030,7 +1178,9 @@ public sealed class ConversationRunner : IDisposable, IAsyncDisposable
                 _services.GetService<SwarmCodeMemoryCapture>()?.Schedule(memoryTurn);
             if (planMode && result.Completed && !result.Cancelled && result.Error is null)
                 lock (_gate) _planProposed = _planMode;
-            if (decisionCoordinator is not null && reassessModel && !result.Cancelled && (!result.Completed || result.Error is not null))
+            if (decisionCoordinator is not null && reassessModel && !result.Cancelled && (!result.Completed || result.Error is not null)
+                && (!(startGoal || goalId is not null) || _goal?.Status is not (SwarmCore.Agent.Continual.ContinualObjectiveStatus.WaitingForInput
+                    or SwarmCore.Agent.Continual.ContinualObjectiveStatus.Paused or SwarmCore.Agent.Continual.ContinualObjectiveStatus.Cancelled)))
             {
                 try { await decisionCoordinator.MarkFailedAsync(ConversationId, selectionRevision, CancellationToken.None).ConfigureAwait(false); }
                 catch (Exception) { AddNotice(NoticeKind.Info, "Could not save the model reassessment request."); }
@@ -1040,6 +1190,7 @@ public sealed class ConversationRunner : IDisposable, IAsyncDisposable
             // Self-improvement: product defects and capability gaps this turn surfaced go to the backlog (never for a cycle's own turn).
             Improvement.SelfImprovementCapture.AfterTurn(_services, ConversationId, diagnostics, origin, isContinuation ? null : message);
             await FinishAsync(result).ConfigureAwait(false);
+            await TryContinueAfterInstalledRepairAsync(CancellationToken.None).ConfigureAwait(false);
         }
     }
 
@@ -1232,6 +1383,16 @@ public sealed class ConversationRunner : IDisposable, IAsyncDisposable
         {
             switch (evt)
             {
+                case SwarmCore.Coding.Goals.CodingGoalRecoveryProgress recovery:
+                    if (_goal?.Id != recovery.GoalId) break;
+                    _phase = recovery.Summary;
+                    AddNoticeUnlocked(NoticeKind.Info, recovery.Summary);
+                    break;
+                case SwarmCore.Coding.Goals.CodingGoalChanged goalChanged:
+                    _goal = goalChanged.Goal;
+                    AddNoticeUnlocked(NoticeKind.Info, GoalStatusText);
+                    CloseStreaming();
+                    break;
                 case CodingLaneSelected sel:
                     // Keep prior attempts in the transcript, but their candidate
                     // answer and error are not the outcome of the new attempt.
@@ -1286,7 +1447,14 @@ public sealed class ConversationRunner : IDisposable, IAsyncDisposable
                     entry.Elapsed = done.Elapsed;
                     entry.State = done.IsError ? ToolCallState.Failed : ToolCallState.Completed;
                     Journal(entry);
-                    if (CodingTurnOrchestrator.MutatingToolIds.Contains(done.ToolName) && !done.IsError) result.WorkspaceChanged = true;
+                    if (CodingTurnOrchestrator.MutatingToolIds.Contains(done.ToolName) && !done.IsError)
+                    {
+                        result.WorkspaceChanged = true;
+                        // Attribute useful work to this actual successful tool receipt. Checkpoint diffs
+                        // may contain another writer's edits and must never establish invitation eligibility.
+                        if (result.CompletionEvidence is { } completion)
+                            result.CompletionEvidence = completion with { SuccessfulWorkTool = true };
+                    }
                     break;
                 case CodingOpinionsObtained:
                     _jobOpinionsObtained = true;
@@ -1502,6 +1670,7 @@ public sealed class ConversationRunner : IDisposable, IAsyncDisposable
                 {
                     Assistance = _jobAssistance, OpinionsObtained = _jobOpinionsObtained,
                     State = _jobState, Request = _jobRequest, Continuation = _jobContinuation, Attachments = _jobAttachments, StartedUtc = _jobStarted,
+                    IsGoal = _jobIsGoal,
                     ActiveLane = ActiveLane, ActiveModel = ActiveModel, QueuePaused = _queuePaused, Queue = _queue.ToArray(),
                     Elapsed = _elapsed, CompletedToolCalls = _completedToolCalls, ReportedTokens = _reportedTokens,
                     ReportedCostUsd = _reportedCost, Acceptance = _acceptance,
@@ -1514,14 +1683,15 @@ public sealed class ConversationRunner : IDisposable, IAsyncDisposable
         finally { _journalGate.Release(); }
     }
 
-    private async Task PersistSafelyAsync()
+    private async Task<bool> PersistSafelyAsync()
     {
-        try { await PersistAsync().ConfigureAwait(false); }
+        try { await PersistAsync().ConfigureAwait(false); return true; }
         catch (Exception)
         {
             lock (_gate) _queuePaused = true;
             _logger.LogWarning("Could not save job journal for {Conversation}.", ConversationId);
             AddNotice(NoticeKind.Error, "Could not save the job journal. Queued work is paused; check the data folder before continuing.");
+            return false;
         }
     }
 
@@ -1532,12 +1702,13 @@ public sealed class ConversationRunner : IDisposable, IAsyncDisposable
         {
             first = !_disposed;
             _disposed = true;
-            _turnCts?.Cancel();
+            if (!_completionCommitted) _turnCts?.Cancel();
         }
         _brokerSubscription?.Dispose();
         _questionSubscription?.Dispose();
         DeclinePendingQuestions();
         if (_plans is not null) _plans.Changed -= OnPlanChanged;
+        _runAdmission.Available -= OnRunAdmissionAvailable;
         // SessionEnd ("closed") is best effort and never holds disposal: it runs on the pool and DisposeAsync waits a few seconds at most.
         if (first) _sessionEnd = Task.Run(() => SwarmCodeTurnHooks.SessionEndAsync(_services, ConversationId, "closed"));
     }
@@ -1563,6 +1734,8 @@ public sealed class ConversationRunner : IDisposable, IAsyncDisposable
 /// <summary>Outcome summary of one turn, including hand-offs.</summary>
 public sealed class TurnResult
 {
+    /// <summary>Immutable host evidence for this completed attempt; null is insufficient evidence.</summary>
+    public CodingCompletionEvidence? CompletionEvidence { get; internal set; }
     public bool Completed { get; set; }
     public bool Cancelled { get; set; }
     public string? Error { get; set; }

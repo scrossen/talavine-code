@@ -29,6 +29,9 @@ public sealed class AppState : IAsyncDisposable, SwarmCode.Hosting.Agents.IConve
     private readonly CancellationTokenSource _learningLifetime = new();
     private readonly Task _learningWorkspaceTask;
     private readonly KeyStoreBrokerServer? _vaultBroker;
+    private SwarmCore.Coding.Tools.BackgroundShell.BackgroundShellManager? _activityShells;
+    private readonly SwarmCode.Hosting.Goals.GoalMailboxServer _goalMailboxServer;
+    private readonly Task _goalMailboxStart;
 
     public AppState(SwarmCodeDataPaths paths, AppPreferencesStore preferences, WorkspaceSessionCatalog sessions, UserSettingsFile userSettings, ILoggerFactory loggerFactory, IOsKeyStore? keyStore = null,
         SwarmCore.Coding.Computer.IMacDesktopDriver? macDesktop = null)
@@ -37,6 +40,23 @@ public sealed class AppState : IAsyncDisposable, SwarmCode.Hosting.Agents.IConve
         Preferences = preferences;
         Sessions = sessions;
         UserSettings = userSettings;
+        var goals = new SwarmCode.Hosting.Goals.FileCodingGoalStore(paths, logger: loggerFactory.CreateLogger<SwarmCode.Hosting.Goals.FileCodingGoalStore>());
+        Goals = goals;
+        GoalMailbox = new SwarmCode.Hosting.Goals.FileGoalMailbox(paths, goals);
+        GoalLedger = new SwarmCode.Hosting.Goals.FileGoalLedger(goals);
+        GoalResults = new SwarmCode.Hosting.Goals.FileGoalResults(paths, goals);
+        GoalReports = new SwarmCode.Hosting.Goals.FileGoalReports(paths, goals);
+        _goalMailboxServer = new(GoalMailbox, paths, loggerFactory.CreateLogger<SwarmCode.Hosting.Goals.GoalMailboxServer>());
+        _goalMailboxStart = Task.Run(async () =>
+        {
+            try { await _goalMailboxServer.StartAsync().ConfigureAwait(false); }
+            catch (Exception exception)
+            {
+                GoalMailboxConnectionError = exception.Message;
+                loggerFactory.CreateLogger<SwarmCode.Hosting.Goals.GoalMailboxServer>().LogError(exception, "Goal conversation connection could not start");
+                Changed?.Invoke();
+            }
+        });
         _settingsActivation.ReloadRequested += RequestSettingsReload;
         // Requests reach the broker only when a turn's permission policy asks (SwarmCodePermissions), so they always
         // wait for the person; in Auto mode nothing is escalated. Agents may run under a stricter inherited mode.
@@ -94,13 +114,15 @@ public sealed class AppState : IAsyncDisposable, SwarmCode.Hosting.Agents.IConve
         // Scheduled runs are app level: a schedule targets its own repository and fires whichever repository is open
         // (in the open workspace when it matches, otherwise in a workspace opened for the run in the background).
         ScheduledRuns = new SwarmCode.Hosting.Scheduling.ScheduledRunWorkspaces(OpenScheduledRunnerAsync,
-            (root, ct) => WorkspaceHost.CreateAsync(WorkspaceOptions(root, background: true), ConfigureWorkspaceLogging, ct));
+            (root, ct) => WorkspaceHost.CreateAsync(WorkspaceOptions(root, background: true), ConfigureWorkspaceLogging, ct),
+            loggerFactory.CreateLogger<SwarmCode.Hosting.Scheduling.ScheduledRunWorkspaces>());
         ScheduledRuns.Changed += OnSettingsActivityChanged;
         var scheduleOptions = new SwarmCore.Coding.Scheduling.CodingSchedulerOptions();
         configuration.GetSection(SwarmCore.Coding.Scheduling.CodingSchedulerOptions.SectionName).Bind(scheduleOptions);
         Schedules = new SwarmCore.Coding.Scheduling.CodingScheduler(
             new SwarmCore.Coding.Scheduling.JsonFileCodingScheduleStore(paths.SchedulesDirectory),
-            new SwarmCode.Hosting.Scheduling.SwarmCodeScheduledRunHost(sessions, preferences, ScheduledRuns),
+            new SwarmCode.Hosting.Scheduling.SwarmCodeScheduledRunHost(sessions, preferences, ScheduledRuns,
+                logger: loggerFactory.CreateLogger<SwarmCode.Hosting.Scheduling.SwarmCodeScheduledRunHost>()),
             scheduleOptions, logger: loggerFactory.CreateLogger<SwarmCore.Coding.Scheduling.CodingScheduler>());
 
         // Explicit product feedback is durable in every build, but does not register a worker, capture, tool or
@@ -123,7 +145,8 @@ public sealed class AppState : IAsyncDisposable, SwarmCode.Hosting.Agents.IConve
                     SelfImprovementOptions, loggerFactory.CreateLogger<SwarmCode.Hosting.Improvement.SwarmCodeSelfImprovementCycleHost>()),
                 SelfImprovementGate, SelfImprovementOptions, paused: () => preferences.Current.SelfImprovementPaused,
                 logger: loggerFactory.CreateLogger<SwarmCore.Coding.SelfImprovement.SelfImprovementWorker>());
-            SelfImprovement.Changed += () => Changed?.Invoke();
+            SelfImprovement.Changed += () => { Changed?.Invoke(); TryApplyGoalRepair(); };
+            SelfImprovement.Checkpoint += TryApplyGoalRepair;
             // "Build and relaunch": merge verified fixes into the checkout, rebuild the Debug app and restart on it.
             SelfImprovementRebuild = new SwarmCode.Hosting.Improvement.SwarmCodeRebuild(paths, SelfImprovementOptions, SelfImprovementBacklog,
                 loggerFactory.CreateLogger<SwarmCode.Hosting.Improvement.SwarmCodeRebuild>());
@@ -138,6 +161,10 @@ public sealed class AppState : IAsyncDisposable, SwarmCode.Hosting.Agents.IConve
             ConfigureServices = services =>
             {
                 services.AddSingleton(sessions);
+                services.AddSingleton(GoalMailbox);
+                services.AddSingleton(GoalLedger);
+                services.AddSingleton(GoalResults);
+                services.AddSingleton(GoalReports);
                 if (macDesktop is not null) services.AddSingleton(macDesktop);
                 services.AddSingleton(preferences);
                 services.AddSingleton(userSettings);
@@ -177,7 +204,7 @@ public sealed class AppState : IAsyncDisposable, SwarmCode.Hosting.Agents.IConve
         }
 
         Workspaces = new WorkspaceHostManager(paths, root => WorkspaceOptions(root, background: false), ConfigureWorkspaceLogging);
-        Workspaces.Changed += () => Changed?.Invoke();
+        Workspaces.Changed += OnWorkspaceActivityChanged;
         sessions.Changed += () => Changed?.Invoke();
         preferences.Changed += () => Changed?.Invoke();
         Agents.Changed += OnSettingsActivityChanged;
@@ -217,6 +244,7 @@ public sealed class AppState : IAsyncDisposable, SwarmCode.Hosting.Agents.IConve
             finally { if (learningWorkspace is not null) await learningWorkspace.DisposeAsync(); }
         });
         Instance = this;
+        _ = SwarmCode.Hosting.Improvement.GoalRepairStartupAcknowledgment.TryAcknowledgeAsync(Paths);
     }
 
     /// <summary>A scheduled run in the open repository runs in this window (null sends it to a background workspace).</summary>
@@ -317,6 +345,150 @@ public sealed class AppState : IAsyncDisposable, SwarmCode.Hosting.Agents.IConve
     /// <summary>The person did something (typed, clicked, sent, opened): the idle clock restarts.</summary>
     public void ReportUserActivity() => SelfImprovementGate?.ReportUserActivity();
 
+    private int _applyingGoalRepair;
+    public string? GoalRepairActivity { get; private set; }
+    private IReadOnlyDictionary<Guid, SwarmCore.Coding.SelfImprovement.SelfImprovementItem> _goalRepairs =
+        new Dictionary<Guid, SwarmCore.Coding.SelfImprovement.SelfImprovementItem>();
+    private HashSet<Guid> _activatingGoalRepairs = [];
+    private SwarmCode.Hosting.Improvement.RelaunchStatus? _goalRepairActivationStatus;
+
+    public string? GoalRepairProgress(SwarmCore.Agent.Continual.ContinualObjectiveSnapshot goal)
+    {
+        lock (_gate)
+        {
+            if (!_goalRepairs.TryGetValue(goal.Id, out var item)) return null;
+            if (item.Stage != SwarmCore.Coding.SelfImprovement.SelfImprovementStage.InProgress
+                && item.GoalRepair?.CanResume(goal, DateTimeOffset.UtcNow) != true) return null;
+            if (_goalRepairActivationStatus is { InProgress: true } pending
+                && pending.RepairedItems?.Contains(SwarmCode.Hosting.Improvement.RelaunchInstalledFixVerifier.Binding(item)) == true)
+                return "Harness update is waiting for its helper to report a result. Saved progress is retained.";
+            if (_goalRepairActivationStatus is { BuildExitCode: not null and not 0 } failed
+                && failed.RepairedItems?.Contains(SwarmCode.Hosting.Improvement.RelaunchInstalledFixVerifier.Binding(item)) == true)
+                return $"Harness update failed during {failed.FailurePhase ?? "installation"} (exit {failed.BuildExitCode}). Saved progress is held; view the repair result.";
+            if (_activatingGoalRepairs.Contains(goal.Id)) return GoalRepairActivity;
+            return item.Stage switch
+            {
+                SwarmCore.Coding.SelfImprovement.SelfImprovementStage.InProgress => "Repairing the harness: " + SelfImprovement?.Status,
+                SwarmCore.Coding.SelfImprovement.SelfImprovementStage.Queued => "Harness repair saved. " + SelfImprovement?.Status,
+                SwarmCore.Coding.SelfImprovement.SelfImprovementStage.Verified => "Harness repair verified; waiting for a safe point to install it.",
+                SwarmCore.Coding.SelfImprovement.SelfImprovementStage.Merged => "Harness repair verified; waiting for installation and startup checks.",
+                SwarmCore.Coding.SelfImprovement.SelfImprovementStage.NeedsHuman => "Harness repair needs attention: " + item.Note,
+                _ => null,
+            };
+        }
+    }
+
+    private bool AutomaticGoalRepairEnabled()
+    {
+        var options = SelfImprovementOptions();
+        return options.Enabled && options.AutoApplyGoalRepairs && !Preferences.Current.SelfImprovementPaused;
+    }
+
+    // The existing improvement worker owns source repair. Activation happens only at a natural
+    // stopping point and only for exact goal-linked verified items, never the whole backlog.
+    private void TryApplyGoalRepair()
+    {
+        if (Interlocked.CompareExchange(ref _applyingGoalRepair, 1, 0) != 0) return;
+        _ = Task.Run(async () =>
+        {
+            try
+            {
+                var backlog = await SelfImprovementBacklog.ListAsync().ConfigureAwait(false);
+                var activation = SelfImprovementRebuild?.ReadStatus();
+                lock (_gate)
+                {
+                    _goalRepairs = backlog.Where(i => i.GoalRepair is not null)
+                        .GroupBy(i => i.GoalRepair!.GoalId).ToDictionary(g => g.Key, g => g.OrderByDescending(i => i.LastSeenUtc).First());
+                    _goalRepairActivationStatus = activation;
+                }
+                Changed?.Invoke();
+                if (!AutomaticGoalRepairEnabled()
+                    || SelfImprovement is not { IsRunning: false } || SelfImprovementRebuild is not { } rebuild
+                    || SelfImprovementGate?.IsIdle(out _) != true) return;
+                // The detached helper owns installation and its bounded startup check.
+                // A newly started host must acknowledge it before another activation can begin.
+                if (rebuild.ReadStatus() is { InProgress: true }) return;
+                var goals = new SwarmCode.Hosting.Goals.FileCodingGoalStore(Paths);
+                await new SwarmCode.Hosting.Improvement.GoalRepairActivationFeedback(Paths, SelfImprovementBacklog,
+                    goals, SelfImprovementOptions, () => Preferences.Current.SelfImprovementPaused)
+                    .RequeueAsync().ConfigureAwait(false);
+                backlog = await SelfImprovementBacklog.ListAsync().ConfigureAwait(false);
+                var items = backlog
+                    .Where(i => i.GoalRepair is not null && i.Stage is SwarmCore.Coding.SelfImprovement.SelfImprovementStage.Verified
+                        or SwarmCore.Coding.SelfImprovement.SelfImprovementStage.Merged)
+                    .ToArray();
+                if (items.Length == 0) return;
+                var eligible = new HashSet<string>(StringComparer.Ordinal);
+                foreach (var item in items)
+                {
+                    var goal = await goals.GetAsync(item.GoalRepair!.GoalId).ConfigureAwait(false);
+                    if (goal is not null && item.GoalRepair.CanResume(goal, DateTimeOffset.UtcNow)) eligible.Add(item.Id);
+                }
+                if (eligible.Count == 0) return;
+                lock (_gate) _activatingGoalRepairs = items.Where(i => eligible.Contains(i.Id)).Select(i => i.GoalRepair!.GoalId).ToHashSet();
+                var plan = rebuild.Plan(OperatingSystem.IsWindows());
+                if (!plan.Possible) { GoalRepairActivity = plan.Message; Changed?.Invoke(); return; }
+                if (!AutomaticGoalRepairEnabled() || SelfImprovement?.IsRunning == true
+                    || SelfImprovementGate?.IsIdle(out _) != true) return;
+                GoalRepairActivity = "Installing a verified harness repair; saved goals and completed actions are retained.";
+                Changed?.Invoke();
+                var merged = await rebuild.MergeVerifiedAsync(plan.RepositoryRoot!, itemIds: eligible).ConfigureAwait(false);
+                if (!merged.Any(o => o.Merged))
+                {
+                    GoalRepairActivity = merged.FirstOrDefault()?.Message ?? "The verified repair could not be merged yet.";
+                    Changed?.Invoke(); return;
+                }
+                // Exclude new turns before the final idle check. A racing existing turn wins
+                // admission and postpones restart; a user message stays saved in its queue.
+                var restart = ConversationRunAdmission.Shared.TryQuiesce();
+                if (restart is null) return;
+                System.Diagnostics.Process? helper = null;
+                try
+                {
+                    if (!AutomaticGoalRepairEnabled() || SelfImprovement?.IsRunning == true
+                        || SelfImprovementGate?.IsIdle(out _) != true) return;
+                    var script = rebuild.WriteRelaunchScript(plan, Environment.ProcessId,
+                        merged.Where(o => o.Merged).Select(o => o.Item.Title).ToArray());
+                    await DesktopPlatform.InvokeAsync(() =>
+                    {
+                        if (!AutomaticGoalRepairEnabled() || SelfImprovement?.IsRunning == true
+                            || SelfImprovementGate?.IsIdle(out _) != true) return;
+                        // Capture the actual process handle before asking the OS to quit.
+                        // If quit is refused, keep admission closed until this helper exits.
+                        helper = rebuild.StartRelaunchTracked(script);
+                        DesktopPlatform.Quit();
+                    }).ConfigureAwait(false);
+                }
+                finally
+                {
+                    try
+                    {
+                        if (helper is not null)
+                        {
+                            await helper.WaitForExitAsync().ConfigureAwait(false);
+                            GoalRepairActivity = helper.ExitCode == 125
+                                ? "Harness repair retained. Restart was postponed because the app did not close."
+                                : $"Harness repair helper exited ({helper.ExitCode}); see the rebuild result before continuation.";
+                            Changed?.Invoke();
+                        }
+                    }
+                    finally { helper?.Dispose(); restart.Dispose(); }
+                }
+            }
+            catch (Exception error)
+            {
+                GoalRepairActivity = "Harness repair is retained, but activation needs attention: " + error.Message;
+                Changed?.Invoke();
+            }
+            finally
+            {
+                lock (_gate) _activatingGoalRepairs.Clear();
+                Interlocked.Exchange(ref _applyingGoalRepair, 0);
+                Changed?.Invoke();
+            }
+        });
+    }
+
     /// <summary>What is going on in the app that should keep a self-improvement cycle from starting. Empty = idle.</summary>
     public IReadOnlyList<string> BusyReasons()
     {
@@ -371,6 +543,15 @@ public sealed class AppState : IAsyncDisposable, SwarmCode.Hosting.Agents.IConve
     }
 
     public SwarmCodeDataPaths Paths { get; }
+    /// <summary>The profile's goal inventory (storage inspection and compaction; execution goes through each workspace's host).</summary>
+    public SwarmCode.Hosting.Goals.FileCodingGoalStore Goals { get; }
+    public SwarmCore.Agent.Communication.IGoalMailbox GoalMailbox { get; }
+    /// <summary>What each goal has done, derived from its saved receipts.</summary>
+    public SwarmCore.Coding.Goals.ICodingGoalLedger GoalLedger { get; }
+    /// <summary>The owner-facing results each goal's worker records: posts, messages, emails, submissions, releases.</summary>
+    public SwarmCore.Agent.Communication.IGoalResultLedger GoalResults { get; }
+    public SwarmCore.Agent.Communication.IGoalReportLedger GoalReports { get; }
+    public string? GoalMailboxConnectionError { get; private set; }
     public AppPreferencesStore Preferences { get; }
     public WorkspaceSessionCatalog Sessions { get; }
 
@@ -576,6 +757,37 @@ public sealed class AppState : IAsyncDisposable, SwarmCode.Hosting.Agents.IConve
         get { lock (_gate) return _runners.Values.Any(r => r.IsRunning); }
     }
 
+    /// <summary>Optional invitations never compete with foreground, queued or background work.</summary>
+    public bool HasActiveOrQueuedWork
+    {
+        get
+        {
+            lock (_gate)
+                if (_runners.Values.Any(r => r.IsRunning || r.QueuedMessages.Count > 0)) return true;
+            return IsOpeningWorkspace || Agents.RunningCount > 0 || Schedules.ActiveRunCount > 0
+                || (Workspace?.Services.GetService<SwarmCore.Coding.Tools.BackgroundShell.BackgroundShellManager>()?.RunningCount ?? 0) > 0
+                || ScheduledRuns.BackgroundRunners.Any(r => r.IsRunning || r.QueuedMessages.Count > 0);
+        }
+    }
+
+    private void OnWorkspaceActivityChanged()
+    {
+        var shells = Workspace?.Services.GetService<SwarmCore.Coding.Tools.BackgroundShell.BackgroundShellManager>();
+        if (!ReferenceEquals(shells, _activityShells))
+        {
+            if (_activityShells is not null) _activityShells.Changed -= OnShellActivityChanged;
+            _activityShells = shells;
+            if (_activityShells is not null) _activityShells.Changed += OnShellActivityChanged;
+        }
+        Changed?.Invoke();
+    }
+
+    private void OnShellActivityChanged(SwarmCore.Coding.Tools.BackgroundShell.BackgroundShellChange change)
+    {
+        // Output already has its own coalesced view. Only lifecycle changes affect invitation availability.
+        if (change.Kind != SwarmCore.Coding.Tools.BackgroundShell.BackgroundShellChangeKind.Output) Changed?.Invoke();
+    }
+
     /// <summary>
     /// Deletes a session and its agents' sessions. An isolated agent's worktree is removed only when it is clean and its
     /// branch is merged; otherwise it is kept and the returned notes say where (empty when there is nothing to report).
@@ -617,6 +829,10 @@ public sealed class AppState : IAsyncDisposable, SwarmCode.Hosting.Agents.IConve
             await transcripts.ClearAsync(sessionId).ConfigureAwait(false);
         if (Workspace?.Services.GetService(typeof(FileConversationJobStore)) is FileConversationJobStore jobs)
             await Task.Run(() => jobs.Delete(sessionId), ct).ConfigureAwait(false);
+        if (Workspace?.Services.GetService(typeof(SwarmCore.Coding.Goals.ICodingGoalStore)) is SwarmCore.Coding.Goals.ICodingGoalStore goals)
+            await goals.DeleteConversationAsync(sessionId, ct).ConfigureAwait(false);
+        if (Workspace?.Services.GetService(typeof(AttachmentStore)) is AttachmentStore attachments)
+            await Task.Run(() => attachments.DeleteConversation(sessionId), ct).ConfigureAwait(false);
         if (Workspace?.Services.GetService(typeof(FileTranscriptJournal)) is FileTranscriptJournal journal)
             await Task.Run(() => journal.Delete(sessionId), ct).ConfigureAwait(false);
         if (Workspace?.Services.GetService(typeof(SwarmCore.Agent.ToolUseEngine.IPendingToolCallJournal)) is SwarmCore.Agent.ToolUseEngine.IPendingToolCallJournal pendingTools)
@@ -639,6 +855,10 @@ public sealed class AppState : IAsyncDisposable, SwarmCode.Hosting.Agents.IConve
 
     public async ValueTask DisposeAsync()
     {
+        await _goalMailboxStart.ConfigureAwait(false);
+        await _goalMailboxServer.DisposeAsync().ConfigureAwait(false);
+        Workspaces.Changed -= OnWorkspaceActivityChanged;
+        if (_activityShells is not null) _activityShells.Changed -= OnShellActivityChanged;
         _learningLifetime.Cancel();
         await _learningWorkspaceTask.ConfigureAwait(false);
         _learningLifetime.Dispose();

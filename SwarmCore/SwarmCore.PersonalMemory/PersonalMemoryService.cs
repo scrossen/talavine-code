@@ -56,7 +56,6 @@ public sealed record MemoryEditResult(MemoryEditOutcome Outcome, string? Detail 
 public sealed class PersonalMemoryService
 {
     private static readonly MemoryClaimStatus[] SuggestionStatuses = [MemoryClaimStatus.AwaitingConfirmation, MemoryClaimStatus.AwaitingCorroboration];
-    private static readonly MemoryClaimStatus[] AllStatuses = Enum.GetValues<MemoryClaimStatus>();
 
     private readonly IPersonalMemoryStore _store;
     private readonly MemoryConsolidationService _consolidation;
@@ -465,16 +464,15 @@ public sealed class PersonalMemoryService
             cursor = previous;
         }
         var chainTexts = chain.Select(f => MemoryTextScreen.NormalizeForComparison(f.Text)).ToHashSet(StringComparer.Ordinal);
-        var all = (await _store.GetFactsAsync(scope, MemoryFactQuery.All with { MaxCount = 100_000 }, ct).ConfigureAwait(false))
-            .Where(f => f.Scope == scope)
-            .ToList();
+        var candidates = await _store.GetForgetCandidatesAsync(scope, chainTexts, chain.Select(f => f.Id).ToArray(), ct).ConfigureAwait(false);
         // Other rows carrying the same statement: never leave a copy behind that could be recalled.
-        foreach (var copy in all.Where(f => chain.All(c => c.Id != f.Id) && chainTexts.Contains(MemoryTextScreen.NormalizeForComparison(f.Text))))
+        foreach (var copy in candidates.SameStatementFacts.Where(f => f.Scope == scope && chain.All(c => c.Id != f.Id)))
             chain.Add(copy);
         var chainIds = chain.Select(f => f.Id).ToHashSet();
-        var claims = (await _store.GetClaimsAsync(scope, AllStatuses, 100_000, ct).ConfigureAwait(false))
+        var claims = candidates.Claims
             .Where(c => c.Scope == scope
                 && ((c.ResultFactId is { } r && chainIds.Contains(r)) || chainTexts.Contains(MemoryTextScreen.NormalizeForComparison(c.Text))))
+            .DistinctBy(c => c.Id)
             .ToList();
 
         var changes = new List<MemoryChange>();
@@ -482,7 +480,9 @@ public sealed class PersonalMemoryService
         changes.AddRange(claims.Select(c => new MemoryClaimDelete(c.Id, c.Version)));
         // A surviving fact must not keep pointing at a deleted successor: the person's own earlier
         // statement becomes current again; anything else stays closed as history.
-        foreach (var survivor in all.Where(f => !chainIds.Contains(f.Id) && f.SupersededById is { } next && chainIds.Contains(next)))
+        foreach (var survivor in candidates.SupersededByForgotten
+                     .Where(f => f.Scope == scope && !chainIds.Contains(f.Id) && f.SupersededById is { } next && chainIds.Contains(next))
+                     .DistinctBy(f => f.Id))
         {
             changes.Add(new MemoryFactUpdate(survivor.Id, survivor.Version, new MemoryFactPatch
             {

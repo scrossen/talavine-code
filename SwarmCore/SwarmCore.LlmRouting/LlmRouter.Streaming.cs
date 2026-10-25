@@ -437,25 +437,30 @@ public partial class LlmRouter
                 {
                     throw;
                 }
+                catch (PartialStreamingOutputException)
+                {
+                    // The fallback's output may already be on screen: keep the stop
+                    // signal so callers never retry a visible turn.
+                    throw;
+                }
+                catch (Exception)
+                    when (IsRequestCancellationRequested(options))
+                {
+                    throw;
+                }
                 catch (Exception fbEx) when (fbEx is not SwarmCore.Abstractions.Budgets.MissionBudgetExceededException)
                 {
                     stopwatch.Stop();
                     var fallbackSelection = await BuildFallbackFailureSelectionAsync(selectedModel, requiresVision: false);
-
-                    // Both raw messages are in scope: classify them so this
-                    // failover carries typed categories instead of forcing
-                    // consumers back onto prose parsing.
-                    throw new LlmFailoverException(
-                        functionType: functionType,
-                        promptId: "streaming",
-                        primary: selectedModel,
-                        fallback: fallbackSelection,
-                        primaryError: ex.Message,
-                        fallbackError: fbEx.Message,
-                        primaryException: ex,
-                        fallbackException: fbEx,
-                        primaryCategory: Services.LlmErrorPolicy.Classify(ex),
-                        fallbackCategory: Services.LlmErrorPolicy.Classify(fbEx));
+                    // Built like every other failover so provider text is sanitized.
+                    throw CreateFailoverException(
+                        functionType,
+                        "streaming",
+                        selectedModel,
+                        fallbackSelection,
+                        "primary_exception",
+                        fbEx,
+                        Services.LlmErrorPolicy.Classify(ex));
                 }
             }
 
@@ -605,6 +610,19 @@ public partial class LlmRouter
         {
             throw;
         }
+        catch (Exception)
+            when (IsRequestCancellationRequested(options))
+        {
+            // The caller cancelled: a cancellation receipt, no failure evidence.
+            stopwatch.Stop();
+            await TrackCancellationAsync(
+                functionType,
+                streamFallbackSelection,
+                stopwatch.ElapsedMilliseconds,
+                options,
+                fallbackUsed: true).ConfigureAwait(false);
+            throw;
+        }
         catch (Exception ex) when (ex is not SwarmCore.Abstractions.Budgets.MissionBudgetExceededException)
         {
             stopwatch.Stop();
@@ -687,7 +705,9 @@ public partial class LlmRouter
 
         return new LlmRouterResponse
         {
-            Content = response.Content,
+            // A fallback that delivered chunks but failed the quality gate can
+            // still reach here with no aggregated content.
+            Content = response.Content ?? string.Empty,
             Provider = fallbackProvider,
             Model = fallbackModel,
             FunctionType = functionType,
@@ -715,6 +735,11 @@ public partial class LlmRouter
         {
             // A delivery callback may already have exposed committed output.
             // Preserve the stop signal instead of relabeling it as route failure.
+            throw;
+        }
+        catch (Exception)
+            when (IsRequestCancellationRequested(options))
+        {
             throw;
         }
         catch (FallbackExecutionException ex)

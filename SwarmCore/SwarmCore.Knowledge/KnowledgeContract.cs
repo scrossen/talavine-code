@@ -4,10 +4,12 @@ namespace SwarmCore.Knowledge;
 
 public static class KnowledgeContract
 {
-    public const int CurrentProjectionVersion = 5;
-    // Reopen previously complete ledgers so projection v5 source versions are
-    // captured by replay, including accounts with no incremental backlog.
-    public const int CurrentLedgerVersion = 3;
+    // v6: commitment, decision and event nodes are scoped (counterparty or thread) instead of
+    // keyed by their statement text alone.
+    public const int CurrentProjectionVersion = 6;
+    // Reopen previously complete ledgers so every account re-projects onto the current
+    // projection, including accounts with no incremental backlog.
+    public const int CurrentLedgerVersion = 4;
 }
 
 public static class KnowledgeContractLimits

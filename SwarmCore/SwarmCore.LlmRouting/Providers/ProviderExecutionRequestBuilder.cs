@@ -2,6 +2,17 @@ using SwarmCore.Abstractions.LlmRouting;
 
 namespace SwarmCore.LlmRouting.Providers;
 
+/// <summary>
+/// Implemented by a provider without a typed execution contract that still owns
+/// how a portable reasoning request maps onto its legacy settings, so the
+/// provider-neutral builder never names a concrete provider.
+/// </summary>
+internal interface ILegacyReasoningSettings
+{
+    /// <summary>Applies a reasoning mode other than <see cref="LlmReasoningMode.ProviderDefault"/>.</summary>
+    void ApplyReasoning(Dictionary<string, object> settings, string model, LlmReasoningMode reasoning);
+}
+
 internal static class ProviderExecutionRequestBuilder
 {
     private static readonly string[] SemanticAliases =
@@ -68,8 +79,8 @@ internal static class ProviderExecutionRequestBuilder
 
         var expectedDigest = ReadExpectedDigest(selection?.ExecutionSettings);
         var suppliedControl = options?.RequestControl;
-        // Initialize before cloning so route repairs/retries retain the original finite budget.
-        _ = suppliedControl?.PhysicalRequestBudget;
+        // The `with` copy below materializes a bounded budget on the supplied
+        // control, so route repairs and retries share the original finite budget.
         var control = (suppliedControl ?? new LlmRequestControl()) with
         {
             CancellationToken = options?.RequestCancellationToken.CanBeCanceled == true
@@ -100,24 +111,10 @@ internal static class ProviderExecutionRequestBuilder
         // Compatibility path for providers not yet upgraded. It is deliberately
         // centralized outside the router and emits only portable legacy fields.
         ApplyLegacyPortableSettings(merged, parameters, control);
-        if (provider is CodexCliLlmProvider && parameters.Reasoning == LlmReasoningMode.Disabled)
+        if (parameters.Reasoning != LlmReasoningMode.ProviderDefault
+            && provider is ILegacyReasoningSettings reasoningOwner)
         {
-            // Background JSON and validation callers share a portable suppression
-            // hint. Codex has no reviewed off switch: preserve its default (or
-            // the selected @effort tier), as the legacy path did, and disclose
-            // the omission instead of rejecting a healthy Scout-admitted route.
-            var diagnostics = LlmReservedExecutionSettings.GetExecutionParameterDiagnostics(merged).ToList();
-            diagnostics.Add(new("reasoning", LlmExecutionParameterDisposition.Omitted,
-                "Codex CLI does not support disabling reasoning; the selected model's default or pinned effort is retained."));
-            merged[LlmReservedExecutionSettings.ExecutionParameterDiagnostics] = diagnostics;
-        }
-        else if (provider is CodexCliLlmProvider && parameters.Reasoning != LlmReasoningMode.ProviderDefault)
-        {
-            var effort = parameters.Reasoning.ToString().ToLowerInvariant();
-            if (!ModelRouteCapabilities.ReasoningEfforts(provider.ProviderName, model).Contains(effort, StringComparer.Ordinal))
-                throw new NotSupportedException($"The selected Codex CLI route does not support reasoning effort {effort}.");
-            merged["reasoning_effort"] = effort;
-            _ = CodexCliLlmProvider.ResolveReasoningEffort(model, merged);
+            reasoningOwner.ApplyReasoning(merged, model, parameters.Reasoning);
         }
         return merged;
     }

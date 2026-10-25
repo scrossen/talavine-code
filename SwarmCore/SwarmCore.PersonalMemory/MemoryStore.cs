@@ -58,7 +58,43 @@ public interface IPersonalMemoryStore
     /// </summary>
     Task<IReadOnlyList<MemoryScope>> GetScopesWithDueFactsAsync(MemoryDueQuery query, CancellationToken ct = default)
         => Task.FromResult<IReadOnlyList<MemoryScope>>([]);
+
+    /// <summary>
+    /// What a forget must touch, in scope: every fact stating one of <paramref name="statements"/>
+    /// (normalized with <see cref="MemoryTextScreen.NormalizeForComparison"/>), every claim stating one
+    /// of them or resulting in one of those facts or <paramref name="factIds"/>, and every fact that
+    /// those facts superseded. A store with an index (see <see cref="MemoryForgetFingerprint.Statement"/>)
+    /// overrides this; the default reads the scope's facts and claims.
+    /// </summary>
+    async Task<MemoryForgetCandidates> GetForgetCandidatesAsync(
+        MemoryScope scope,
+        IReadOnlyCollection<string> statements,
+        IReadOnlyCollection<Guid> factIds,
+        CancellationToken ct = default)
+    {
+        var texts = statements.ToHashSet(StringComparer.Ordinal);
+        var facts = (await GetFactsAsync(scope, MemoryFactQuery.All with { MaxCount = 100_000 }, ct).ConfigureAwait(false))
+            .Where(f => f.Scope == scope)
+            .ToList();
+        var sameStatement = facts.Where(f => texts.Contains(MemoryTextScreen.NormalizeForComparison(f.Text))).ToList();
+        var ids = factIds.Concat(sameStatement.Select(f => f.Id)).ToHashSet();
+        var claims = (await GetClaimsAsync(scope, Enum.GetValues<MemoryClaimStatus>(), 100_000, ct).ConfigureAwait(false))
+            .Where(c => c.Scope == scope
+                && ((c.ResultFactId is { } r && ids.Contains(r)) || texts.Contains(MemoryTextScreen.NormalizeForComparison(c.Text))))
+            .ToList();
+        var successorsOf = facts.Where(f => f.SupersededById is { } next && ids.Contains(next)).ToList();
+        return new(sameStatement, claims, successorsOf);
+    }
 }
+
+/// <summary>
+/// The rows a forget reads: facts with the same statement, claims about it, and facts whose
+/// <see cref="MemoryFact.SupersededById"/> points at one of the forgotten facts.
+/// </summary>
+public sealed record MemoryForgetCandidates(
+    IReadOnlyList<MemoryFact> SameStatementFacts,
+    IReadOnlyList<MemoryClaim> Claims,
+    IReadOnlyList<MemoryFact> SupersededByForgotten);
 
 /// <summary>Which facts are due for a time-only consolidation pass.</summary>
 public sealed record MemoryDueQuery(DateTimeOffset Now, DateTimeOffset SummariesCreatedBefore, int MaxCount)

@@ -20,6 +20,26 @@ public static class SelfImprovementPrompts
         text.AppendLine();
         text.AppendLine(item.Kind == SelfImprovementKind.Defect ? "Observation:" : "Request:");
         text.AppendLine(item.Details.Trim());
+        if (item.ActivationFailure is { } activation)
+        {
+            text.AppendLine();
+            text.AppendLine("The host retained the original goal and verified the previous app survived a failed automatic installation:");
+            text.AppendLine(activation.Diagnostic);
+            text.AppendLine("Reproduce and fix this installation/build failure in the current worktree. Do not repeat the goal's external actions or treat an uninstalled branch as a working repair.");
+        }
+        if (!string.IsNullOrWhiteSpace(item.WorktreePath))
+        {
+            text.AppendLine();
+            text.AppendLine("A previous cycle retained a source checkpoint that is not a verified repair:");
+            text.Append("Checkpoint worktree: ").AppendLine(item.WorktreePath);
+            if (!string.IsNullOrWhiteSpace(item.Branch)) text.Append("Checkpoint branch: ").AppendLine(item.Branch);
+            text.AppendLine("Inspect that checkpoint read-only before reimplementing. Leave its files and branch intact. Do not automatically copy or apply its code, replay its commands, or commit it; independently reproduce and verify the needed change in this attempt's own worktree.");
+            if (!string.IsNullOrWhiteSpace(item.Evidence))
+            {
+                text.AppendLine("Checkpoint evidence (bounded, not verification of this attempt):");
+                text.AppendLine(item.Evidence.Length <= 3000 ? item.Evidence : item.Evidence[..3000] + "...");
+            }
+        }
         text.AppendLine();
         text.AppendLine("How to work:");
         text.AppendLine("- You are in an isolated git worktree of the Talavine Code source repository. Read AGENTS.md and memory/swarmcode.md first and follow them.");
@@ -35,10 +55,10 @@ public static class SelfImprovementPrompts
             text.AppendLine("- Register new tools and commands the way existing ones are registered; nothing is live until it is wired in.");
         }
         text.AppendLine("- Do not commit, stash, rebase, push or change branches: the host commits a verified result on this branch itself.");
-        text.AppendLine("- Do not touch files outside this worktree, and never edit secrets, settings files or data folders.");
+        text.AppendLine("- Do not modify files outside this worktree, and never edit secrets, settings files or data folders. The retained source checkpoint above, if any, is only for read-only review.");
         if (checks.Count > 0)
         {
-            text.AppendLine("- Verification runs after you finish and must pass before anything is kept:");
+            text.AppendLine("- Verification runs after you finish and must pass before a repair is committed or applied:");
             foreach (var check in checks)
                 text.Append("    ").Append(check.Name).Append(": ").Append(check.FileName).Append(' ').AppendLine(string.Join(' ', check.Arguments));
             text.AppendLine("  Run the relevant ones yourself before you finish.");

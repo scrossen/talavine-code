@@ -335,6 +335,12 @@ public sealed class OpenAIStyleToolUseProvider : IToolUseProvider, IToolUseConte
 
             if (node is not JsonObject root) continue;
 
+            // OpenRouter, DeepSeek and other compatible servers report a failure
+            // that happens after the 200 headers as an error record (sometimes
+            // beside a finish_reason "error" choice). It ends the generation.
+            if (root["error"] is { } streamError)
+                throw ProviderErrorRecord.FromOpenAICompatible(_providerName, streamError, "stream");
+
             // With stream_options.include_usage the final usage chunk arrives
             // with an EMPTY choices array, so usage must be read before the
             // choices guard below — otherwise it is skipped and cost tracking
@@ -574,13 +580,12 @@ public sealed class OpenAIStyleToolUseProvider : IToolUseProvider, IToolUseConte
         // copied alias with no cloud suffix. /api/show is queried before the
         // prompt-bearing request; any non-empty remote_host is remote and a
         // missing/failed metadata response is unknown, so both fail closed.
-        var completionsUri = new Uri(_chatCompletionsUrl, UriKind.Absolute);
-        var showUri = new UriBuilder(completionsUri)
-        {
-            Path = "/api/show",
-            Query = string.Empty,
-            Fragment = string.Empty,
-        }.Uri;
+        // The native API root keeps a reverse-proxy prefix in front of
+        // /v1/chat/completions, as the context-window probe does.
+        var apiRoot = OllamaRuntimeContextWindow.ApiRootFor(_chatCompletionsUrl)
+            ?? throw new InvalidOperationException(
+                $"Route {_providerName}/{model} has no absolute endpoint; LocalOnly tool use was blocked.");
+        var showUri = new Uri(apiRoot, "api/show");
 
         using var timeout = CancellationTokenSource.CreateLinkedTokenSource(ct);
         timeout.CancelAfter(TimeSpan.FromSeconds(4));
@@ -1039,8 +1044,19 @@ public sealed class OpenAIStyleToolUseProvider : IToolUseProvider, IToolUseConte
         using var doc = JsonDocument.Parse(body);
         var root = doc.RootElement;
 
-        var choices = root.GetProperty("choices");
-        if (choices.GetArrayLength() == 0)
+        // OpenRouter and several gateways answer an upstream failure with HTTP
+        // 200 and an error object in place of choices.
+        if (root.ValueKind == JsonValueKind.Object
+            && root.TryGetProperty("error", out var error)
+            && error.ValueKind != JsonValueKind.Null)
+        {
+            throw ProviderErrorRecord.FromOpenAICompatible(_providerName, JsonNode.Parse(error.GetRawText()), "tool-use call");
+        }
+
+        if (root.ValueKind != JsonValueKind.Object
+            || !root.TryGetProperty("choices", out var choices)
+            || choices.ValueKind != JsonValueKind.Array
+            || choices.GetArrayLength() == 0)
         {
             throw new InvalidOperationException($"{_providerName} response had no choices.");
         }

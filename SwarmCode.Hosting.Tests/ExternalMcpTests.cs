@@ -48,6 +48,21 @@ public class ExternalMcpTests : TempDirTest
     }
 
     [Fact]
+    public void Saving_an_http_server_keeps_the_files_escaping_and_line_endings()
+    {
+        Directory.CreateDirectory(Paths.RootDirectory);
+        File.WriteAllText(Paths.McpServersPath, "{\r\n  \"mcpServers\": {}\r\n}\r\n");
+        var file = new ExternalMcpServersFile(Paths);
+
+        Assert.Null(file.UpsertHttp("hub", "https://example.test/mcp?region=eu&mode=read+only"));
+
+        var text = File.ReadAllText(file.Path);
+        Assert.Contains("https://example.test/mcp?region=eu&mode=read+only", text);
+        Assert.DoesNotContain("\\u0026", text);
+        Assert.DoesNotContain("\n", text.Replace("\r\n", ""));
+    }
+
+    [Fact]
     public void Http_and_stdio_replacement_keep_flags_and_remove_old_transport_coordinates()
     {
         var file = new ExternalMcpServersFile(Paths);

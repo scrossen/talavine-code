@@ -480,24 +480,6 @@ public class LlmRouterOptions
     public bool DisableFallback { get; set; } = false;
 
     /// <summary>
-    /// When true, the router may discover and use ANY enabled alternate
-    /// provider on failure — even when the selected route has no configured
-    /// <see cref="LlmModelSelection.FallbackProvider"/>, isn't a
-    /// subscription-CLI provider, and the failure reason is a plain
-    /// "provider_error" (e.g. a raw HTTP 400). Without this flag, discovered
-    /// fallback for a non-default, non-vision, non-subscription-CLI route is
-    /// gated off by design (see <c>ShouldAllowDiscoveredFallbackForRuntimeFailure</c>)
-    /// so batch/pipeline callers fail fast rather than silently substitute a
-    /// possibly-lower-quality model. Interactive chat surfaces where showing
-    /// *some* working answer matters more than pinning to one provider
-    /// (agent chat turns, regardless of channel — desktop, Telegram, mobile)
-    /// may set this for automatically selected routes. Explicit User/Profile,
-    /// provider-constrained, and user-pinned function routes ignore this escape
-    /// hatch; they may use only an explicitly configured fallback.
-    /// </summary>
-    public bool AllowAnyProviderFallback { get; set; } = false;
-
-    /// <summary>
     /// Whether a user is waiting on the response or this is background work. Unspecified
     /// (default) means "use the function-type profile" — see <see cref="FunctionTypeProfiles"/>.
     /// </summary>

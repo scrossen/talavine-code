@@ -1,0 +1,18 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <TargetFramework>net11.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <LangVersion>latest</LangVersion>
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+    <RootNamespace>SwarmCore.RemoteControl.Mac</RootNamespace>
+    <Authors>Scott Crossen</Authors>
+    <Description>SwarmCore RemoteControl macOS adapter - implements IDesktopAutomation with the macOS Accessibility (AX), CoreGraphics (windows, events, capture), and ImageIO APIs through P/Invoke. Plain net11.0 so it builds on any OS; it runs only on macOS with Accessibility and Screen Recording permission.</Description>
+  </PropertyGroup>
+  <ItemGroup>
+    <ProjectReference Include="..\SwarmCore.RemoteControl\SwarmCore.RemoteControl.csproj" />
+  </ItemGroup>
+  <ItemGroup>
+    <InternalsVisibleTo Include="SwarmCore.RemoteControl.Mac.Tests" />
+  </ItemGroup>
+</Project>

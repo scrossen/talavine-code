@@ -62,9 +62,9 @@ public static class UserToolUseRestriction
     }
 
     public static bool WithholdsAllTools(AgentTurnRequest request)
-        => request.MissionObjectiveId is not null || request.AuthenticatedOriginalUserMessage is not null
+        => request.HostToolsWithheld || (request.MissionObjectiveId is not null || request.AuthenticatedOriginalUserMessage is not null
             ? WithholdsAuthenticatedOriginal(OriginalUserMessage(request))
-            : WithholdsAllTools(OriginalUserMessage(request), request.CommunicationScopeUserInitiated);
+            : WithholdsAllTools(OriginalUserMessage(request), request.CommunicationScopeUserInitiated));
 
     private static string AuthoredClauses(string original)
     {

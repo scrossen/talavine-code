@@ -1,3 +1,4 @@
+using System.Collections.Concurrent;
 using System.Diagnostics;
 using System.Text;
 using System.Text.Json;
@@ -24,9 +25,12 @@ public class OpenAILlmProvider : LlmProviderBase, ILlmProviderExecutionContract,
         new(OpenAICompatibleContractFlavor.OpenAI);
     private readonly OpenAIProviderOptions _options;
     private List<string>? _cachedModels;
+    // Every id the provider catalog returned, before the listing prefix filter.
+    private HashSet<string>? _catalogModels;
 
     // Models confirmed deprecated/unavailable at runtime — excluded from selection permanently until restart.
-    private readonly HashSet<string> _deprecatedModels = new(StringComparer.OrdinalIgnoreCase);
+    // The provider is a singleton shared by concurrent requests.
+    private readonly ConcurrentDictionary<string, byte> _deprecatedModels = new(StringComparer.OrdinalIgnoreCase);
 
     public override string ProviderName => "OpenAI";
     public virtual LlmProviderExecutionContractDescriptor ExecutionContract => _executionContract.Descriptor;
@@ -132,9 +136,21 @@ public class OpenAILlmProvider : LlmProviderBase, ILlmProviderExecutionContract,
             return DefaultModels.ToList();
         }
 
+        string apiKey;
         try
         {
-            var apiKey = await GetApiKeyAsync();
+            apiKey = await GetApiKeyAsync();
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            // A missing key is not a connection problem; say what to fix.
+            if (strict) throw new InvalidOperationException("No API key is configured for this provider. Add the API key, then refresh the model catalog.", ex);
+            Logger.LogDebug(ex, "No usable {Provider} API key for the model list; using defaults", ProviderName);
+            return _cachedModels ?? DefaultModels.ToList();
+        }
+
+        try
+        {
             using var client = HttpClientFactory.CreateClient();
             ApplyDefaultRequestHeaders(client, apiKey);
 
@@ -143,18 +159,26 @@ public class OpenAILlmProvider : LlmProviderBase, ILlmProviderExecutionContract,
             {
                 var json = await response.Content.ReadAsStringAsync(ct);
                 var modelsResponse = JsonSerializer.Deserialize<OpenAIModelsResponse>(json, SwarmJsonOptions.ExternalApi);
-                var prefixes = CatalogModelPrefixes;
-                var models = modelsResponse?.Data?
+                var catalog = modelsResponse?.Data?
                     .Select(m => m.Id)
                     .Where(id => !string.IsNullOrEmpty(id))
-                    .Where(id => prefixes.Count == 0
-                                 || prefixes.Any(p => id!.StartsWith(p, StringComparison.OrdinalIgnoreCase)))
-                    .OrderBy(id => id, StringComparer.OrdinalIgnoreCase)
+                    .Select(id => id!)
                     .ToList();
 
-                if (models is not null)
+                if (catalog is not null)
                 {
-                    _cachedModels = models!;
+                    // Only the listing is narrowed to routable families. Support
+                    // checks keep the whole catalog (fine-tunes, aliases such as
+                    // chatgpt-4o-latest) so a pin does not stop working once the
+                    // catalog has been fetched.
+                    var prefixes = CatalogModelPrefixes;
+                    var models = catalog
+                        .Where(id => prefixes.Count == 0
+                                     || prefixes.Any(p => id.StartsWith(p, StringComparison.OrdinalIgnoreCase)))
+                        .OrderBy(id => id, StringComparer.OrdinalIgnoreCase)
+                        .ToList();
+                    _catalogModels = new HashSet<string>(catalog, StringComparer.OrdinalIgnoreCase);
+                    _cachedModels = models;
                     Logger.LogInformation("{Provider}: fetched {Count} models from API", ProviderName, _cachedModels.Count);
                     return _cachedModels;
                 }
@@ -171,11 +195,7 @@ public class OpenAILlmProvider : LlmProviderBase, ILlmProviderExecutionContract,
     }
 
     public override bool SupportsModel(string model)
-    {
-        if (_cachedModels is not null)
-            return _cachedModels.Contains(model, StringComparer.OrdinalIgnoreCase);
-        return base.SupportsModel(model);
-    }
+        => base.SupportsModel(model) || _catalogModels?.Contains(model) == true;
 
     public override async Task<LlmResponse> GenerateResponseAsync(string prompt, string model,
         Dictionary<string, object>? executionSettings = null)
@@ -198,7 +218,7 @@ public class OpenAILlmProvider : LlmProviderBase, ILlmProviderExecutionContract,
                     "Model {Model} appears deprecated or unavailable. Blacklisting and retrying with next available model.",
                     effectiveModel);
 
-                _deprecatedModels.Add(effectiveModel);
+                _deprecatedModels.TryAdd(effectiveModel, 0);
 
                 if (LlmReservedExecutionSettings.RequiresExactModel(executionSettings))
                 {
@@ -207,8 +227,6 @@ public class OpenAILlmProvider : LlmProviderBase, ILlmProviderExecutionContract,
                         effectiveModel);
                     return result;
                 }
-
-                // Force model list refresh so SelectBestAvailableModel sees current state.
 
                 var fallback = await SelectBestAvailableModelAsync();
                 if (fallback != null && !fallback.Equals(effectiveModel, StringComparison.OrdinalIgnoreCase))
@@ -257,7 +275,7 @@ public class OpenAILlmProvider : LlmProviderBase, ILlmProviderExecutionContract,
         var request = new OpenAICompletionRequest
         {
             Model = model,
-            Messages = new List<OpenAIMessage>
+            Messages = new List<OpenAIRequestMessage>
             {
                 new() { Role = "user", Content = strippedPrompt }
             }
@@ -279,6 +297,8 @@ public class OpenAILlmProvider : LlmProviderBase, ILlmProviderExecutionContract,
         if (response.IsSuccessStatusCode)
         {
             var completionResponse = JsonSerializer.Deserialize<OpenAICompletionResponse>(responseContent, SwarmJsonOptions.ExternalApi);
+            if (completionResponse?.Error is { } bodyError)
+                return ProviderReportedFailure(model, bodyError, "completion", stopwatch);
             var choice = completionResponse?.Choices?.FirstOrDefault();
             var responseText = choice?.Message?.Content ?? "";
 
@@ -397,11 +417,13 @@ public class OpenAILlmProvider : LlmProviderBase, ILlmProviderExecutionContract,
         var stopwatch = Stopwatch.StartNew();
         var effectiveModel = string.IsNullOrEmpty(model) ? DefaultModel : model;
 
-        if (OpenAIResponsesContract.IsSelected(ProviderName, effectiveModel))
-            return await CallResponsesAsync(prompt, effectiveModel, executionSettings, stopwatch, onChunk).ConfigureAwait(false);
-
         try
         {
+            // Inside the try so a transport timeout on the Responses path is
+            // reported like the chat-completions path, as a failed response.
+            if (OpenAIResponsesContract.IsSelected(ProviderName, effectiveModel))
+                return await CallResponsesAsync(prompt, effectiveModel, executionSettings, stopwatch, onChunk).ConfigureAwait(false);
+
             var apiKey = await GetApiKeyAsync();
             using var client = HttpClientFactory.CreateClient();
             ApplyDefaultRequestHeaders(client, apiKey);
@@ -415,7 +437,7 @@ public class OpenAILlmProvider : LlmProviderBase, ILlmProviderExecutionContract,
             var request = new OpenAICompletionRequest
             {
                 Model = effectiveModel,
-                Messages = new List<OpenAIMessage>
+                Messages = new List<OpenAIRequestMessage>
                 {
                     new() { Role = "user", Content = PromptCaching.Strip(prompt) }
                 },
@@ -468,6 +490,15 @@ public class OpenAILlmProvider : LlmProviderBase, ILlmProviderExecutionContract,
                 {
                     var root = doc.RootElement;
                     if (root.ValueKind != JsonValueKind.Object) continue;
+
+                    // OpenRouter and other compatible servers report a failure
+                    // after the 200 headers as an error record; the partial
+                    // text is not a completed answer.
+                    if (root.TryGetProperty("error", out var streamError) && streamError.ValueKind != JsonValueKind.Null)
+                    {
+                        return ProviderReportedFailure(effectiveModel,
+                            System.Text.Json.Nodes.JsonNode.Parse(streamError.GetRawText()), "stream", stopwatch);
+                    }
 
                     if (root.TryGetProperty("model", out var modelEl) && modelEl.ValueKind == JsonValueKind.String)
                     {
@@ -581,7 +612,7 @@ public class OpenAILlmProvider : LlmProviderBase, ILlmProviderExecutionContract,
 
         foreach (var preferred in PreferredModels)
         {
-            if (_deprecatedModels.Contains(preferred)) continue;
+            if (_deprecatedModels.ContainsKey(preferred)) continue;
             if (available.Contains(preferred, StringComparer.OrdinalIgnoreCase))
                 return preferred;
         }
@@ -592,7 +623,7 @@ public class OpenAILlmProvider : LlmProviderBase, ILlmProviderExecutionContract,
             .Where(id => CatalogModelPrefixes.Count > 0
                          && CatalogModelPrefixes.Any(prefix =>
                              id.StartsWith(prefix, StringComparison.OrdinalIgnoreCase)))
-            .Where(id => !_deprecatedModels.Contains(id))
+            .Where(id => !_deprecatedModels.ContainsKey(id))
             .Where(id => !id.Contains("instruct", StringComparison.OrdinalIgnoreCase))
             .Where(id => !id.Contains("realtime", StringComparison.OrdinalIgnoreCase))
             .Where(id => !id.Contains("audio", StringComparison.OrdinalIgnoreCase))
@@ -636,11 +667,13 @@ public class OpenAILlmProvider : LlmProviderBase, ILlmProviderExecutionContract,
             LlmReservedExecutionSettings.GetRequestCancellationToken(executionSettings);
         requestCancellation.ThrowIfCancellationRequested();
         var stopwatch = Stopwatch.StartNew();
+        var effectiveModel = model;
 
         try
         {
             var apiKey = await GetApiKeyAsync();
-            var effectiveModel = string.IsNullOrEmpty(model) ? (await SelectBestAvailableModelAsync() ?? DefaultModel) : model;
+            if (string.IsNullOrEmpty(effectiveModel))
+                effectiveModel = await SelectBestAvailableModelAsync() ?? DefaultModel;
             if (OpenAIResponsesContract.IsSelected(ProviderName, effectiveModel))
                 return await CallResponsesAsync(prompt, effectiveModel, executionSettings, stopwatch, image: imageBase64).ConfigureAwait(false);
 
@@ -650,23 +683,35 @@ public class OpenAILlmProvider : LlmProviderBase, ILlmProviderExecutionContract,
             // Vision request with image
             var imageUrl = imageBase64.StartsWith("http") ? imageBase64 : $"data:image/jpeg;base64,{imageBase64}";
 
-            var request = new
+            var request = new OpenAICompletionRequest
             {
-                model = effectiveModel,
-                messages = new[]
-                {
-                    new
+                Model = effectiveModel,
+                Messages =
+                [
+                    new()
                     {
-                        role = "user",
-                        content = new object[]
+                        Role = "user",
+                        Content = new object[]
                         {
                             new { type = "text", text = prompt },
                             new { type = "image_url", image_url = new { url = imageUrl } }
                         }
                     }
-                },
-                max_tokens = 4096
+                ]
             };
+
+            // The same output-budget, sampler, reasoning and structured-output
+            // rules as text requests: GPT-5/o-series reject max_tokens.
+            ApplyExecutionSettings(request, executionSettings);
+            if (request.MaxTokens is null && request.MaxCompletionTokens is null
+                && !RequiresMaxCompletionTokens(request.Model))
+            {
+                // Older chat vision models default to a very small completion
+                // when no budget is sent. Reasoning models keep their own
+                // ceiling: a fixed total cap there would include hidden
+                // reasoning and spend outside the caller's reservation.
+                request.MaxTokens = DefaultVisionMaxTokens;
+            }
 
             var json = JsonSerializer.Serialize(request);
             var content = new StringContent(json, Encoding.UTF8, "application/json");
@@ -679,6 +724,8 @@ public class OpenAILlmProvider : LlmProviderBase, ILlmProviderExecutionContract,
             if (response.IsSuccessStatusCode)
             {
                 var completionResponse = JsonSerializer.Deserialize<OpenAICompletionResponse>(responseContent, SwarmJsonOptions.ExternalApi);
+                if (completionResponse?.Error is { } bodyError)
+                    return ProviderReportedFailure(effectiveModel, bodyError, "vision completion", stopwatch);
                 var responseText = completionResponse?.Choices?.FirstOrDefault()?.Message?.Content ?? "";
 
                 return new LlmResponse
@@ -708,9 +755,29 @@ public class OpenAILlmProvider : LlmProviderBase, ILlmProviderExecutionContract,
         catch (Exception ex)
         {
             stopwatch.Stop();
-            Logger.LogError(ex, "Error generating vision response with OpenAI");
-            return CreateErrorResponse(model, ex.Message, (int)stopwatch.ElapsedMilliseconds);
+            Logger.LogError(ex, "Error generating vision response with {Provider}", ProviderName);
+            return CreateErrorResponse(effectiveModel, ex.Message, (int)stopwatch.ElapsedMilliseconds);
         }
+    }
+
+    private const int DefaultVisionMaxTokens = 4096;
+
+    /// <summary>
+    /// A failure the provider reported inside an HTTP 200 body or stream, as a
+    /// failed response with its typed category and bounded identifiers.
+    /// </summary>
+    private LlmResponse ProviderReportedFailure(
+        string model,
+        System.Text.Json.Nodes.JsonNode? error,
+        string context,
+        Stopwatch stopwatch)
+    {
+        stopwatch.Stop();
+        var failure = ToolUse.ProviderErrorRecord.FromOpenAICompatible(ProviderName, error, context);
+        Logger.LogWarning("{Failure}", failure.Message);
+        var response = CreateErrorResponse(model, failure.Message, (int)stopwatch.ElapsedMilliseconds, failure.StatusCode);
+        response.FailureCategory = failure.Category;
+        return response;
     }
 
     public override async Task<(bool IsHealthy, string Message)> TestConnectivityAsync()
@@ -1009,7 +1076,7 @@ internal class OpenAICompletionRequest
     public string Model { get; set; } = "";
 
     [JsonPropertyName("messages")]
-    public List<OpenAIMessage> Messages { get; set; } = new();
+    public List<OpenAIRequestMessage> Messages { get; set; } = new();
 
     [JsonPropertyName("temperature")]
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
@@ -1090,6 +1157,16 @@ internal class OpenAICompletionRequest
     public Dictionary<string, object>? StreamOptions { get; set; }
 }
 
+internal class OpenAIRequestMessage
+{
+    [JsonPropertyName("role")]
+    public string Role { get; set; } = "";
+
+    /// <summary>A string for text turns, or a content-part array (text and image_url) for vision.</summary>
+    [JsonPropertyName("content")]
+    public object Content { get; set; } = "";
+}
+
 internal class OpenAIMessage
 {
     [JsonPropertyName("role")]
@@ -1105,6 +1182,11 @@ internal class OpenAIMessage
 
 internal class OpenAICompletionResponse
 {
+    // OpenRouter and several gateways answer an upstream failure with HTTP 200
+    // and an error object in place of choices.
+    [JsonPropertyName("error")]
+    public System.Text.Json.Nodes.JsonNode? Error { get; set; }
+
     [JsonPropertyName("model")]
     public string? Model { get; set; }
 

@@ -14,7 +14,8 @@ internal static class SubscriptionCliProcessStartInfo
     internal static ProcessStartInfo Create(
         string fileName,
         IReadOnlyList<string> arguments,
-        IReadOnlyDictionary<string, string?>? childEnvironmentSnapshot = null)
+        IReadOnlyDictionary<string, string?>? childEnvironmentSnapshot = null,
+        string? privateCliDataRoot = null)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(fileName);
         ArgumentNullException.ThrowIfNull(arguments);
@@ -28,7 +29,7 @@ internal static class SubscriptionCliProcessStartInfo
         if (childEnvironmentSnapshot is null)
         {
             ConfigureBundledNodePath(startInfo, fileName);
-            ConfigurePrivateWindowsChatGptCliHome(startInfo, fileName);
+            ConfigurePrivateWindowsChatGptCliHome(startInfo, fileName, privateCliDataRoot);
         }
         if (!WindowsBatchLaunch.IsBatchFile(fileName))
         {
@@ -57,11 +58,13 @@ internal static class SubscriptionCliProcessStartInfo
     }
 
     /// <summary>
-    /// Keeps Talavine's Windows-installed ChatGPT CLI configuration separate
+    /// Keeps the host's Windows-installed ChatGPT CLI configuration separate
     /// from an operator's general-purpose Codex configuration. The Windows
     /// setup flow installs and authenticates a private CLI, and an older
     /// desktop-package runtime can otherwise reject settings written by a newer
-    /// sibling app before it reaches <c>login</c>.
+    /// sibling app before it reaches <c>login</c>. The host supplies its own
+    /// data root (<see cref="Configuration.SubscriptionCliProviderOptions.PrivateCliDataRoot"/>);
+    /// a host without one keeps the CLI's normal home.
     ///
     /// macOS is deliberately excluded. The current ChatGPT bundle and the
     /// standalone Codex CLI both use the user's normal <c>~/.codex</c> session.
@@ -70,16 +73,17 @@ internal static class SubscriptionCliProcessStartInfo
     /// </summary>
     private static void ConfigurePrivateWindowsChatGptCliHome(
         ProcessStartInfo startInfo,
-        string fileName)
+        string fileName,
+        string? privateCliDataRoot)
     {
         if (!OperatingSystem.IsWindows()
+            || string.IsNullOrWhiteSpace(privateCliDataRoot)
             || !Path.GetFileNameWithoutExtension(fileName)
                 .Equals("codex", StringComparison.OrdinalIgnoreCase))
         {
             return;
         }
 
-        var localApplicationData = Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData);
         // Only our bundled npm installation owns this private session. A
         // discovered desktop/PATH CLI must retain its existing login home.
         var bundledRoot = Path.GetFullPath(Path.Combine(AppContext.BaseDirectory, "Tools", "Node"))
@@ -89,15 +93,14 @@ internal static class SubscriptionCliProcessStartInfo
             return;
         }
 
-        if (string.IsNullOrWhiteSpace(localApplicationData))
-        {
-            return;
-        }
-
-        var cliHome = Path.Combine(localApplicationData, "Talavine", "subscription-cli", "chatgpt");
+        var cliHome = PrivateChatGptCliHome(privateCliDataRoot);
         Directory.CreateDirectory(cliHome);
         startInfo.Environment["CODEX_HOME"] = cliHome;
     }
+
+    /// <summary>The private ChatGPT CLI home under a host data root.</summary>
+    internal static string PrivateChatGptCliHome(string privateCliDataRoot)
+        => Path.Combine(Path.GetFullPath(privateCliDataRoot), "subscription-cli", "chatgpt");
 
     /// <summary>
     /// npm's Windows command shims call <c>node</c> by name. The signed

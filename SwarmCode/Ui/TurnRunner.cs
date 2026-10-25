@@ -1,4 +1,10 @@
+using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Options;
 using SwarmCode.Hosting.Secrets;
+using SwarmCore.Agent.Continual;
+using SwarmCore.Coding.Goals;
+using SwarmCore.Coding.Permissions;
+using SwarmCore.Coding;
 using SwarmCore.Coding.Routing;
 
 namespace SwarmCode.Ui;
@@ -17,8 +23,24 @@ public sealed class TurnRunner
     /// <summary>Post-turn capture; null skips learning (non-interactive runs).</summary>
     public SwarmCode.Hosting.Memory.SwarmCodeMemoryCapture? MemoryCapture { get; init; }
 
-    /// <summary>Temporary session: memory is neither read nor written.</summary>
+    /// <summary>
+    /// Temporary by command line (<c>--temporary</c>): memory is neither read nor written for any conversation of this run.
+    /// A saved session marked temporary (desktop app, scheduled run) is temporary too; see <see cref="IsTemporaryAsync"/>.
+    /// </summary>
     public bool Temporary { get; init; }
+
+    /// <summary>
+    /// Whether a conversation's turns run with memory off: the command line says so, or the saved session is marked
+    /// temporary (so resuming it with <c>--continue</c>, <c>--resume</c> or <c>/resume</c> keeps that promise).
+    /// An unreadable session index fails closed.
+    /// </summary>
+    public async Task<bool> IsTemporaryAsync(string conversationId, CancellationToken ct = default)
+    {
+        if (Temporary) return true;
+        if (Sessions is null) return false;
+        try { return (await Sessions.GetAsync(conversationId, ct).ConfigureAwait(false))?.Temporary == true; }
+        catch (Exception) when (!ct.IsCancellationRequested) { return true; }
+    }
     public SwarmCode.Hosting.DecisionSessionCoordinator? Decisions { get; init; }
     public SwarmCode.Hosting.WorkspaceSessionCatalog? Sessions { get; init; }
     public string? RepositoryRoot { get; init; }
@@ -90,6 +112,45 @@ public sealed class TurnRunner
     }
 
     public async Task<TurnOutcome> RunAsync(string conversationId, string message, string? lane, CancellationToken ct, bool explicitLane = true)
+        => await RunCoreAsync(conversationId, message, lane, ct, explicitLane).ConfigureAwait(false);
+
+    public async Task RunGoalAsync(CodingGoalCommand command, string conversationId, string? lane,
+        CodingPermissionMode mode, bool? allowHandOff, string? model, CancellationToken ct = default)
+    {
+        if (Services?.GetService<CodingGoalOrchestrator>() is not { } goals)
+        {
+            Console.WriteLine("Goals are unavailable in this host.");
+            return;
+        }
+        if (command.Kind == CodingGoalCommandKind.Invalid) { Console.WriteLine(command.Error); return; }
+        if (command.Kind is CodingGoalCommandKind.Pause or CodingGoalCommandKind.Cancel)
+        {
+            var controlled = await goals.ControlAsync(conversationId, command.Kind == CodingGoalCommandKind.Pause
+                ? CodingGoalControl.Pause : CodingGoalControl.Cancel, ct).ConfigureAwait(false);
+            Console.WriteLine(SwarmCode.Hosting.ConversationRunner.FormatGoal(controlled));
+            return;
+        }
+        var saved = await goals.GetAsync(conversationId, ct).ConfigureAwait(false);
+        if (command.Kind == CodingGoalCommandKind.Status)
+        {
+            Console.WriteLine(SwarmCode.Hosting.ConversationRunner.FormatGoal(saved));
+            return;
+        }
+        if (PlanMode) { Console.WriteLine("Turn off plan mode with /plan before starting or resuming a goal."); return; }
+        if (command.Kind == CodingGoalCommandKind.Resume && (saved is null || saved.Status is ContinualObjectiveStatus.Completed or ContinualObjectiveStatus.Cancelled or ContinualObjectiveStatus.Idle))
+        {
+            Console.WriteLine(SwarmCode.Hosting.ConversationRunner.FormatGoal(saved));
+            return;
+        }
+        PermissionMode = mode;
+        ModelOverride = model;
+        await RunCoreAsync(conversationId, command.Objective ?? saved!.ObjectiveText, lane, ct,
+            !string.IsNullOrWhiteSpace(lane), goalStart: command.Kind == CodingGoalCommandKind.Start,
+            goalId: command.Kind == CodingGoalCommandKind.Resume ? saved!.Id : null, goalHandOff: allowHandOff).ConfigureAwait(false);
+    }
+
+    private async Task<TurnOutcome> RunCoreAsync(string conversationId, string message, string? lane, CancellationToken ct,
+        bool explicitLane, bool goalStart = false, Guid? goalId = null, bool? goalHandOff = null)
     {
         // An explicit lane is the starting preference; --no-handoff separately controls retries.
         explicitLane &= !string.IsNullOrWhiteSpace(lane);
@@ -100,14 +161,14 @@ public sealed class TurnRunner
         {
             try
             {
-                var intake = await _secrets.ScrubAsync(message, ct).ConfigureAwait(false);
+                var intake = await _secrets.ScrubAsync(message, ct, overwriteExisting: goalId is null).ConfigureAwait(false);
                 if (intake.StoredNames.Count > 0)
                 {
                     message = intake.Text;
                     Console.Error.WriteLine($"[vault] {intake.Message}");
                 }
             }
-            catch (OperationCanceledException) { throw; }
+            catch (OperationCanceledException) { Console.Error.WriteLine("(cancelled)"); return TurnOutcome.Abandoned; }
             catch (Exception)
             {
                 Console.Error.WriteLine("[vault] Could not protect credentials. The message was not sent. Retry or save credentials in the vault first.");
@@ -115,8 +176,12 @@ public sealed class TurnRunner
             }
         }
 
+        bool temporary;
+        try { temporary = await IsTemporaryAsync(conversationId, ct).ConfigureAwait(false); }
+        catch (OperationCanceledException) { Console.Error.WriteLine("(cancelled)"); return TurnOutcome.Abandoned; }
+
         var laneMessage = message;
-        if (Services is not null)
+        if (Services is not null && goalId is null)
         {
             SwarmCode.Hosting.Extensions.PromptHookResult prompt;
             try { prompt = await SwarmCode.Hosting.Extensions.SwarmCodeTurnHooks.BeforePromptAsync(Services, conversationId, message, ct).ConfigureAwait(false); }
@@ -158,21 +223,30 @@ public sealed class TurnRunner
             ConversationId = conversationId,
             UserMessage = laneMessage,
             // Hook context and @file contents travel with the lane message; the person's authenticated words stay the typed text.
-            AuthenticatedOriginalUserMessage = laneMessage != message ? message : null,
+            AuthenticatedOriginalUserMessage = goalId is not null || laneMessage != message ? message : null,
             LaneName = lane,
             ModelOverride = ModelOverride,
-            AllowHandOff = _allowHandOff,
-            RememberModelResponses = !Temporary,
+            AllowHandOff = goalHandOff ?? _allowHandOff,
+            IsContinuation = goalId is not null,
+            RememberModelResponses = !temporary,
             PlanMode = planTurn,
             CompactWorkingContextFirst = compactFirst,
-            ExecutionLimits = MaxIterations > 0 ? new SwarmCore.Coding.CodingExecutionLimits { MaxIterations = MaxIterations } : null,
+            // A per-job limits record replaces configuration in the harness, so start with the configured
+            // snapshot before overriding the one CLI flag. No flag leaves configuration resolved by the harness.
+            ExecutionLimits = MaxIterations > 0
+                ? (Services?.GetService<IOptions<CodingOptions>>()?.Value.ExecutionLimits ?? new CodingExecutionLimits())
+                    .WithMaxIterations(MaxIterations)
+                : null,
         }, policy, "swarmcode-cli");
 
-        var memoryTurn = MemoryTurns?.Create(conversationId, Temporary, message, Guid.NewGuid().ToString("N"));
+        var memoryTurn = MemoryTurns?.Create(conversationId, temporary, goalId is null ? message : null, Guid.NewGuid().ToString("N"));
         var checkpoint = await BeginCheckpointAsync(conversationId, ct).ConfigureAwait(false);
         long? revision = null;
         var reassessModel = true;
         var agentTurn = Agents?.BeginExternalTurn(conversationId);
+        ContinualObjectiveSnapshot? finalGoal = null;
+        bool CompletedSuccessfully() => finalGoal is not null
+            ? finalGoal.Status == ContinualObjectiveStatus.Completed : _renderer.Outcome == TurnOutcome.Completed;
         try
         {
             if (Decisions is not null && Sessions is not null && RepositoryRoot is not null)
@@ -180,14 +254,30 @@ public sealed class TurnRunner
                 await Sessions.EnsureAsync(conversationId, RepositoryRoot, ct).ConfigureAwait(false);
                 if (explicitLane && lane is not null && _orchestrator.ResolveLane(lane) is { } selected)
                     await Sessions.SetUserLaneAsync(conversationId, selected.Name, selected.Model, ct).ConfigureAwait(false);
-                var selection = await Decisions.PrepareAsync(conversationId, message, lane, ModelOverride, _orchestrator.Lanes, false, ct).ConfigureAwait(false);
+                var selection = await Decisions.PrepareAsync(conversationId, message, lane, ModelOverride, _orchestrator.Lanes, goalId is not null, ct).ConfigureAwait(false);
                 request = request with { LaneName = selection.Lane, ModelOverride = selection.Model };
                 revision = selection.Revision;
                 if (selection.Notice is { } notice) Console.Error.WriteLine(notice);
             }
+            var stream = _orchestrator.RunAsync(request, ct);
+            if (goalStart || goalId is not null)
+            {
+                var goals = Services!.GetRequiredService<CodingGoalOrchestrator>();
+                finalGoal = goalStart ? await goals.StartAsync(request, ct).ConfigureAwait(false)
+                    : await goals.ControlAsync(conversationId, CodingGoalControl.Resume, ct).ConfigureAwait(false);
+                if (finalGoal is null || goalId is not null && finalGoal.Id != goalId)
+                    throw new InvalidOperationException("The saved goal changed. Check /goal status before resuming.");
+                stream = goals.RunAsync(request, finalGoal.Id, ct);
+            }
             using (memoryTurn is null ? null : MemoryTurns!.Begin(memoryTurn))
-                await foreach (var evt in _orchestrator.RunAsync(request, ct).ConfigureAwait(false))
+                await foreach (var evt in stream.ConfigureAwait(false))
                 {
+                    if (evt is CodingGoalChanged changed)
+                    {
+                        finalGoal = changed.Goal;
+                        if (finalGoal.Status == ContinualObjectiveStatus.Completed) _renderer.FinishVerifiedGoal();
+                        Console.Error.WriteLine(SwarmCode.Hosting.ConversationRunner.FormatGoal(finalGoal));
+                    }
                     _renderer.Render(evt);
                     if (evt is CodingLanesExhausted { ReassessModel: false }) reassessModel = false;
                     if (Decisions is not null && evt is CodingLaneSelected selected)
@@ -212,13 +302,13 @@ public sealed class TurnRunner
         {
             if (Services is not null)
                 foreach (var warning in await SwarmCode.Hosting.Extensions.SwarmCodeTurnHooks.AfterTurnAsync(Services, conversationId,
-                             _renderer.Outcome == TurnOutcome.Completed, ct.IsCancellationRequested, _renderer.Outcome == TurnOutcome.Errored ? "turn failed" : null).ConfigureAwait(false))
+                             CompletedSuccessfully(), ct.IsCancellationRequested, _renderer.Outcome == TurnOutcome.Errored ? "turn failed" : null).ConfigureAwait(false))
                     Console.Error.WriteLine($"[hooks] {warning}");
             if (checkpoint is not null) await CompleteCheckpointAsync(conversationId, checkpoint).ConfigureAwait(false);
             agentTurn?.Dispose();
             if (Agents is not null)
                 await Agents.Team.ReportTurnFinishedAsync(conversationId, new SwarmCore.Coding.Agents.AgentTurnOutcome(
-                    _renderer.Outcome == TurnOutcome.Completed, ct.IsCancellationRequested, null, null, 0), CancellationToken.None).ConfigureAwait(false);
+                    CompletedSuccessfully(), ct.IsCancellationRequested, null, null, 0), CancellationToken.None).ConfigureAwait(false);
         }
 
         if (planTurn && _renderer.Outcome == TurnOutcome.Completed)
@@ -226,9 +316,12 @@ public sealed class TurnRunner
             PlanAwaitingApproval = true;
             Console.Error.WriteLine("[plan] Plan delivered. Type /approve to implement it, or keep discussing (plan mode stays on; /plan turns it off).");
         }
-        if (memoryTurn is not null && _renderer.Outcome == TurnOutcome.Completed) MemoryCapture?.Schedule(memoryTurn);
-        if (Decisions is not null && reassessModel && _renderer.Outcome != TurnOutcome.Completed)
+        if (memoryTurn is not null && CompletedSuccessfully()) MemoryCapture?.Schedule(memoryTurn);
+        if (Decisions is not null && reassessModel && !CompletedSuccessfully()
+            && finalGoal?.Status is not (ContinualObjectiveStatus.WaitingForInput or ContinualObjectiveStatus.Paused or ContinualObjectiveStatus.Cancelled))
             await Decisions.MarkFailedAsync(conversationId, revision, ct).ConfigureAwait(false);
+        if (finalGoal is not null)
+            return finalGoal.Status == ContinualObjectiveStatus.Completed ? TurnOutcome.Completed : TurnOutcome.Exhausted;
         return _renderer.Outcome == TurnOutcome.None ? TurnOutcome.Errored : _renderer.Outcome;
     }
 

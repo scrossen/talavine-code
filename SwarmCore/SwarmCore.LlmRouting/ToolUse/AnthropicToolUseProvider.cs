@@ -6,6 +6,7 @@ using System.Text.Json.Nodes;
 using Microsoft.Extensions.Logging;
 using SwarmCore.Abstractions.LlmRouting;
 using SwarmCore.LlmRouting.Configuration;
+using SwarmCore.LlmRouting.ProviderPacks;
 
 namespace SwarmCore.LlmRouting.ToolUse;
 
@@ -234,6 +235,13 @@ public sealed class AnthropicToolUseProvider : IToolUseProvider
                     break;
                 }
 
+                case "error":
+                    // Generation ended with a provider failure (overloaded,
+                    // rate limit, api error) after the 200 headers. It is a
+                    // failed turn for the router's retry and fail-over, never
+                    // a completed answer built from the partial text.
+                    throw ProviderErrorRecord.FromAnthropic(evt["error"], "stream");
+
                 case "message_stop":
                 case "ping":
                 default:
@@ -294,6 +302,13 @@ public sealed class AnthropicToolUseProvider : IToolUseProvider
                 var contentArr = new JsonArray();
                 while (i < pending.Count && pending[i].Role == ChatRole.Tool)
                 {
+                    // Same contract as the OpenAI-style and Ollama translators;
+                    // an empty tool_result list would also be an HTTP 400 here.
+                    if (!pending[i].Parts.OfType<ToolResultPart>().Any())
+                    {
+                        throw new InvalidOperationException("Tool-role message must contain a ToolResultPart.");
+                    }
+
                     foreach (var result in pending[i].Parts.OfType<ToolResultPart>())
                     {
                         var block = new JsonObject
@@ -396,7 +411,8 @@ public sealed class AnthropicToolUseProvider : IToolUseProvider
             });
         }
 
-        if (request.Options?.Temperature is float temp)
+        if (request.Options?.Temperature is float temp
+            && ProviderPackCatalog.AcceptsSamplingParameters("Claude", model))
         {
             payload["temperature"] = temp;
         }

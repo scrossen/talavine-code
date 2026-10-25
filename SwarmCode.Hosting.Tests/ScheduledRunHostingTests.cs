@@ -160,6 +160,8 @@ public class ScheduledRunHostingTests : TempDirTest
         Assert.Contains("disk unavailable", stored.Run.LastNote);
         Assert.False(scheduler.IsRunning(schedule.Id));
         Assert.Equal(0, workspaces.BackgroundWorkspaceCount);
+        // The run never started, so no empty "⏱" session is left in the sidebar (each retry would add another).
+        Assert.Empty(await sessions.ListAsync());
     }
 
     [Fact]

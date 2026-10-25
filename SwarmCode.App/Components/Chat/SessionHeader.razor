@@ -1,3 +1,4 @@
+@namespace SwarmCode.App.Components.Chat
 <div class="sess-header">
     <div class="sess-header__main">
         <div class="sess-header__heading">
@@ -18,7 +19,7 @@
         <ChatLaneChip Lane="@Lane" Title="Lane" Class="sess-chip sess-chip--lane" />
         @if (IsRunning)
         {
-            <span class="sess-running" role="status"><span class="sess-running__dot"></span>Running</span>
+            <span class="sess-running" role="status">@DisplayStatus</span>
         }
         @if (!string.IsNullOrWhiteSpace(Model)) { <span class="sess-header__model" title="Active model">@Model</span> }
         @if (CreatedUtc is { } created)
@@ -37,10 +38,11 @@
         {
             <a class="sess-chip sess-chip--lane" href="/agents" title="Agents this session started">@ActiveAgents @(ActiveAgents == 1 ? "agent" : "agents") working</a>
         }
+        @if (WaitingAgents > 0) { <a class="sess-chip" href="/agents">@WaitingAgents @(WaitingAgents == 1 ? "agent" : "agents") waiting</a> }
         </div>
     </div>
     <div class="sess-header__actions">
-        <button type="button" class="sess-btn @(ArtifactsOpen ? "sess-btn--active" : "")" aria-pressed="@ArtifactsOpen" @onclick="() => OnToggleArtifacts.InvokeAsync()">Artifacts</button>
+        <button type="button" class="sess-btn @(ArtifactsOpen ? "sess-btn--active" : "")" aria-pressed="@(ArtifactsOpen ? "true" : "false")" @onclick="() => OnToggleArtifacts.InvokeAsync()">Artifacts</button>
         <button type="button" class="sess-btn @(ChangesOpen ? "sess-btn--active" : "")" aria-pressed="@(ChangesOpen ? "true" : "false")" @onclick="() => OnToggleChanges.InvokeAsync()">
             Changes@(ChangeCount > 0 ? $" ({ChangeCount})" : "")
         </button>
@@ -58,6 +60,7 @@
     [Parameter] public bool ArtifactsOpen { get; set; }
     [Parameter] public EventCallback OnToggleArtifacts { get; set; }
     [Parameter] public bool IsRunning { get; set; }
+    [Parameter] public string DisplayStatus { get; set; } = "Running";
     [Parameter] public bool ChangesOpen { get; set; }
     [Parameter] public int ChangeCount { get; set; }
     [Parameter] public EventCallback<string> OnRename { get; set; }
@@ -71,6 +74,7 @@
     [Parameter] public string? ParentTitle { get; set; }
     /// <summary>Agents this session started that are still working.</summary>
     [Parameter] public int ActiveAgents { get; set; }
+    [Parameter] public int WaitingAgents { get; set; }
     /// <summary>When the session was created and last active (shown as a chip; both in the tooltip).</summary>
     [Parameter] public DateTime? CreatedUtc { get; set; }
     [Parameter] public DateTime? LastActivityUtc { get; set; }

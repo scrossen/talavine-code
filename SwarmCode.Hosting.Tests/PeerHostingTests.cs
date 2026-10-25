@@ -51,14 +51,18 @@ public class PeerHostingTests : TempDirTest
     {
         var services = new ServiceCollection().AddLogging().AddSwarmCodeHost(new() { RepositoryRoot = Tmp, DataPaths = Paths });
         await using var sp = services.BuildServiceProvider();
-        foreach (var service in sp.GetServices<IHostedService>().Where(s => s is PeerToolRegistration || s.GetType().Name == "PeerFilesRegistration")) await service.StartAsync(default);
+        foreach (var service in sp.GetServices<IHostedService>().Where(s => s is PeerToolRegistration || s.GetType().Name is "PeerFilesRegistration" or "PeerCollaborationRegistration")) await service.StartAsync(default);
         var catalog = sp.GetRequiredService<ICapabilityCatalog>();
         var profile = await sp.GetRequiredService<IProfileResolver>().ResolveAsync("parent");
         var tools = profile.Tools.Where(t => t.ToolId.StartsWith("peers.")).ToArray();
-        Assert.Equal(9, tools.Length);
+        Assert.Equal(12, tools.Length);
         Assert.Contains("peers_delegate", HostToolBridgeCatalog.Select(tools, HostToolProfile.Full).Keys);
         Assert.DoesNotContain("peers_delegate", HostToolBridgeCatalog.Select(tools, HostToolProfile.Plan).Keys);
         Assert.DoesNotContain("peers_send_file", HostToolBridgeCatalog.Select(tools, HostToolProfile.Plan).Keys);
+        Assert.DoesNotContain("peers_screen", HostToolBridgeCatalog.Select(tools, HostToolProfile.Plan).Keys);
+        Assert.DoesNotContain("peers_message", HostToolBridgeCatalog.Select(tools, HostToolProfile.Plan).Keys);
+        Assert.DoesNotContain("peers_inbox", HostToolBridgeCatalog.Select(tools, HostToolProfile.Plan).Keys);
+        Assert.Contains("peers_screen", HostToolBridgeCatalog.Select(tools, HostToolProfile.Full).Keys);
         var scope = sp.GetRequiredService<PeerToolScope>();
         var turn = new CurrentTurnContext("parent", null, null, CommunicationScopeUserInitiated: true);
         Assert.True(scope.CanDelegate(turn));
@@ -100,6 +104,38 @@ public class PeerHostingTests : TempDirTest
         handler.Response = "{\"error\":\"second-token\"}";
         var error = await Assert.ThrowsAsync<InvalidOperationException>(() => bridge.CapabilitiesAsync("peer", default));
         Assert.DoesNotContain("second-token", error.Message);
+    }
+
+    [Fact]
+    public async Task Collaboration_calls_use_the_real_control_routes_and_wire_names()
+    {
+        var tokenPath = Path.Combine(Tmp, "control-token.json");
+        await File.WriteAllTextAsync(tokenPath, "{\"port\":12345,\"token\":\"private-token\"}");
+        var handler = new Handler { Response = "{\"messageId\":\"m1\",\"conversationId\":\"c1\"}" };
+        using var bridge = new SwarmSpanPeerBridge(new HttpClient(handler), () => tokenPath);
+        var handle = await bridge.SendMessageAsync("peer", "hello", "c1", default);
+        Assert.Equal("m1", handle.MessageId);
+        Assert.Equal("/v1/messages/send", handler.Uri!.AbsolutePath);
+
+        handler.Response = "[{\"peerDeviceId\":\"peer\",\"peerDisplayName\":\"PC\",\"messageId\":\"m2\",\"conversationId\":\"c1\",\"isReply\":true,\"kind\":\"reply\",\"text\":\"done\",\"receivedUtcMs\":5}]";
+        var inbox = await bridge.InboxAsync("c 1", default);
+        Assert.Equal("done", inbox.Single().Text);
+        Assert.Equal("/v1/messages/inbox", handler.Uri!.AbsolutePath);
+        Assert.Equal("?conversationId=c%201", handler.Uri.Query);
+
+        handler.Response = "{\"requestId\":\"r\",\"runId\":\"run1\",\"state\":\"running\",\"steps\":[],\"nextAfter\":0,\"current\":\"click save\",\"currentElapsedMs\":5000}";
+        var started = await bridge.StartScreenAsync("peer", "screenshot", default);
+        Assert.Equal("/v1/remote-control/start", handler.Uri!.AbsolutePath);
+        Assert.Equal("run1", started.RunId);
+        Assert.False(started.IsFinal);
+        Assert.Equal("click save", started.Current);
+
+        handler.Response = "{\"requestId\":\"r\",\"runId\":\"run1\",\"state\":\"completed\",\"ok\":true,\"detail\":\"ran\",\"nextAfter\":1,\"steps\":[{\"command\":\"screenshot\",\"succeeded\":true,\"text\":\"ok\",\"elapsedMs\":3,\"images\":[{\"subject\":\"screen 1\",\"width\":2,\"height\":3,\"pngBase64\":\"AQID\"}]}],\"notes\":[]}";
+        var screen = await bridge.PollScreenAsync("peer", "run1", 0, 15000, false, default);
+        Assert.True(screen.Ok);
+        Assert.True(screen.IsFinal);
+        Assert.Equal("AQID", screen.Steps.Single().Images.Single().PngBase64);
+        Assert.Equal("/v1/remote-control/poll", handler.Uri!.AbsolutePath);
     }
 
     [Fact]

@@ -64,30 +64,37 @@ public sealed class WindowsComputerSession(IOptions<CodingComputerOptions> optio
 
     public async Task<ComputerActionResult> ExecuteBatchAsync(ComputerActionBatch batch, CancellationToken ct = default)
     {
-        RequireAvailable();
-        await gate.WaitAsync(ct).ConfigureAwait(false);
+        ct.ThrowIfCancellationRequested();
         var completed = 0;
         var dispatched = false;
+        try { RequireAvailable(); }
+        catch (Exception ex) when (ex is ComputerOperationException or PlatformNotSupportedException)
+        { return GuardFailure(ex.Message); }
+        await gate.WaitAsync(ct).ConfigureAwait(false);
         try
         {
-            if (current is null || batch.SessionId != sessionId || batch.SurfaceId != window.ToInt64().ToString()
-                || batch.ObservationId != current.ObservationId)
-                return Failure("stale-or-missing-observation");
-            if (batch.Actions.Count is < 1 or > 64) return Failure("invalid-action-batch");
-            foreach (var action in batch.Actions) ValidateAction(action, current.Width, current.Height);
-            if (!SameWindow() || !PhysicalBounds(window, out var now) || !now.Equals(bounds)) return Failure("window-changed; observe again");
+            var observation = current;
+            if (observation is null || batch.SessionId != sessionId || batch.SurfaceId != window.ToInt64().ToString()
+                || batch.ObservationId != observation.ObservationId)
+                return GuardFailure("stale-or-missing-observation");
+            current = null; // Consume the matching observation before validation or any physical attempt.
+            if (batch.Actions.Count is < 1 or > 64) return GuardFailure("invalid-action-batch");
+            try { foreach (var action in batch.Actions) ValidateAction(action, observation.Width, observation.Height); }
+            catch (ArgumentException ex) { return GuardFailure(ex.Message); }
+            if (!SameWindow() || !PhysicalBounds(window, out var now) || !now.Equals(bounds)) return GuardFailure("window-changed; observe again");
             if (GetForegroundWindow() != window)
             {
+                // Even a rejected activation can change focus before the readback.
+                dispatched = true;
                 SetForegroundWindow(window);
                 if (GetForegroundWindow() != window)
-                    return Failure("Windows did not let Talavine Code bring this window to the front, so no input was sent. Ask the person to click the window once, then observe again.");
+                    return Failure("Windows did not let Talavine Code bring this window to the front, so no input was sent. Ask the person to click the window once, then observe again.", dispatched);
             }
-            current = null; // Observations are consumed even when input/refresh fails; uncertain input must never replay.
             foreach (var action in batch.Actions)
             {
                 ct.ThrowIfCancellationRequested();
                 if (!SameWindow() || GetForegroundWindow() != window || !PhysicalBounds(window, out var actionBounds) || !actionBounds.Equals(bounds))
-                    return Failure("window-focus-or-bounds-changed; observe again", dispatched);
+                    return GuardFailure("window-focus-or-bounds-changed; observe again");
                 dispatched = true;
                 await Task.Run(() => Execute(action, ct), ct).ConfigureAwait(false);
                 completed++;
@@ -101,6 +108,11 @@ public sealed class WindowsComputerSession(IOptions<CodingComputerOptions> optio
             return Failure(ex.Message, dispatched);
         }
         finally { gate.Release(); }
+        ComputerActionResult GuardFailure(string error)
+        {
+            ct.ThrowIfCancellationRequested();
+            return Failure(error, dispatched) with { NoPhysicalAction = !dispatched };
+        }
         ComputerActionResult Failure(string error, bool uncertain = false) => new(false, completed, null, error)
         { Mode = "desktop", BeforeObservationId = batch.ObservationId, OutcomeUncertain = uncertain };
     }

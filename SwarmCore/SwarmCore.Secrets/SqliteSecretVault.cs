@@ -238,6 +238,25 @@ public sealed class SqliteSecretVault : ISecretVault, IConditionalSecretVault
         }, ct).ConfigureAwait(false);
     }
 
+    public async Task<bool> TrySetSiteAsync(string name, string site, bool onlyWhenUnset = false, CancellationToken ct = default)
+    {
+        if (!SecretNames.TryNormalize(name, out var normalized) || string.IsNullOrWhiteSpace(site)) return false;
+        await EnsureInitializedAsync(ct).ConfigureAwait(false);
+        return await Task.Run(() =>
+        {
+            using var connection = Open();
+            using var cmd = connection.CreateCommand();
+            // One statement: a concurrent first use or edit cannot replace a site set in between.
+            cmd.CommandText = onlyWhenUnset
+                ? "UPDATE secrets SET site = $site, updated_utc = $now WHERE name = $name AND (site IS NULL OR trim(site) = '');"
+                : "UPDATE secrets SET site = $site, updated_utc = $now WHERE name = $name;";
+            cmd.Parameters.AddWithValue("$name", normalized);
+            cmd.Parameters.AddWithValue("$site", site.Trim());
+            cmd.Parameters.AddWithValue("$now", Stamp(DateTime.UtcNow));
+            return cmd.ExecuteNonQuery() == 1;
+        }, ct).ConfigureAwait(false);
+    }
+
     public async Task<IReadOnlyList<SecretEntry>> ListAsync(CancellationToken ct = default)
     {
         await EnsureInitializedAsync(ct).ConfigureAwait(false);

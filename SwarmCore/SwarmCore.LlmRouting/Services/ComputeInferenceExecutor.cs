@@ -1,3 +1,4 @@
+using Microsoft.Extensions.Logging;
 using SwarmCore.Abstractions.Compute;
 using SwarmCore.Abstractions.LlmRouting;
 
@@ -9,15 +10,33 @@ namespace SwarmCore.LlmRouting.Services;
 /// This first transport contract cannot authorize metered API execution.
 /// </summary>
 public sealed class ComputeInferenceExecutor(
-    IModelScout scout, ILlmRouter router, ILlmSettingsProvider settings) : IComputeInferenceExecutor
+    IModelScout scout, ILlmRouter router, ILlmSettingsProvider settings,
+    ILogger<ComputeInferenceExecutor> logger) : IComputeInferenceExecutor
 {
     public async Task<ComputeInferenceResult> ExecuteAsync(ComputeInferenceRequest request,
         bool subscriptionSharingEnabled, CancellationToken cancellationToken = default)
     {
         try { return await ExecuteCoreAsync(request, subscriptionSharingEnabled, cancellationToken).ConfigureAwait(false); }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested) { throw; }
-        catch (Exception) { return Failure(request, "route_unavailable"); }
+        catch (Exception ex)
+        {
+            LogFailure(request, "route_unavailable", ex);
+            return Failure(request, "route_unavailable");
+        }
     }
+
+    // Records why a coded failure happened on the receiver so a defect is not
+    // indistinguishable from an unavailable route. Only the exception type and a
+    // redacted, bounded diagnostic are logged: never the prompt, and nothing is
+    // transported back to the coordinator.
+    private void LogFailure(ComputeInferenceRequest request, string errorCode, Exception ex)
+        => logger.LogWarning(
+            "Compute inference request {RequestId} for job {JobId} failed with {ErrorCode}: {ExceptionType}: {Diagnostic}",
+            request.Id,
+            request.JobId,
+            errorCode,
+            ex.GetType().FullName,
+            RoutingDiagnosticSanitizer.Sanitize(ex.Message, 500));
 
     private async Task<ComputeInferenceResult> ExecuteCoreAsync(ComputeInferenceRequest request,
         bool subscriptionSharingEnabled, CancellationToken cancellationToken)
@@ -125,9 +144,10 @@ public sealed class ComputeInferenceExecutor(
             };
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested) { throw; }
-        catch (Exception)
+        catch (Exception ex)
         {
             // Provider exception text may contain prompt text or credentials; never transport it.
+            LogFailure(request, "inference_failed", ex);
             return Failure(request, "inference_failed") with
             {
                 ProviderName = candidate.Provider, Model = candidate.Model,

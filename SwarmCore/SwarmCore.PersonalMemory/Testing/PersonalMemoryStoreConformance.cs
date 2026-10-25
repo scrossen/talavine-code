@@ -5,7 +5,7 @@ namespace SwarmCore.PersonalMemory.Testing;
 /// test projects call <see cref="RunAsync"/> against a fresh store and assert the returned failure
 /// list is empty. Covers: idempotent append, scope isolation, explicit-field patches (including
 /// intentional null/false), version conflicts, all-or-nothing commits, competing writers, and
-/// delete-then-save interleavings.
+/// delete-then-save interleavings, and the forget-candidate lookup.
 /// </summary>
 public static class PersonalMemoryStoreConformance
 {
@@ -19,6 +19,7 @@ public static class PersonalMemoryStoreConformance
         await Check("competing writers", CompetingWriters);
         await Check("delete then save", DeleteThenSave);
         await Check("cross-scope write rejected", CrossScopeWrite);
+        await Check("forget candidates", ForgetCandidates);
         return failures;
 
         async Task Check(string name, Func<IPersonalMemoryStore, CancellationToken, Task<string?>> test)
@@ -64,6 +65,39 @@ public static class PersonalMemoryStoreConformance
         CreatedAt = DateTimeOffset.UtcNow,
         UpdatedAt = DateTimeOffset.UtcNow,
     };
+
+    private static async Task<string?> ForgetCandidates(IPersonalMemoryStore store, CancellationToken ct)
+    {
+        // Two copies of one statement (different wording only in case/punctuation), an unrelated fact, a
+        // fact superseded by the copy, a claim with the same words and one whose result is the copy.
+        var original = Fact(A) with { Key = "drink-a" };
+        var copy = Fact(A) with { Key = "drink-b", Text = "user prefers TEA over coffee" };
+        var other = Fact(A) with { Key = "home", Text = "User lives in Denver." };
+        var earlier = Fact(A) with { Key = "drink-c", Text = "User prefers coffee.", SupersededById = copy.Id };
+        var foreign = Fact(B) with { Key = "drink-a" };
+        foreach (var (scope, fact) in new[] { (A, original), (A, copy), (A, other), (A, earlier), (B, foreign) })
+        {
+            var inserted = await store.CommitAsync(scope, MemoryChangeSet.Of(new MemoryFactInsert(fact)), ct);
+            if (!inserted.Succeeded) return "insert failed: " + inserted.Status;
+        }
+        var sameWords = (await store.AppendClaimAsync(Claim(A, "same-words"), ct)).Claim;
+        var resulting = (await store.AppendClaimAsync(Claim(A, "resulting") with { Text = "Tea, not coffee." }, ct)).Claim;
+        var unrelated = (await store.AppendClaimAsync(Claim(A, "unrelated") with { Text = "User lives in Denver." }, ct)).Claim;
+        var applied = await store.CommitAsync(A, MemoryChangeSet.Of(
+            new MemoryClaimTransition(resulting.Id, resulting.Version, MemoryClaimStatus.Applied, copy.Id, "test")), ct);
+        if (!applied.Succeeded) return "claim transition failed: " + applied.Status;
+
+        var found = await store.GetForgetCandidatesAsync(A,
+            [MemoryTextScreen.NormalizeForComparison(original.Text)], [original.Id], ct);
+        var facts = found.SameStatementFacts.Select(f => f.Id).ToHashSet();
+        if (!facts.SetEquals([original.Id, copy.Id])) return "same-statement facts must be exactly both copies in scope";
+        var claims = found.Claims.Select(c => c.Id).ToHashSet();
+        if (!claims.Contains(sameWords.Id) || !claims.Contains(resulting.Id) || claims.Contains(unrelated.Id))
+            return "claims must include the same words and the copy's source claim only";
+        if (!found.SupersededByForgotten.Select(f => f.Id).SequenceEqual([earlier.Id]))
+            return "the fact superseded by a forgotten copy must be returned";
+        return null;
+    }
 
     private static async Task<string?> IdempotentAppend(IPersonalMemoryStore store, CancellationToken ct)
     {

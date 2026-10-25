@@ -219,46 +219,6 @@ public static class ServiceCollectionExtensions
     }
 
     /// <summary>
-    /// Adds the core LLM routing services with a custom lifetime
-    /// </summary>
-    public static IServiceCollection AddSwarmCoreRouting(this IServiceCollection services, ServiceLifetime lifetime)
-    {
-        services.Add(new ServiceDescriptor(typeof(ILlmRouter), typeof(LlmRouter), lifetime));
-        services.AddSingleton<ILlmProviderRegistry, LlmProviderRegistry>();
-        services.TryAddSingleton(_ => LlmProviderDiscoveryCoordinator.Shared);
-        services.TryAddSingleton<LlmModelValidationCoordinator>();
-        services.AddSingleton<LlmRoutingBenchmarkService>();
-        services.AddSingleton<ILlmRoutingOptimizationService, LlmRoutingOptimizationService>();
-        services.TryAdd(new ServiceDescriptor(typeof(ILlmRoutingGovernor), typeof(LlmRoutingGovernor), lifetime));
-        services.TryAddSingleton<ISystemActivitySignal, DefaultSystemActivitySignal>();
-        services.TryAddSingleton<IRoutingPolicyStore, InMemoryRoutingPolicyStore>();
-        services.TryAdd(new ServiceDescriptor(typeof(IBudgetPressureSource), typeof(UsageBackedBudgetPressureSource), lifetime));
-        services.TryAddSingleton<ISubscriptionQuotaTracker, InMemorySubscriptionQuotaTracker>();
-        services.TryAdd(new ServiceDescriptor(
-            typeof(ILlmRoutingAuditStore),
-            typeof(MissingLlmRoutingAuditStore),
-            lifetime));
-        services.TryAddSingleton<ILlmDegradedRouteNoticeSink, InMemoryLlmDegradedRouteNoticeSink>();
-        services.TryAddSingleton<IToolUseCalibrationCatalog, InMemoryToolUseCalibrationCatalog>();
-        services.TryAddSingleton<IToolUseValidator>(NullToolUseValidator.Instance);
-        services.TryAdd(new ServiceDescriptor(typeof(IToolUseCalibrationService), typeof(DefaultToolUseCalibrationService), lifetime));
-        services.TryAdd(new ServiceDescriptor(typeof(IRoutingProfileBuilder), typeof(DefaultRoutingProfileBuilder), lifetime));
-        services.TryAddSingleton<ILocalLlmRuntimeManager, LocalLlmRuntimeManager>();
-        services.AddOptions<LlmDebugLoggerOptions>();
-
-        // Register the debug logger (only active in DEBUG builds)
-#if DEBUG
-        services.AddSingleton<ILlmDebugLogger, FileLlmDebugLogger>();
-#else
-        services.AddSingleton<ILlmDebugLogger>(NullLlmDebugLogger.Instance);
-#endif
-
-        services.TryAddSingleton<IModelPricingFetcher, ProviderPricingFetcher>();
-
-        return services;
-    }
-
-    /// <summary>
     /// Adds the built-in dynamic routing advisors that read <see cref="RoutingPolicy"/>,
     /// <see cref="SystemActivitySnapshot"/>, and <see cref="BudgetPressureSnapshot"/>:
     ///
@@ -445,9 +405,12 @@ public static class ServiceCollectionExtensions
     }
 
     /// <summary>
-    /// Adds all built-in LLM providers (OpenAI, Claude, Gemini, Ollama).
-    /// Ollama is auto-configured if available locally.
-    /// Cloud providers require API keys to be configured separately.
+    /// Adds the provider subset used by the developer harnesses: OpenAI, Claude,
+    /// Gemini and OpenRouter (cloud, API keys configured separately), Ollama
+    /// (auto-configured when running locally), LM Studio, and the subscription
+    /// CLIs. It does not register DeepSeek, Grok, HuggingFace or Venice; hosts
+    /// choose cloud providers explicitly through
+    /// <see cref="AddSwarmCoreLlmRouting(IServiceCollection, Action{SwarmCoreLlmRoutingOptions})"/>.
     /// </summary>
     public static IServiceCollection AddAllLlmProviders(this IServiceCollection services)
     {

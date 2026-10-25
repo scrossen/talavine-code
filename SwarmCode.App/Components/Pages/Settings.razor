@@ -8,6 +8,7 @@
 @using SwarmCore.Coding.Computer
 @using SwarmCore.Coding.Files
 @using SwarmCode.Hosting.Web
+@using SwarmCode.Hosting.Goals
 
 <PageTitle>Settings - Talavine Code</PageTitle>
 
@@ -572,11 +573,11 @@
                 <label class="sc-field__label" for="sc-si-repo">Talavine Code source repository</label>
                 <input id="sc-si-repo" class="sc-input sc-input--mono" placeholder="@(_selfImprovementDetected ?? "Not found: enter the checkout folder")" value="@_selfImprovement.RepositoryRoot"
                        @onchange="e => _selfImprovement.RepositoryRoot = string.IsNullOrWhiteSpace(e.Value?.ToString()) ? null : e.Value!.ToString()!.Trim()" />
-                <p class="sc-muted sc-note">@(_selfImprovementDetected is null ? "No checkout was detected near this build; cycles stay off until a folder is set." : "Empty uses the detected checkout: " + _selfImprovementDetected)</p>
+                <p class="sc-muted sc-note">@(!string.IsNullOrWhiteSpace(_selfImprovement.RepositoryRoot) ? "Repair cycles use the configured source folder after these settings are saved." : _selfImprovementDetected is null ? "No checkout was detected near this build; set a source folder to enable repair cycles." : "Empty uses the detected checkout: " + _selfImprovementDetected)</p>
             </div>
             <div class="sc-row">
                 <div class="sc-field"><label class="sc-field__label" for="sc-si-idle">Quiet minutes before a cycle starts</label><input id="sc-si-idle" class="sc-input" type="number" min="1" max="720" @bind="_selfImprovementIdleMinutes" /></div>
-                <div class="sc-field"><label class="sc-field__label" for="sc-si-attempts">Attempts per item</label><input id="sc-si-attempts" class="sc-input" type="number" min="1" max="10" @bind="_selfImprovement.MaxAttemptsPerItem" /></div>
+                <div class="sc-field"><label class="sc-field__label" for="sc-si-attempts">Attempts for ordinary repairs</label><input id="sc-si-attempts" class="sc-input" type="number" min="1" max="10" @bind="_selfImprovement.MaxAttemptsPerItem" /></div>
                 <div class="sc-field"><label class="sc-field__label" for="sc-si-lane">Lane (empty: your default)</label><input id="sc-si-lane" class="sc-input" @bind="_selfImprovement.Lane" /></div>
             </div>
             <div class="sc-list__row">
@@ -589,8 +590,11 @@
                 <label class="sc-toggle"><input type="checkbox" @bind="_selfImprovement.AllowUnderDebugger" /><span class="sc-toggle__track"></span><span>Let cycles start while a debugger is attached (the "self-improvement" VS Code launch profile sets this)</span></label>
             </div>
             <div class="sc-list__row">
-                <label class="sc-toggle"><input type="checkbox" @bind="_selfImprovement.MergeVerifiedFixes" /><span class="sc-toggle__track"></span><span>Fast-forward a verified fix into the source checkout when it is clean and unchanged</span></label>
-                <p class="sc-muted sc-note">Off: every verified fix stays on its own <code>swarmcode/self-improvement-…</code> branch for you to review and merge. Build and test commands are discovered from the repository; override them under <code>Coding:SelfImprovement:Checks</code> in <code>@SettingsFile.Path</code>.</p>
+                <label class="sc-toggle"><input type="checkbox" @bind="_selfImprovement.MergeVerifiedFixes" /><span class="sc-toggle__track"></span><span>Automatically merge ordinary verified fixes when the source checkout is clean and unchanged</span></label>
+                <label class="sc-toggle"><input type="checkbox" @bind="_selfImprovement.AutoApplyGoalRepairs" /><span class="sc-toggle__track"></span><span>Automatically merge and install verified goal repairs when idle, then continue saved goals after restart</span></label>
+                <p class="sc-muted sc-note">Completed actions stay recorded. Paused or cancelled goals stay stopped. An uncertain send still needs verification before it can be repeated.</p>
+                <p class="sc-muted sc-note">Automatic goal repairs keep retrying with backoff. The attempt limit above applies to ordinary repairs.</p>
+                <p class="sc-muted sc-note">With both options off, verified fixes stay on their own <code>swarmcode/self-improvement-…</code> branches for you to review and merge. Build and test commands are discovered from the repository; override them under <code>Coding:SelfImprovement:Checks</code> in <code>@SettingsFile.Path</code>.</p>
             </div>
             <div class="sc-row">
                 <button type="button" class="sc-btn sc-btn--primary" disabled="@_busy" @onclick="SaveSelfImprovementAsync">Save self-improvement settings</button>
@@ -618,14 +622,73 @@
             </div>
         </div>
     </section>
+    <section class="sc-card">
+        <h2 class="sc-card__title">Goal history</h2>
+        <p class="sc-card__copy">
+            Talavine Code saves a record of everything an agent ran for a goal, with the full output, so you can check the work later.
+            Trimming removes the full output from old records once the work is closed; it keeps what happened, a short excerpt and a
+            fingerprint of the output. Goals that are still working are never touched.
+        </p>
+        <label class="sc-toggle">
+            <input type="checkbox" checked="@Prefs.CompactGoalReceipts" disabled="@_compacting" aria-label="Trim old goal records while Talavine Code is idle"
+                   @onchange="e => UpdatePref(p => p.CompactGoalReceipts = (bool)e.Value!)" />
+            <span class="sc-toggle__track"></span><span>Trim old goal records while Talavine Code is idle</span>
+        </label>
+        <p class="sc-muted sc-note">Applies a month after an attempt is closed, or a week after a goal finishes.</p>
+        @if (_goalStorageError is { } storageError)
+        {
+            <div class="sc-notice sc-notice--error" role="alert">Couldn't read the goals folder: @storageError</div>
+        }
+        else if (_goalStorage is null)
+        {
+            <Spinner />
+        }
+        else
+        {
+            var storage = _goalStorage;
+            <div class="sc-list">
+                <div class="sc-list__row">
+                    <div class="sc-grow"><div class="sc-field__label">Goal list</div><div class="sc-mono">@Path.Combine(storage.Directory, "objectives.json")</div></div>
+                    <span class="sc-chip">@GoalReceiptCompaction.Size(storage.InventoryBytes)</span>
+                </div>
+                <div class="sc-list__row">
+                    <div class="sc-grow"><div class="sc-field__label">Saved outputs</div><div class="sc-muted">@(storage.BodyLogs == 0 ? "No goal history yet." : $"{storage.BodyLogs} file{(storage.BodyLogs == 1 ? "" : "s")} in receipt-bodies")</div></div>
+                    @if (storage.BodyLogs > 0) { <span class="sc-chip">@GoalReceiptCompaction.Size(storage.BodyLogBytes)</span> }
+                </div>
+            </div>
+            @if (storage.Stray.Count > 0)
+            {
+                <p class="sc-muted sc-note">
+                    @storage.Stray.Count item@(storage.Stray.Count == 1 ? "" : "s") in the goals folder that Talavine Code does not use (@GoalReceiptCompaction.Size(storage.StrayBytes)),
+                    left by other programs or a backup copy. Delete them yourself if you no longer need them; Talavine Code never removes them.
+                </p>
+                <div class="sc-list">
+                    @foreach (var file in storage.Stray)
+                    {
+                        <div class="sc-list__row">
+                            <div class="sc-grow sc-mono">@StrayLabel(storage, file)</div>
+                            <span class="sc-chip">@GoalReceiptCompaction.Size(file.Bytes)</span>
+                        </div>
+                    }
+                </div>
+            }
+        }
+        <p class="sc-muted sc-note">@CompactionStatus</p>
+        <div class="sc-row">
+            <button type="button" class="sc-btn sc-btn--sm" disabled="@_compacting" aria-busy="@(_compacting ? "true" : "false")" @onclick="CompactNowAsync">@(_compacting ? "Trimming…" : "Trim now")</button>
+            <button type="button" class="sc-btn sc-btn--sm" disabled="@_compacting" @onclick="LoadGoalStorageAsync">Check again</button>
+            <button type="button" class="sc-btn sc-btn--sm" @onclick="OpenGoalsFolder">Open goals folder</button>
+        </div>
+        <p class="sc-muted sc-note">Trim now runs one pass right away, even with the switch off. Trimmed outputs can't be brought back; goals still working are left alone.</p>
+    </section>
     </SettingsDialog>
     </div>
     </details>
 </div>
 
 @code {
-    private UserSettingsFile? _settingsFile;
-    private UserSettingsFile SettingsFile => _settingsFile ??= new(State.Paths);
+    // One settings file instance per app, shared with the rest of the shell.
+    private UserSettingsFile SettingsFile => State.UserSettings;
     private string _settingsSearch = "";
     private static readonly string[] ByokProviders = ["OpenAI", "Claude", "Gemini", "OpenRouter", "DeepSeek", "Grok", "HuggingFace", "Venice"];
     private static readonly string[] KnownProviders = ["ClaudeCodeNative", "CodexNative", "GeminiCliNative", "ClaudeCode", "CodexCli", "OpenAI", "Claude", "Gemini", "OpenRouter", "DeepSeek", "Grok", "HuggingFace", "Venice", "Ollama", "LMStudio"];
@@ -783,19 +846,52 @@
         await RefreshKeysAsync();
         await RefreshSecretsAsync();
         await RefreshModelHistoryAsync();
+        await LoadGoalStorageAsync();
     }
 
-    private void OnChanged() => _ = InvokeAsync(async () => { await RefreshReturnDestinationAsync(); await RefreshKeysAsync(); await LoadDefaultFavoritesAsync(); StateHasChanged(); });
+    // App events arrive for every runner event (each streamed chunk). Refreshes are coalesced: one runs at a time, a
+    // change that arrives meanwhile reruns it once, and while a turn streams the reruns are spaced a second apart.
+    private int _refreshState; // 0 idle, 1 running, 2 running + rerun requested
+    private void OnChanged() => _ = InvokeAsync(RefreshOnChangeAsync);
+
+    private async Task RefreshOnChangeAsync()
+    {
+        if (Interlocked.CompareExchange(ref _refreshState, 1, 0) != 0)
+        {
+            Interlocked.Exchange(ref _refreshState, 2);
+            return;
+        }
+        try
+        {
+            do
+            {
+                Interlocked.Exchange(ref _refreshState, 1);
+                await RefreshReturnDestinationAsync();
+                await RefreshKeysAsync();
+                await LoadDefaultFavoritesAsync();
+                StateHasChanged();
+                if (State.AnyTurnRunning) await Task.Delay(1000);
+            }
+            while (Interlocked.CompareExchange(ref _refreshState, 0, 1) == 2);
+        }
+        catch (Exception ex)
+        {
+            DesktopHost.LogToFile($"Settings refresh failed: {ex.Message}");
+            Interlocked.Exchange(ref _refreshState, 0);
+        }
+    }
 
     private IReadOnlyList<CodingLane> _sourceLanes = [];
     private async Task SourcesChangedAsync()
     {
-        _sourceLanes = await Task.Run(() => new ModelSourcesStore(State.Paths).Read().Sources.Where(s => s.Enabled)
+        _sourceLanes = await Task.Run(() => new ModelSourcesStore(State.Paths).ReadOrEmpty(out _).Sources.Where(s => s.Enabled)
             .Select(s => new CodingLane(s.Name, s.Provider, s.Model)).ToArray());
         LoadLanes();
         await RefreshKeysAsync();
     }
-    private IEnumerable<CodingLane> AvailableLanes() => State.Workspace?.Lanes ?? SettingsFile.ReadLanes().Lanes.Concat(_sourceLanes).DistinctBy(l => l.Name).ToArray();
+    // Rendered on every render: never read settings.json here. The user lanes are loaded with the rest (LoadLanes).
+    private IReadOnlyList<CodingLane> _userLanes = [];
+    private IEnumerable<CodingLane> AvailableLanes() => State.Workspace?.Lanes ?? _userLanes.Concat(_sourceLanes).DistinctBy(l => l.Name).ToArray();
 
     private void LoadDefaultModel()
     {
@@ -1111,6 +1207,7 @@
     private void LoadLanes()
     {
         var opts = SettingsFile.ReadLanes();
+        _userLanes = opts.Lanes.ToArray();
         _lanes = opts.Lanes.OrderBy(l => l.Priority)
             .Select(l => new LaneRow { Name = l.Name, Provider = l.Provider, Model = l.Model, Description = l.Description }).ToList();
         _laneDefault = opts.DefaultLane ?? "";
@@ -1313,6 +1410,7 @@
                 MaxLanesPerRequest = Math.Clamp(_maxLanes, 1, 10),
             };
             await Task.Run(() => SettingsFile.WriteLanes(options));
+            _userLanes = options.Lanes.ToArray();
             State.Preferences.Update(p => p.HandOffOnRefusal = _handOff);
             var ok = await State.ReloadWorkspaceAsync();
             Show(ok || State.Workspace is null ? "Lanes saved." : "Lanes saved, but the repository failed to reload.", !ok && State.Workspace is not null);
@@ -1360,6 +1458,83 @@
     {
         var log = DesktopHost.LogPath ?? State.Paths.LogPath;
         return FolderLauncher.OpenAsync(Path.GetDirectoryName(log) ?? State.Paths.LogsDirectory);
+    }
+
+    // ---- goal history storage -----------------------------------------------
+
+    private GoalStoreInventoryReport? _goalStorage;
+    private string? _goalStorageError;
+    private IReadOnlyList<GoalCompactionRun> _compactionJournal = [];
+    private bool _compacting;
+
+    private string CompactionStatus
+    {
+        get
+        {
+            if (GoalReceiptCompaction.LastReport is { } report)
+            {
+                var when = AppNavigation.RelativeTime(report.StartedUtc.UtcDateTime);
+                if (report.Error is not null) return $"Last run {when} couldn't finish ({report.Error}). Nothing was lost; it tries again when idle.";
+                return report.GoalsChanged == 0
+                    ? $"Last check {when}: nothing old enough to trim ({report.Goals.Count} goal{(report.Goals.Count == 1 ? "" : "s")}, {report.GoalsHeld} still working)."
+                    : $"Last run {when}: {Trimmed(report.ReceiptsCompacted, report.BytesCompacted)}, {GoalReceiptCompaction.Size(report.LogBytesReleased)} freed.";
+            }
+            if (_compactionJournal.Count > 0)
+            {
+                var last = _compactionJournal[^1];
+                var when = AppNavigation.RelativeTime(last.AtUtc.UtcDateTime);
+                return last.Receipts == 0
+                    ? $"Last run {when}: {GoalReceiptCompaction.Size(Math.Max(0, last.LogBytesBefore - last.LogBytesAfter))} freed."
+                    : $"Last run {when}: {Trimmed(last.Receipts, last.BytesCompacted)}, {GoalReceiptCompaction.Size(Math.Max(0, last.LogBytesBefore - last.LogBytesAfter))} freed.";
+            }
+            return Prefs.CompactGoalReceipts ? "Runs while Talavine Code is idle; nothing has been trimmed yet." : "Off: every record keeps its full output.";
+        }
+    }
+
+    private static string Trimmed(int receipts, long bytes)
+        => $"{receipts} output{(receipts == 1 ? "" : "s")} trimmed ({GoalReceiptCompaction.Size(bytes)})";
+
+    private static string StrayLabel(GoalStoreInventoryReport storage, GoalStoreFile file)
+    {
+        var relative = Path.GetRelativePath(storage.Directory, file.Path);
+        return Directory.Exists(file.Path) ? relative + " (folder)" : relative;
+    }
+
+    private Task OpenGoalsFolder() => FolderLauncher.OpenAsync(Path.Combine(State.Paths.RootDirectory, "goals"));
+
+    private async Task LoadGoalStorageAsync()
+    {
+        try
+        {
+            var goals = State.Goals;
+            var (storage, journal) = await Task.Run(async () => (goals.Inspect(), await goals.GetCompactionJournalAsync()));
+            _goalStorage = storage;
+            _compactionJournal = journal;
+            _goalStorageError = null;
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or InvalidDataException or System.Text.Json.JsonException)
+        {
+            _goalStorage = null;
+            _goalStorageError = ex.Message;
+        }
+    }
+
+    private async Task CompactNowAsync()
+    {
+        if (_compacting) return;
+        _compacting = true;
+        try
+        {
+            var services = State.Workspace?.Services;
+            var service = services?.GetService<GoalReceiptCompaction>()
+                ?? new GoalReceiptCompaction(State.Goals, State.Preferences, services?.GetService<GoalReceiptCompactionOptions>() ?? new GoalReceiptCompactionOptions());
+            var report = await Task.Run(() => service.RunOnceAsync(manual: true));
+            if (report is null) Show("Trimming is already running.", false);
+            else if (report.Error is not null) Show("Trimming couldn't finish: " + report.Error, true);
+            await LoadGoalStorageAsync();
+        }
+        catch (Exception ex) { Show("Trimming couldn't finish: " + ex.Message, true); }
+        finally { _compacting = false; }
     }
 
     private void Show(string text, bool isError) { _message = text; _messageIsError = isError; }

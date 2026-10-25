@@ -31,6 +31,27 @@ public sealed class ModelSourcesTests : TempDirTest
         Assert.Equal("fixture-secret", await provider.GetRequiredService<SwarmCodeApiKeyProvider>().GetApiKeyAsync(source.Provider));
     }
 
+    [Fact]
+    public async Task A_key_saved_in_the_vault_wins_over_a_stale_env_file_value()
+    {
+        var source = new ConfiguredModelSource { Name="venice", Kind="Compatible", Endpoint="https://example.test/v1", Model="model", ApiKeyEnvironmentVariable="VENICE_TEST_KEY" };
+        File.WriteAllText(Path.Combine(Tmp,".env"), "VENICE_TEST_KEY=stale-env-value\n");
+        await new ModelSourcesStore(Paths).SaveAsync(new(0,[source]));
+        var services = new ServiceCollection(); services.AddLogging();
+        // Encrypted scratch storage makes this precedence test independent of a signed macOS Keychain host.
+        var protector = new SwarmCore.Secrets.EnvelopeSecretProtector(new EncryptedTestKeyStore(),
+            Microsoft.Extensions.Logging.Abstractions.NullLogger<SwarmCore.Secrets.EnvelopeSecretProtector>.Instance);
+        services.AddSingleton<SwarmCore.Secrets.ISecretProtector>(protector);
+        services.AddSwarmCodeHost(new() { DataPaths=Paths, RepositoryRoot=Tmp });
+        using var provider = services.BuildServiceProvider();
+        Assert.Same(protector, provider.GetRequiredService<SwarmCore.Secrets.ISecretProtector>());
+        var keys = provider.GetRequiredService<SwarmCodeApiKeyProvider>();
+
+        await keys.SetApiKeyAsync(source.Provider, "saved-in-vault");
+
+        Assert.Equal("saved-in-vault", await keys.GetApiKeyAsync(source.Provider));
+    }
+
     private static ConfiguredModelSource Local() => new() {Name="my-local",Kind="Ollama",Endpoint="http://localhost:11434",Model="community/custom:latest",RequiresApiKey=false};
     [Fact]
     public async Task IndependentWritersAndDeleteThenSaveRejectStaleDrafts()
@@ -53,6 +74,24 @@ public sealed class ModelSourcesTests : TempDirTest
         File.WriteAllText(path,"{broken");
         await Assert.ThrowsAsync<System.Text.Json.JsonException>(()=>new ModelSourcesStore(Paths).SaveAsync(new(0,[])));
         Assert.Equal("{broken",File.ReadAllText(path));
+    }
+
+    [Fact]
+    public void A_damaged_sources_file_does_not_stop_a_workspace_from_composing()
+    {
+        var path=Path.Combine(Paths.RootDirectory,"model-sources.json");
+        Directory.CreateDirectory(Paths.RootDirectory);
+        File.WriteAllText(path,"{broken");
+
+        var document=new ModelSourcesStore(Paths).ReadOrEmpty(out var problem);
+        Assert.Empty(document.Sources);
+        Assert.Contains(path,problem);
+
+        var services=new ServiceCollection(); services.AddLogging();
+        services.AddSwarmCodeHost(new() {DataPaths=Paths,RepositoryRoot=Tmp});
+        using var provider=services.BuildServiceProvider();
+        Assert.NotNull(provider.GetRequiredService<IOptions<CodingLaneOptions>>().Value.Lanes);
+        Assert.Equal("{broken",File.ReadAllText(path)); // left for the person to fix; never overwritten
     }
 
     [Fact]

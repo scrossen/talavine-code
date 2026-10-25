@@ -16,7 +16,8 @@ public partial class Session
             var outcome = await App.SecretIntake.HandleCommandAsync(text);
             if (outcome.PromptForValueName is { } name)
             {
-                AddNote("info", $"Type /secret {name} <value> to save it, or add it under Credentials in Settings (the value is stored protected and never shown to the model).");
+                var siteFlag = outcome.PromptForValueSite is { } site ? $"--site {site} " : "";
+                AddNote("info", $"Type /secret {siteFlag}{name} <value> to save it, or add it under Credentials in Settings (the value is stored protected and never shown to the model).");
                 return;
             }
             if (outcome.StoredNames.Count > 0)

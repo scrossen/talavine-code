@@ -345,6 +345,46 @@ public class LlmProviderSettings
     /// persistence rejects an existing-row save without its original revision.
     /// </summary>
     public DateTime? UpdatedAt { get; set; }
+
+    /// <summary>
+    /// Applies a user's new API key to this loaded row and changes nothing else:
+    /// endpoint, default model, priority, limits and provider-specific settings
+    /// stay as saved. A provider that was off only because it had no working key
+    /// (never connected, disconnected, or paused by the health check) is turned
+    /// on; a provider the user paused stays paused.
+    /// </summary>
+    public void ReplaceApiKey(string apiKey)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(apiKey);
+        var offOnlyForMissingKey = !IsEnabled
+            && (DisabledByHealthCheck || string.IsNullOrWhiteSpace(ApiKey));
+        ApiKey = apiKey;
+        if (offOnlyForMissingKey)
+        {
+            IsEnabled = true;
+            ClearHealthCheckDisable();
+        }
+    }
+
+    /// <summary>
+    /// Disconnects this loaded row: removes the key and turns the provider off,
+    /// keeping its endpoint, default model, priority, limits and provider-specific
+    /// settings for a later reconnect. A disconnect is the user's choice, so any
+    /// health-check pause is cleared and automatic recovery leaves the row alone.
+    /// </summary>
+    public void Disconnect()
+    {
+        ApiKey = null;
+        IsEnabled = false;
+        ClearHealthCheckDisable();
+    }
+
+    private void ClearHealthCheckDisable()
+    {
+        DisabledByHealthCheck = false;
+        HealthCheckDisabledAt = null;
+        HealthCheckDisabledReason = null;
+    }
 }
 
 /// <summary>

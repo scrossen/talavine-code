@@ -54,6 +54,8 @@ public sealed record AgentRecord
     public required string Task { get; init; }
     public string? Lane { get; init; }
     public string? Model { get; init; }
+    /// <summary>Host-owned model-selection receipt; a finished turn is still evidence for the parent to verify.</summary>
+    public string? RoutingNote { get; init; }
     public AgentState State { get; init; }
     public DateTime CreatedUtc { get; init; }
     public DateTime UpdatedUtc { get; init; }
@@ -96,10 +98,12 @@ public sealed record AgentRecord
 public sealed record AgentSpawnRequest(string Task, string? Title = null, string? Lane = null, string? Model = null, string? Isolation = null, string? Agent = null, bool Independent = false);
 
 /// <summary>What the team asks a host to create for a new agent.</summary>
-public sealed record AgentConversationRequest(string ParentConversationId, string Title, string? Lane, string? Model, string? Isolation);
+public sealed record AgentConversationRequest(string ParentConversationId, string Title, string? Lane, string? Model, string? Isolation,
+    string? Task = null, bool ExplicitModelSelection = false);
 
 /// <summary>The agent conversation a host created, with the worktree it made for an isolated agent.</summary>
-public sealed record AgentConversation(string Id, AgentWorktree? Worktree = null);
+public sealed record AgentConversation(string Id, AgentWorktree? Worktree = null, string? Lane = null, string? Model = null,
+    string? RoutingNote = null);
 
 /// <summary>Outcome of forgetting an agent: whether its record went, and what happened to its worktree (null: it had none).</summary>
 public sealed record AgentForgetResult(bool Forgotten, AgentWorktreeCleanup? Worktree);

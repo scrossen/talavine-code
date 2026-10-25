@@ -23,11 +23,10 @@ public static class PromptCaching
 {
     /// <summary>
     /// Sentinel string that separates cacheable prefix from per-call content.
-    /// Chosen to be unlikely to appear in natural text AND to survive the
-    /// router's <c>CleanHtmlFromPrompt</c> sweep, which strips anything
-    /// matching <c>&lt;[^&gt;]+&gt;</c>. An earlier revision used
-    /// <c>&lt;&lt;&lt;CACHE_BOUNDARY&gt;&gt;&gt;</c> and got silently eaten
-    /// by that regex, which quietly disabled prompt caching on every call.
+    /// Chosen to be unlikely to appear in natural text. An earlier revision
+    /// used <c>&lt;&lt;&lt;CACHE_BOUNDARY&gt;&gt;&gt;</c>, which a former router
+    /// HTML-cleaning regex silently removed. The router now preserves prompts
+    /// verbatim; cache-marker handling remains an explicit provider protocol.
     /// Equals signs aren't HTML-ish, aren't shell-ish, and don't appear in
     /// our prompt templates.
     /// </summary>

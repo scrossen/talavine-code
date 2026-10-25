@@ -36,6 +36,11 @@ public sealed record ContinualObjectiveExecutionResult(
     /// <summary>The host recorded an owned-work wait; do not spend a model call auditing known incomplete work.</summary>
     bool AwaitingOwnedWork = false)
 {
+    /// <summary>Trusted executor verified durable coordination progress. This is not completion
+    /// proof and must never be set from model text or a transport acknowledgement.</summary>
+    [System.Text.Json.Serialization.JsonIgnore]
+    public bool VerifiedHostProgress { get; init; }
+
     /// <summary>
     /// Only a person can clear this turn error, for example because the model
     /// provider reports no credit left or rejected its credential. The

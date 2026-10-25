@@ -4,6 +4,7 @@ using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 using SwarmCore.Abstractions.LlmRouting;
 using SwarmCore.LlmRouting.Configuration;
+using SwarmCore.LlmRouting.ProviderPacks;
 
 namespace SwarmCore.LlmRouting.ToolUse;
 
@@ -126,7 +127,7 @@ public static class ToolUseServiceCollectionExtensions
         {
             var opts = sp.GetRequiredService<IOptions<VeniceProviderOptions>>().Value;
             var baseUrl = string.IsNullOrWhiteSpace(opts.Endpoint)
-                ? "https://api.venice.ai/api/v1"
+                ? ProviderPackCatalog.GetRequired("Venice").DirectApi!.BaseUrl
                 : opts.Endpoint.TrimEnd('/');
             return OpenAIStyleToolUseProvider.ForOpenAICompatible(
                 providerName: "Venice",

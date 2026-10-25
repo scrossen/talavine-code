@@ -98,6 +98,7 @@ public enum ContinualSideEffectClass
     ExternalSend = 2,
     Destructive = 3,
     Exec = 4,
+    ExecutionMetadata = 5,
 }
 
 public enum ContinualToolReceiptState
@@ -135,6 +136,8 @@ public sealed record ContinualToolReceipt(
     /// <summary>Captured from the executing host scope, unchanged when a late result arrives.</summary>
     public int? MissionAuthorityRevision { get; init; }
     public bool LocalProcessCompleted { get; init; }
+    /// <summary>Written only by a host-owned exact-receipt reconciliation API; original facts remain unchanged.</summary>
+    public ContinualReceiptResolution? HostResolution { get; init; }
     /// <summary>Set only from the host tool descriptor for an idempotent mission checkpoint operation.</summary>
     public bool SupportsIdempotentMissionReplay { get; init; }
     /// <summary>Host-recorded content identities of this mission's tracked file artifacts.</summary>
@@ -143,6 +146,16 @@ public sealed record ContinualToolReceipt(
     public string? CodingTreeDigest { get; init; }
     public MissionReceiptEvidence? Evidence { get; init; }
     public IReadOnlyList<MissionObservedState> ObservedStates { get; init; } = [];
+    /// <summary>
+    /// Set once a host compacted a long <see cref="Result"/> under <see cref="ContinualReceiptRetentionPolicy"/>: the text then
+    /// holds the rendered digest (what was there and how it began), never the whole. Omitted from JSON while null so the
+    /// fingerprint of an untouched receipt never changes.
+    /// </summary>
+    [System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull)]
+    public ContinualReceiptTextDigest? CompactedResult { get; init; }
+    /// <summary>Set once a host compacted a long <see cref="InputJson"/>; the input is then the JSON marker form of its digest.</summary>
+    [System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull)]
+    public ContinualReceiptTextDigest? CompactedInput { get; init; }
 }
 
 /// <summary>Immutable provider-neutral view returned by persistence adapters.</summary>
@@ -289,6 +302,10 @@ public sealed record ContinualAcceptanceRequest(
     string? Model = null)
 {
     public ContinualObjectiveSnapshot? Objective { get; init; }
+    /// <summary>Owning host opt-in. Missions and retained delivery-audit closure never use this projection.</summary>
+    public bool UseHostReceiptResolutions { get; init; }
+    /// <summary>Owning host's bounded prior-outcome inventory binding; never itself proof of completion.</summary>
+    public string? HostPriorOutcomeSummary { get; init; }
     /// <summary>Explicit host policy; missing exact route fails before any audit inference. Ordinary hosts retain their routing behavior.</summary>
     public bool RequireExactRoute { get; init; }
 }

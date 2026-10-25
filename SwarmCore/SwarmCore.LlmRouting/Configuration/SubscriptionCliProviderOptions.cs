@@ -12,6 +12,13 @@ public sealed class SubscriptionCliProviderOptions
 {
     public int TimeoutSeconds { get; set; } = 300;
     public string? WorkingDirectory { get; set; }
+    /// <summary>
+    /// The host's own per-user data root. When set, a CLI installed in the
+    /// host's bundled runtime (Windows <c>Tools/Node</c>) keeps its sign-in under
+    /// <c>&lt;root&gt;/subscription-cli</c> instead of the user's general CLI home.
+    /// Hosts without a bundled runtime leave it null.
+    /// </summary>
+    public string? PrivateCliDataRoot { get; set; }
     public SubscriptionCliExecutableOptions ClaudeCode { get; set; } = new()
     {
         DefaultModel = ProviderPackCatalog.GetRequired(SubscriptionCliProviders.ClaudeCode)

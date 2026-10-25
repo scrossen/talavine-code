@@ -120,7 +120,7 @@
 @code {
     private List<string> _recent = [];
     private List<WorkspaceSessionInfo> _sessions = [];
-    private int _loading;
+    private int _loading; // 0 idle, 1 running, 2 running + rerun requested
 
     private string? DefaultLaneName =>
         State.Preferences.Current.DefaultLane ?? State.Workspace?.LaneOptions.DefaultLane ?? State.Workspace?.Lanes.FirstOrDefault()?.Name;
@@ -133,23 +133,39 @@
 
     private void OnChanged() => _ = InvokeAsync(LoadAsync);
 
+    // App events arrive for every runner event; loads are coalesced like the sidebar's: a change that arrives during
+    // a load reruns it once (instead of being dropped and leaving the lists stale), spaced out while a turn streams.
     private async Task LoadAsync()
     {
-        if (Interlocked.Exchange(ref _loading, 1) == 1) return;
+        if (Interlocked.CompareExchange(ref _loading, 1, 0) != 0)
+        {
+            Interlocked.Exchange(ref _loading, 2);
+            return;
+        }
         try
         {
-            var root = State.SessionListRoot;
-            var (recent, sessions) = await Task.Run(async () =>
+            do
             {
-                var r = (await State.Sessions.RecentRepositoriesAsync()).Where(Directory.Exists).ToList();
-                var s = (await State.Sessions.ListAsync(root)).ToList();
-                return (r, s);
-            });
-            _recent = recent;
-            _sessions = sessions;
-            StateHasChanged();
+                Interlocked.Exchange(ref _loading, 1);
+                var root = State.SessionListRoot;
+                var (recent, sessions) = await Task.Run(async () =>
+                {
+                    var r = (await State.Sessions.RecentRepositoriesAsync()).Where(Directory.Exists).ToList();
+                    var s = (await State.Sessions.ListAsync(root)).ToList();
+                    return (r, s);
+                });
+                _recent = recent;
+                _sessions = sessions;
+                StateHasChanged();
+                if (State.AnyTurnRunning) await Task.Delay(300);
+            }
+            while (Interlocked.CompareExchange(ref _loading, 0, 1) == 2);
         }
-        finally { Interlocked.Exchange(ref _loading, 0); }
+        catch (Exception ex)
+        {
+            DesktopHost.LogToFile($"Home refresh failed: {ex.Message}");
+            Interlocked.Exchange(ref _loading, 0);
+        }
     }
 
     private Task OpenAsync() => Opener.PickAndOpenAsync();

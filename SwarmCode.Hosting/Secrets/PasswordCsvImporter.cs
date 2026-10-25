@@ -10,14 +10,19 @@ public sealed record PasswordImportSummary(
     int SkippedRows,
     string DetectedFormat,
     IReadOnlyList<string> Names,
-    string? Error)
+    string? Error,
+    int UnusableNames = 0)
 {
     public bool Success => Error is null;
     public int Imported => Added + Updated;
 
+    /// <summary>Rows the parser skipped plus logins dropped because their site/username makes no usable vault name.</summary>
+    public int Skipped => SkippedRows + UnusableNames;
+
     public string Describe() => Error is not null
         ? Error
-        : $"Imported {Imported} login{(Imported == 1 ? "" : "s")} from a {DetectedFormat} export ({Added} new, {Updated} updated, {Unchanged} unchanged, {SkippedRows} row{(SkippedRows == 1 ? "" : "s")} skipped).";
+        : $"Imported {Imported} login{(Imported == 1 ? "" : "s")} from a {DetectedFormat} export ({Added} new, {Updated} updated, {Unchanged} unchanged, {Skipped} row{(Skipped == 1 ? "" : "s")} skipped"
+          + (UnusableNames > 0 ? $", {UnusableNames} of them with an unusable site or username" : "") + ").";
 }
 
 /// <summary>
@@ -42,14 +47,14 @@ public sealed class PasswordCsvImporter(ISecretVault vault)
         var parsed = PasswordCsvParser.Parse(csv);
         if (!parsed.Success) return Failed(parsed.Error!);
 
-        int added = 0, updated = 0, unchanged = 0;
+        int added = 0, updated = 0, unchanged = 0, unusableNames = 0;
         var names = new List<string>();
         foreach (var entry in parsed.Entries)
         {
             ct.ThrowIfCancellationRequested();
             string name;
             try { name = entry.SuggestedName; }
-            catch (ArgumentException) { continue; }
+            catch (ArgumentException) { unusableNames++; continue; }
 
             var existing = await vault.GetLoginAsync(name, ct).ConfigureAwait(false);
             if (existing is not null
@@ -73,7 +78,7 @@ public sealed class PasswordCsvImporter(ISecretVault vault)
             if (existing is null) added++; else updated++;
         }
 
-        return new PasswordImportSummary(added, updated, unchanged, parsed.SkippedRows, parsed.DetectedFormat, names, null);
+        return new PasswordImportSummary(added, updated, unchanged, parsed.SkippedRows, parsed.DetectedFormat, names, null, unusableNames);
     }
 
     private static string? BuildNotes(ImportedCredential entry)

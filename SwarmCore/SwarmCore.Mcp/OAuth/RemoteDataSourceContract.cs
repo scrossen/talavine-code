@@ -9,6 +9,13 @@ public static class RemoteDataSourceContract
 {
     public const string Scope = "context.read";
     public const string ProfileScope = "profile.access";
+
+    /// <summary>
+    /// Page size of the remote <c>search</c> tool: the limit forwarded to the
+    /// desktop, the number of hits the gateway relays and the count its tool
+    /// description promises.
+    /// </summary>
+    public const int SearchResultLimit = 20;
     public static bool IsValidScope(string? scope)
     {
         var values = (scope ?? "").Split(' ', StringSplitOptions.RemoveEmptyEntries);
@@ -99,7 +106,7 @@ public static class RemoteDataSourceContract
         if (name == "search" && arguments.TryGetProperty("query", out var query)
             && query.ValueKind == JsonValueKind.String && query.GetString() is { Length: > 0 and <= 2000 } text
             && !string.IsNullOrWhiteSpace(text))
-            return ("data_source_search", new { query = text.Trim(), limit = 10 });
+            return ("data_source_search", new { query = text.Trim(), limit = SearchResultLimit });
         if (name is "build_context" or "query_knowledge_graph" && arguments.TryGetProperty("query", out var contextQuery)
             && contextQuery.ValueKind == JsonValueKind.String && contextQuery.GetString() is { Length: > 0 and <= 2000 } question
             && !string.IsNullOrWhiteSpace(question))

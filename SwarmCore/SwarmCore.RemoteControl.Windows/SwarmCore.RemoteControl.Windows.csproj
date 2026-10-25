@@ -1,0 +1,28 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <!--
+      Plain net11.0 (not net11.0-windows) so one cross-platform host can reference both this adapter and
+      the macOS adapter and pick one at runtime with OperatingSystem.IsWindows(). Windows-only types carry
+      [SupportedOSPlatform("windows")], so the platform analyzer enforces that guard at every call site.
+    -->
+    <TargetFramework>net11.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <LangVersion>latest</LangVersion>
+    <RootNamespace>SwarmCore.RemoteControl.Windows</RootNamespace>
+    <Authors>Scott Crossen</Authors>
+    <Description>SwarmCore RemoteControl for Windows - the IDesktopAutomation implementation that enumerates displays and windows, captures screens and windows, walks and drives UI Automation control trees, and injects mouse and keyboard input with Win32 SendInput. It imposes no limits of its own; only the operating system's (UIPI, the secure desktop) apply.</Description>
+  </PropertyGroup>
+  <ItemGroup>
+    <!--
+      The raw UI Automation 3 COM interfaces (the interop assembly FlaUI.UIA3 ships). FlaUI itself is not
+      referenced: on plain net11.0 NuGet selects its netcoreapp3.1 assets, which carry a WindowsForms framework
+      reference that requires a -windows target (NETSDK1136), and this adapter uses only the native interfaces.
+    -->
+    <PackageReference Include="Interop.UIAutomationClient" Version="10.19041.0" />
+    <PackageReference Include="System.Drawing.Common" Version="11.0.0-rc.2.26504.105" />
+  </ItemGroup>
+  <ItemGroup>
+    <ProjectReference Include="..\SwarmCore.RemoteControl\SwarmCore.RemoteControl.csproj" />
+  </ItemGroup>
+</Project>

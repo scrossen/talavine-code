@@ -5,6 +5,9 @@ namespace SwarmCore.Missions;
 
 public static class SecurityRunPolicy
 {
+    /// <summary>Most commands, and most findings, one security run report retains.</summary>
+    public const int MaxRetainedCommands = 256;
+
     public static bool HasVerifiedCoverage(ContinualObjectiveSnapshot state)
     {
         if (state.Status != ContinualObjectiveStatus.Completed || state.Mission?.SecurityRun is not { Phase: SecurityRunPhase.Complete, Report: { } report } run
@@ -94,7 +97,7 @@ public static class SecurityRunPolicy
         if (updated.Report is { } report && (report.Phase != updated.Phase || report.RunId != prior.RunId || report.MissionId != state.Id
             || report.RequestHash != prior.RequestHash || report.RepositoryPath != prior.Request.RepositoryPath
             || report.ExecutionWorkspacePath != prior.Workspace?.WorkspacePath
-            || report.Commands.Count > 256 || report.Findings.Count > 256
+            || report.Commands.Count > MaxRetainedCommands || report.Findings.Count > MaxRetainedCommands
             || report.Findings.Select(f=>f.Fingerprint).Distinct().Count() != report.Findings.Count
             || report.Findings.Any(f=>f.Status == SecurityFindingStatus.Accepted
                 || f.Status == SecurityFindingStatus.Fixed && (report.Repair?.Verification is null

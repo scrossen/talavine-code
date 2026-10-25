@@ -6,6 +6,12 @@ namespace SwarmCore.LlmRouting.Providers;
 
 public enum SubscriptionCliCatalogProtocol { CodexAppServer, ClaudeInitialize }
 
+/// <summary>A CLI's read-only catalog exchange: its protocol, launch arguments and model-id prefix.</summary>
+internal sealed record SubscriptionCliCatalogExchange(
+    SubscriptionCliCatalogProtocol Protocol,
+    IReadOnlyList<string> Arguments,
+    string ModelPrefix);
+
 /// <summary>Read-only CLI control exchanges. Never submits a user turn or launches tools.</summary>
 internal static class SubscriptionCliModelDiscovery
 {

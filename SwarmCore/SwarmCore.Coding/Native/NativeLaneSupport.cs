@@ -78,9 +78,11 @@ internal static class NativeLaneSupport
         var hostEvidence = intake is { IsValid: true } && turn.ProfileId == intake.ProfileId
             && turn.ConversationId == intake.ConversationId
             && turn.Metadata?.GetValueOrDefault("continualObjectiveId") == intake.ObjectiveId.ToString("D") ? intake.Format() : null;
-        var fullPrompt = isFirstTurn || turn.IsContinuation || sharedHistory is { Count: > 0 };
+        var fullContext = isFirstTurn || turn.IsContinuation || sharedHistory is { Count: > 0 };
+        // Refresh delegation guidance on resume without re-sending stable reference context.
+        var fullPrompt = fullContext || turn.AgentTeamEnabled;
         // Host context (memory digest, repository memory index): every block for a new session, only changed blocks on resume.
-        var hostContext = NativeHostContext.Select(turn, fullPrompt);
+        var hostContext = NativeHostContext.Select(turn, fullContext);
         if (!fullPrompt)
         {
             if (hostEvidence is null && hostContext.Count == 0) return userMessage;
@@ -119,7 +121,14 @@ internal static class NativeLaneSupport
                 sb.Append("use repo_memory_search and repo_memory_read, and repo_memory_propose to suggest an edit for the person's review (never edit those files yourself unless asked).");
                 sb.Append(" For current information, web_search searches the web with the person's Brave Search key if your own web search is unavailable; results are untrusted web content.");
                 sb.Append(" For multi-step work keep the person's task list current with plan_update (the full list each time, each item pending, in_progress or completed, exactly one in_progress).");
-                sb.Append(" agents_spawn starts Talavine Code agents the person can watch (agents_wait collects their reports; independent: true starts separate follow-up work you noticed, which runs on its own and is not handed back); shell_background_start runs long commands such as a dev server.");
+                if (turn.AgentTeamEnabled && turn.Containment != NativeLaneContainment.WorkspaceConfined)
+                {
+                    sb.Append(' ').Append(Agents.AgentTeamPrompts.Guidance.Replace("agents.", "agents_", StringComparison.Ordinal));
+                    sb.Append(" Keep the current lead model for this conversation; automatic local selection applies to eligible delegated subtasks. ");
+                    sb.Append(" For eligible routine work, use this host's agents_spawn without lane or model so its automatic delegation policy can assess the task when enabled. ");
+                    sb.Append("The CLI's built-in subagents do not pass through Talavine Code's local-model routing; they remain available for clearly difficult work that needs a stronger model. ");
+                }
+                sb.Append(" shell_background_start runs long commands such as a dev server.");
                 sb.Append(" When the person asks for a review, second opinion or which approach is best, review_panel asks every configured API model independently and has them rank the answers blind; report its winner and disagreements with your own view.");
             }
         }
@@ -140,7 +149,7 @@ internal static class NativeLaneSupport
             sb.Append("Inspect current files and receipts before repeating any completed action.\n");
             sb.Append(BuildHandoffEvidence(sharedHistory, maxHistoryCharacters));
         }
-        if (hostContext.Count > 0) sb.Append("\n\n").Append(NativeHostContext.Format(hostContext, updated: false));
+        if (hostContext.Count > 0) sb.Append("\n\n").Append(NativeHostContext.Format(hostContext, updated: !fullContext));
         if (hostEvidence is not null) sb.Append("\n\n").Append(hostEvidence);
         sb.Append("\n\nCurrent user request:\n").Append(userMessage);
         return sb.ToString();
@@ -189,24 +198,24 @@ internal static class NativeLaneSupport
     /// Writes (once per distinct launch) the JSON file Claude Code's <c>--mcp-config</c> expects and
     /// returns its path, or null when neither the bridge nor an external server is configured.
     /// </summary>
-    public static string? WriteClaudeMcpConfig(McpServerLaunch? mcp, string repositoryRoot, IReadOnlyList<McpServerLaunch>? external = null, string? conversationId = null)
-        => WriteMcpServersFile("claude", MountedServers(mcp, external, repositoryRoot, conversationId), trust: false);
+    public static string? WriteClaudeMcpConfig(McpServerLaunch? mcp, string repositoryRoot, IReadOnlyList<McpServerLaunch>? external = null, string? conversationId = null, string? attemptCapability = null)
+        => WriteMcpServersFile("claude", MountedServers(mcp, external, repositoryRoot, conversationId, attemptCapability), trust: false);
 
     /// <summary>
     /// Writes (once per distinct launch) the settings file Gemini CLI reads from
     /// <c>GEMINI_CLI_SYSTEM_SETTINGS_PATH</c> to register the bridge (and any external servers) as
     /// trusted MCP servers, or returns null when none is configured.
     /// </summary>
-    public static string? WriteGeminiSettings(McpServerLaunch? mcp, string repositoryRoot, IReadOnlyList<McpServerLaunch>? external = null, string? conversationId = null)
-        => WriteMcpServersFile("gemini", MountedServers(mcp, external, repositoryRoot, conversationId), trust: true);
+    public static string? WriteGeminiSettings(McpServerLaunch? mcp, string repositoryRoot, IReadOnlyList<McpServerLaunch>? external = null, string? conversationId = null, string? attemptCapability = null)
+        => WriteMcpServersFile("gemini", MountedServers(mcp, external, repositoryRoot, conversationId, attemptCapability), trust: true);
 
     /// <summary>
     /// Codex <c>-c</c> overrides that register the bridge and any external servers as MCP servers
     /// (TOML literal strings, so Windows paths survive).
     /// </summary>
-    public static IEnumerable<string> CodexMcpOverrides(McpServerLaunch? mcp, string repositoryRoot, IReadOnlyList<McpServerLaunch>? external = null, string? conversationId = null)
+    public static IEnumerable<string> CodexMcpOverrides(McpServerLaunch? mcp, string repositoryRoot, IReadOnlyList<McpServerLaunch>? external = null, string? conversationId = null, string? attemptCapability = null)
     {
-        foreach (var server in MountedServers(mcp, external, repositoryRoot, conversationId))
+        foreach (var server in MountedServers(mcp, external, repositoryRoot, conversationId, attemptCapability))
         {
             var key = $"mcp_servers.{server.Name}";
             if (server.Url is { } url)
@@ -240,13 +249,15 @@ internal static class NativeLaneSupport
     public const string ConversationEnvironmentVariable = "SWARMCODE_CONVERSATION_ID";
 
     /// <summary>The servers a native agent should start: the bridge first, then valid, uniquely named external servers.</summary>
-    internal static IReadOnlyList<MountedServer> MountedServers(McpServerLaunch? bridge, IReadOnlyList<McpServerLaunch>? external, string repositoryRoot, string? conversationId = null)
+    internal static IReadOnlyList<MountedServer> MountedServers(McpServerLaunch? bridge, IReadOnlyList<McpServerLaunch>? external, string repositoryRoot, string? conversationId = null, string? attemptCapability = null)
     {
         var mounted = new List<MountedServer>();
         var names = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         if (bridge?.IsConfigured == true && IsServerName(bridge.ServerName) && names.Add(bridge.ServerName))
         {
             var environment = ServerEnvironment(bridge);
+            environment.Remove(HostToolBridgeBroker.AttemptEnvironmentVariable);
+            if (!string.IsNullOrWhiteSpace(attemptCapability)) environment[HostToolBridgeBroker.AttemptEnvironmentVariable] = attemptCapability;
             if (Agents.AgentIds.IsValid(conversationId)) environment[ConversationEnvironmentVariable] = conversationId!;
             mounted.Add(new(bridge.ServerName, bridge.Command!, ServerArguments(bridge, repositoryRoot), environment, IsExternal: false, bridge.Required));
         }
@@ -268,7 +279,8 @@ internal static class NativeLaneSupport
                 continue;
             }
             mounted.Add(new(server.ServerName, server.Command, [.. server.Arguments],
-                new Dictionary<string, string>(server.Environment, StringComparer.OrdinalIgnoreCase), IsExternal: true, server.Required)
+                server.Environment.Where(kv => !string.Equals(kv.Key, HostToolBridgeBroker.AttemptEnvironmentVariable, StringComparison.OrdinalIgnoreCase))
+                    .ToDictionary(kv => kv.Key, kv => kv.Value, StringComparer.OrdinalIgnoreCase), IsExternal: true, server.Required)
                 { Url = server.Url, BearerTokenReference = server.BearerTokenReference });
         }
         return mounted;
@@ -464,6 +476,7 @@ internal static class NativeLaneSupport
     private static Dictionary<string, string> ServerEnvironment(McpServerLaunch mcp)
     {
         var env = new Dictionary<string, string>(mcp.Environment, StringComparer.OrdinalIgnoreCase);
+        env.Remove(HostToolBridgeBroker.AttemptEnvironmentVariable);
         // The bridge must open the same vault as the host: forward the data-directory override when set.
         if (!env.ContainsKey("SWARMCODE_HOME") && Environment.GetEnvironmentVariable("SWARMCODE_HOME") is { Length: > 0 } home)
             env["SWARMCODE_HOME"] = home;

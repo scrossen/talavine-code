@@ -41,6 +41,8 @@ public sealed record SelfImprovementCycleContext(string Owner, string Repository
 /// </summary>
 public interface ISelfImprovementCycleHost
 {
+    /// <summary>Recheck current host authority before starting a linked repair. No executor or lease is started by this check.</summary>
+    Task<bool> CanRunAsync(SelfImprovementItem item, CancellationToken ct = default) => Task.FromResult(true);
     /// <summary>The product's source checkout cycles work on, or null when there is none here (an installed app without source).</summary>
     string? ResolveRepositoryRoot();
 

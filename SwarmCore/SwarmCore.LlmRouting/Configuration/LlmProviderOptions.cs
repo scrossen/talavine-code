@@ -231,7 +231,7 @@ public class OpenRouterProviderOptions : LlmProviderOptionsBase
     /// <summary>
     /// Optional OpenRouter attribution header. Defaults to Talavine's public site.
     /// </summary>
-    public string? SiteUrl { get; set; } = "https://swarmmarshal.com";
+    public string? SiteUrl { get; set; } = "https://talavine.com";
 
     /// <summary>
     /// Optional OpenRouter title header shown in OpenRouter analytics.
@@ -263,9 +263,10 @@ public class VeniceProviderOptions : LlmProviderOptionsBase
 {
     public VeniceProviderOptions()
     {
+        var pack = ProviderPackCatalog.GetRequired("Venice").DirectApi!;
         ApiKeyEnvironmentVariable = "VENICE_API_KEY";
-        Endpoint = "https://api.venice.ai/api/v1";
-        DefaultModel = "zai-org-glm-5-2";
+        Endpoint = pack.BaseUrl;
+        DefaultModel = pack.DefaultModel;
         Priority = 65;
     }
 

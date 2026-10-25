@@ -51,15 +51,26 @@ let resizeTimer;
 window.addEventListener('resize', () => { clearTimeout(resizeTimer); resizeTimer = setTimeout(() => { if (zoom.value === 'fit') renderPage(); }, 150); });
 window.addEventListener('pagehide', () => { ++generation; rendering?.cancel(); documentTask?.destroy(); });
 
-try {
-    const encoded = location.hash.slice(1);
-    if (!encoded || encoded.length > 28_000_000) throw new Error('Invalid PDF preview');
-    const data = Uint8Array.from(atob(encoded), c => c.charCodeAt(0));
-    documentTask = getDocument({ data, isEvalSupported: false,
-        cMapUrl: new URL('../vendor/pdfjs/cmaps/', import.meta.url).href, cMapPacked: true,
-        standardFontDataUrl: new URL('../vendor/pdfjs/standard_fonts/', import.meta.url).href });
-    pdf = await documentTask.promise;
-    await renderPage();
-} catch {
-    status.textContent = 'Could not open this PDF. Use Open in default app.';
+async function openPdf(encoded) {
+    try {
+        if (typeof encoded !== 'string' || !encoded || encoded.length > 28_000_000) throw new Error('Invalid PDF preview');
+        const data = Uint8Array.from(atob(encoded), c => c.charCodeAt(0));
+        documentTask = getDocument({ data, isEvalSupported: false,
+            cMapUrl: new URL('../vendor/pdfjs/cmaps/', import.meta.url).href, cMapPacked: true,
+            standardFontDataUrl: new URL('../vendor/pdfjs/standard_fonts/', import.meta.url).href });
+        pdf = await documentTask.promise;
+        await renderPage();
+    } catch {
+        status.textContent = 'Could not open this PDF. Use Open in default app.';
+    }
 }
+
+// The app posts the PDF's bytes (base64) once this frame says it is listening; a URL could not carry files over
+// ~1.5 MB. Only the embedding app window is accepted, and only its first copy.
+let received = false;
+window.addEventListener('message', event => {
+    if (received || event.source !== window.parent || !event.data || event.data.type !== 'swarmcode-pdf') return;
+    received = true;
+    openPdf(event.data.data);
+});
+window.parent.postMessage({ type: 'swarmcode-pdf-ready' }, '*');

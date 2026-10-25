@@ -1,0 +1,18 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <TargetFramework>net11.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <LangVersion>latest</LangVersion>
+    <RootNamespace>SwarmCore.RemoteControl.Agent</RootNamespace>
+    <Description>SwarmCore RemoteControl Agent - exposes a text-driven desktop remote-control session as agent tools and runs learned desktop procedures (record a verified run, replay without model calls, stop with a fresh observation for repair) on the shared SwarmCore.Agent procedure engine.</Description>
+    <Authors>Scott Crossen</Authors>
+  </PropertyGroup>
+  <ItemGroup>
+    <ProjectReference Include="..\SwarmCore.RemoteControl\SwarmCore.RemoteControl.csproj" />
+    <ProjectReference Include="..\SwarmCore.Agent\SwarmCore.Agent.csproj" />
+  </ItemGroup>
+  <ItemGroup>
+    <InternalsVisibleTo Include="SwarmCore.RemoteControl.Agent.Tests" />
+  </ItemGroup>
+</Project>

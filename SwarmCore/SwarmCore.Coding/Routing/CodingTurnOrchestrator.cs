@@ -81,6 +81,11 @@ public sealed partial class CodingTurnOrchestrator(
         var startTurnId = NewId();
 
         CodingLaneSet options;
+        if (request.ReadOnlyInspection && (!request.PlanMode || !request.ReviewOnly))
+        {
+            yield return new TurnErrored(startTurnId, "Read-only inspection requires the host's plan and review fences.");
+            yield break;
+        }
         CodingWorkspace? workspace;
         AgentConversationExecutionGate executions;
         var containment = request.NativeContainment
@@ -88,17 +93,23 @@ public sealed partial class CodingTurnOrchestrator(
                 ? NativeLaneContainment.WorkspaceConfined : coding.NativeAgents.DefaultContainment);
         var unconfinable = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         var canPlan = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        var canInspect = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         using (var requestScope = scopes.CreateScope())
         {
             var source = requestScope.ServiceProvider.GetService<ICodingLaneSource>();
             options = source is null ? CodingLaneSet.Empty : await source.GetLanesAsync(request.ConversationId, ct).ConfigureAwait(false);
             // A native agent whose CLI cannot be held to the requested containment is never used for it.
             var nativeRunners = requestScope.ServiceProvider.GetServices<INativeLaneRunner>().ToList();
-            foreach (var native in options.Lanes.Where(l => l.IsNative))
+            var nativeCandidates = options.Lanes.Where(l => l.IsNative).ToList();
+            if (!string.IsNullOrWhiteSpace(request.RouteProvider) && !string.IsNullOrWhiteSpace(request.RouteModel) && string.IsNullOrWhiteSpace(request.LaneName))
+                nativeCandidates.Add(new(SelectedRouteLane, request.RouteProvider.Trim(), request.RouteModel.Trim()));
+            foreach (var native in nativeCandidates)
+                if (nativeRunners.Any(r => r.Supports(native) && r.SupportsReadOnlyInspection)) canInspect.Add(native.Name);
+            foreach (var native in nativeCandidates)
                 if (!nativeRunners.Any(r => r.Supports(native) && r.SupportsContainment(containment)))
                     unconfinable.Add(native.Name);
             // Plan mode is host state: only a native agent with a verified read-only plan mode runs a plan turn.
-            foreach (var native in options.Lanes.Where(l => l.IsNative))
+            foreach (var native in nativeCandidates)
                 if (nativeRunners.Any(r => r.Supports(native) && r.SupportsPlanMode))
                     canPlan.Add(native.Name);
             // The host's shared conversation ownership (the same gate AgentTurnRunner takes for engine turns).
@@ -120,16 +131,18 @@ public sealed partial class CodingTurnOrchestrator(
             yield break;
         }
         workspace = workspace with { RepositoryRoot = root };
-        using var activeWorkspace = _active.Enter(request.ConversationId, workspace, request.PlanMode, Agents.CodingAgentTools.Patterns(request.Metadata), request.UnattendedAgentTurn);
+        using var activeWorkspace = _active.Enter(request.ConversationId, workspace, request.PlanMode, Agents.CodingAgentTools.Patterns(request.Metadata), request.UnattendedAgentTurn, request.GoalId, request.GoalMessageLeaseToken, request.Permissions);
 
         // Authority is the host's decision; the harness only narrows it (native lanes bypass the broker):
         // never for a turn nobody is attending, never when the host does not admit them for this request.
         var scopeAuthority = request.CommunicationScope ?? AgentCommunicationScope.None;
         var nativeAllowed = CodingLaneRequestFactory.AllowsNativeScope(request);
-        var toolsWithheld = request.AuthenticatedOriginalUserMessage is { } original
+        var toolsWithheld = request.HostToolsWithheld || (request.AuthenticatedOriginalUserMessage is { } original
             ? UserToolUseRestriction.WithholdsAuthenticatedOriginal(original)
-            : UserToolUseRestriction.WithholdsAllTools(request.UserMessage, scopeAuthority.UserInitiated);
-        var nativeDenial = scopeAuthority.UserInitiated ? NativeLaneNotAdmitted : NativeLaneNeedsUserAuthority;
+            : UserToolUseRestriction.WithholdsAllTools(request.UserMessage, scopeAuthority.UserInitiated));
+        var nativeDenial = scopeAuthority.UserInitiated
+            ? request.RequireSelectedRoute ? "the host does not admit native execution for this inspection; the selected route is retained without substitution" : NativeLaneNotAdmitted
+            : NativeLaneNeedsUserAuthority;
         // The request's permission policy holds for the turn's tools; native lanes cannot be held to one that asks or refuses.
         using var activePermissions = request.Permissions is { } policy ? _permissions.Enter(request.ConversationId, policy) : null;
         var permissionBlock = request.Permissions?.NativeLaneBlock;
@@ -139,7 +152,8 @@ public sealed partial class CodingTurnOrchestrator(
             : !nativeAllowed ? nativeDenial
             : permissionBlock is not null ? permissionBlock
             : unconfinable.Contains(candidate.Name) && containment != NativeLaneContainment.Bypass ? NativeLaneCannotBeConfined
-            : request.PlanMode && !canPlan.Contains(candidate.Name) ? Planning.CodingPlanMode.NativeLaneCannotPlan
+            : request.ReadOnlyInspection && !canInspect.Contains(candidate.Name) ? "this native agent has no verified read-only supplied-context inspection mode"
+            : request.PlanMode && !request.ReadOnlyInspection && !canPlan.Contains(candidate.Name) ? Planning.CodingPlanMode.NativeLaneCannotPlan
             : null;
         if (!string.IsNullOrWhiteSpace(request.RouteProvider) && !string.IsNullOrWhiteSpace(request.RouteModel)
             && string.IsNullOrWhiteSpace(request.LaneName))
@@ -165,6 +179,7 @@ public sealed partial class CodingTurnOrchestrator(
         var requestedLane = !string.IsNullOrWhiteSpace(request.LaneName) ? request.LaneName
             : options.Find(SelectedRouteLane) is not null && !string.IsNullOrWhiteSpace(request.RouteProvider) ? SelectedRouteLane
             : workspace.LaneName;
+        if (request.RequireSelectedRoute && string.IsNullOrWhiteSpace(requestedLane)) requestedLane = options.Resolve(null)?.Name;
         var limits = request.ExecutionLimits ?? coding.ExecutionLimits;
         using var requestBudget = CancellationTokenSource.CreateLinkedTokenSource(ct);
         if (limits.Timeout > TimeSpan.Zero && limits.Timeout != Timeout.InfiniteTimeSpan)
@@ -192,7 +207,7 @@ public sealed partial class CodingTurnOrchestrator(
             }
             else namedLaneUsable = true;
         }
-        if (!namedLaneUsable && !request.SelectionPinned)
+        if (!namedLaneUsable && !request.SelectionPinned && !request.RequireSelectedRoute)
         {
             var skippedNamed = !string.IsNullOrWhiteSpace(requestedLane);
             lane = null;
@@ -293,6 +308,9 @@ public sealed partial class CodingTurnOrchestrator(
             using (var attemptCts = CancellationTokenSource.CreateLinkedTokenSource(requestBudget.Token))
             {
                 var attemptCt = attemptCts.Token;
+                var nativeReceiptClassifier = new Native.NativeHostToolReceiptClassifier(
+                    scope.ServiceProvider.GetService<SwarmCore.Agent.Abstractions.ICapabilityCatalog>());
+                var nativeReceiptEffects = new Dictionary<string, SwarmCore.Agent.Catalog.ToolSideEffect?>(StringComparer.Ordinal);
                 IAsyncEnumerable<TurnEvent> stream;
                 if (lane.IsNative)
                 {
@@ -308,7 +326,7 @@ public sealed partial class CodingTurnOrchestrator(
                     var native = scope.ServiceProvider.GetServices<INativeLaneRunner>().FirstOrDefault(r => r.Supports(lane));
                     // Native CLIs run their own loop, so the host's opted-in injectors (memory digest, repository memory
                     // index) are computed here and framed as reference data in the CLI prompt.
-                    var hostContext = native is null ? [] : await Native.NativeHostContext.BuildAsync(scope.ServiceProvider, codingOptions.Value,
+                    var hostContext = native is null || request.ReadOnlyInspection ? [] : await Native.NativeHostContext.BuildAsync(scope.ServiceProvider, codingOptions.Value,
                         new ContextInjectionRequest(request.ConversationId, request.AuthenticatedOriginalUserMessage ?? request.UserMessage, profileId,
                             TurnId: null, WorkspaceRoot: root) { AuthenticatedOriginalUserMessage = request.AuthenticatedOriginalUserMessage },
                         logger, attemptCt).ConfigureAwait(false);
@@ -316,9 +334,13 @@ public sealed partial class CodingTurnOrchestrator(
                         ? Single(new TurnErrored(orchestratorTurnId, $"No native runner is registered for provider {lane.Provider}; the lane is unavailable.")
                             { FailureCategory = LlmFailureCategory.ModelNotFound })
                         : native.RunAsync(new NativeLaneTurn(request.ConversationId, message, lane, root, scopeAuthority.Authority, continuation)
-                            { ExecutionLimits = limits, Attachments = request.Attachments, ProfileId = profileId, CredentialIntake = intake,
+                            { GoalId = request.GoalId, GoalMailbox = request.GoalMailbox, GoalMessageLeaseToken = request.GoalMessageLeaseToken,
+                                HostToolBridgeCapability = _active.BridgeCapability(request.ConversationId),
+                                ExecutionLimits = limits, Attachments = request.Attachments, ProfileId = profileId, CredentialIntake = intake,
                                 ProfileName = request.ProfileName, Metadata = request.Metadata,
-                                Containment = containment, HostContext = hostContext, PlanMode = request.PlanMode }, attemptCt);
+                                Containment = containment, HostContext = hostContext, PlanMode = request.PlanMode, ReadOnlyInspection = request.ReadOnlyInspection,
+                                AgentTeamEnabled = scope.ServiceProvider.GetService<Agents.AgentTeam>() is not null
+                                    && scope.ServiceProvider.GetService<IOptions<Agents.AgentTeamOptions>>()?.Value.Enabled == true }, attemptCt);
                 }
                 else
                 {
@@ -414,6 +436,8 @@ public sealed partial class CodingTurnOrchestrator(
                             yield return evt;
                             break;
                         }
+
+                        if (lane.IsNative) evt = nativeReceiptClassifier.Enrich(evt, nativeReceiptEffects);
 
                         if (evt is ToolCallCompleted) completedTools++;
                         if (nativeCommitSnapshot is not null)
@@ -571,7 +595,7 @@ public sealed partial class CodingTurnOrchestrator(
                 if (confinedClaude && nativeCommitSnapshot?.HasSuccessfulWrites == true && finishingCommit is not null
                     && outcome is LaneOutcomeKind.Delivered or LaneOutcomeKind.PartialRefusal)
                 {
-                    var engine = !request.SelectionPinned && attempt < Math.Max(1, options.MaxLanesPerRequest)
+                    var engine = !request.SelectionPinned && !request.RequireSelectedRoute && attempt < Math.Max(1, options.MaxLanesPerRequest)
                         ? options.Lanes.FirstOrDefault(candidate => !candidate.IsNative && !CodingRoutingPolicy.WasAttempted(candidate, tried)
                             && !_health.IsUnavailable(candidate.HealthKeyOrName, out _, options.HealthScope)) : null;
                     if (engine is null)
@@ -711,6 +735,7 @@ public sealed partial class CodingTurnOrchestrator(
                         yield return new TurnErrored(orchestratorTurnId, error!) { ErrorKind = TurnErrorKind.CompletionValidation };
                     yield return new CodingLanesExhausted(orchestratorTurnId, $"{lane.Name} {reason}; "
                         + (request.SelectionPinned ? "your explicit model choice is retained; automatic switching is disabled."
+                            : request.RequireSelectedRoute ? "the selected inspection route is retained; substitution is disabled."
                             : attempt >= Math.Max(1, options.MaxLanesPerRequest) ? "the configured lane-attempt limit was reached." : "no other lane available."));
                     yield break;
                 }

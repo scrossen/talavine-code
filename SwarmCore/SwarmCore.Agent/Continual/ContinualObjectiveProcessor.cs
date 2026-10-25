@@ -200,6 +200,42 @@ public sealed class ContinualObjectiveProcessor : IContinualObjectiveProcessor
             heartbeat);
         try
         {
+            // Only explicitly opted-in non-mission hosts can reconcile historical physical
+            // uncertainty here. Keep correction/retained-audit verification gates unchanged.
+            if (!verificationOnlyCandidate && !_acceptance.RequiresRetainedVerificationCandidate && objective.Mission is null
+                && _executors.Get(objective.ExecutorKey) is IContinualObjectiveReceiptRecovery receiptRecovery
+                && objective.Receipts.Any(receipt => receiptRecovery.NeedsInspection(objective, receipt)))
+            {
+                string? inspectionFailure = null;
+                try
+                {
+                    await receiptRecovery.ReconcileAsync(new(objective, _prompts.Build(objective), lease.Token),
+                        new DurableExecutionReporter(objective, lease.Token, _store, _activity, _sanitizer, _time), executionCancellation.Token);
+                }
+                catch (OperationCanceledException) { throw; }
+                catch (Exception error)
+                {
+                    // An unavailable inspection/verifier cannot turn a physical uncertainty
+                    // into execution permission or leave an automatic verification loop.
+                    inspectionFailure = $"Host inspection failed ({error.GetType().Name}). ";
+                }
+                objective = await _store.GetAsync(objective.Id, executionCancellation.Token) ?? objective;
+                if (objective.Receipts.Any(receipt => receiptRecovery.NeedsInspection(objective, receipt)))
+                {
+                    var pending = objective.Receipts.Where(receipt => receiptRecovery.NeedsInspection(objective, receipt)).ToArray();
+                    var binding = Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(System.Text.Encoding.UTF8.GetBytes(
+                        string.Join("\n", pending.OrderBy(receipt => receipt.Attempt).ThenBy(receipt => receipt.ToolCallId, StringComparer.Ordinal)
+                            .Select(ContinualReceiptResolutionPolicy.Fingerprint)))));
+                    var unresolved = _stateMachine.FromTerminalError(objective,
+                        inspectionFailure + "Prior operations still have unverified outcomes. Host inspection is required; no action was replayed. "
+                        + "Unresolved set SHA-256 " + binding + ": "
+                        + string.Join(", ", pending.Select(receipt => $"attempt {receipt.Attempt}/{receipt.ToolCallId}")))
+                        with { Status = ContinualObjectiveStatus.Uncertain, RetainVerificationCandidate = objective.VerificationCandidate is not null };
+                    var applied = await _store.ApplyTransitionAsync(objective.Id, lease.Token, unresolved, executionCancellation.Token);
+                    return Result(objective.Id, applied ? ContinualObjectiveProcessDisposition.Processed : ContinualObjectiveProcessDisposition.LeaseLost,
+                        unresolved.Status, detail: unresolved.LastFailure);
+                }
+            }
             // Correction labels/metadata always require retained verification.
             // Transient Pending flags and older host capability defaults cannot
             // turn the saved result back into execution or mission-budget recovery.
@@ -370,7 +406,7 @@ public sealed class ContinualObjectiveProcessor : IContinualObjectiveProcessor
 
     /// <summary>Successful dispatched effects remain a replay fence even after a host clears a no-effect failure.</summary>
     private static bool HasSucceededEffectReceipt(ContinualObjectiveSnapshot objective)
-        => objective.Receipts.Any(r => r.WasDispatched && !r.IsError && r.SideEffect != ContinualSideEffectClass.ReadOnly);
+        => objective.Receipts.Any(r => r.WasDispatched && !r.IsError && ContinualSideEffects.MayAffectTaskResources(r.SideEffect));
 
     /// <summary>Verification faults back off without repeating execution.</summary>
     private async Task<ContinualObjectiveProcessResult> ReverifyAsync(
@@ -552,6 +588,20 @@ public sealed class ContinualObjectiveProcessor : IContinualObjectiveProcessor
                     ct);
             verdict = await ValidateCurrentEvidenceAsync(refreshed, verdict, ct);
             var transition = _stateMachine.FromVerdict(refreshed, safeOutput, verdict);
+            if (execution.VerifiedHostProgress && execution.AwaitingOwnedWork && refreshed.Mission is null
+                && !_acceptance.RequiresRetainedVerificationCandidate && verdict.Outcome == ContinualAcceptanceOutcome.Retry
+                && !verdict.EvaluationUnavailable
+                && transition.Status is ContinualObjectiveStatus.RetryScheduled or ContinualObjectiveStatus.AttentionRequired)
+            {
+                // A host-confirmed inbox/control batch can progress while preserving the exact
+                // artifact. Do not manufacture a new artifact or tool receipt to avoid backoff.
+                transition = transition with
+                {
+                    Status = ContinualObjectiveStatus.RetryScheduled, ConsecutiveNoProgress = 0,
+                    NextAttemptAtUtc = _time.GetUtcNow(), LastFailure = null,
+                    ContinuationFeedback = "Verified host progress was saved. Continue this same objective from its retained result without replaying actions.",
+                };
+            }
             if (_acceptance.RequiresRetainedVerificationCandidate)
                 transition = transition with { ExpectedVerificationCandidate = ContinualVerificationCandidatePolicy.Expect(refreshed) };
             var applied = await _store.ApplyTransitionAsync(objective.Id, leaseToken, transition, ct);
@@ -993,7 +1043,7 @@ public interface IContinualObjectiveExecutionControl
     void Release(Guid objectiveId, CancellationTokenSource cancellation);
 }
 
-internal sealed class ContinualObjectiveExecutionControl : IContinualObjectiveExecutionControl
+public sealed class ContinualObjectiveExecutionControl : IContinualObjectiveExecutionControl
 {
     private readonly ConcurrentDictionary<Guid, CancellationTokenSource> _active = new();
 

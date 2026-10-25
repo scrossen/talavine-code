@@ -6,6 +6,14 @@ namespace SwarmCode.Hosting;
 /// <summary>Imports immutable copies; never modifies the user's original file.</summary>
 public sealed class AttachmentStore(SwarmCodeDataPaths paths, CodingAttachmentOptions? limits = null)
 {
+    /// <summary>Remove every imported copy for a deleted session. Best effort; returns false when something is still locked.</summary>
+    public bool DeleteConversation(string conversationId)
+    {
+        if (!StorageIds.IsValid(conversationId)) return false;
+        var folder = Path.Combine(paths.SessionsDirectory, "attachments", conversationId);
+        return SwarmCore.Abstractions.IO.ManagedScratch.TryDeleteTree(folder);
+    }
+
     public async Task<CodingAttachment> ImportAsync(string conversationId, string fileName, Stream source, CancellationToken ct = default)
     {
         if (!StorageIds.IsValid(conversationId)) throw new ArgumentException("Invalid session id.", nameof(conversationId));

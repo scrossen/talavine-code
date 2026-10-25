@@ -1,0 +1,75 @@
+@namespace SwarmCode.App.Components.Shared
+@implements IDisposable
+@inject StarInvitationStore Invitations
+
+<GitHubStarInvitation Visible="@Visible" Busy="@_pending" Error="@_error"
+                      OnOpen="OpenAsync" OnDismiss="DismissAsync" />
+@if (_hiddenThisRun && _error is not null)
+{
+    <p class="sc-note sc-muted" role="status">@_error</p>
+}
+
+@code {
+    [Parameter] public bool Allowed { get; set; }
+    [Parameter] public bool Busy { get; set; }
+    // Recheck live host work at the action boundary, even if its last render is stale.
+    [Parameter] public Func<bool>? IsWorkBusy { get; set; }
+    [Parameter] public Func<Uri, Task<bool>> OpenLinkAsync { get; set; } = DesktopPlatform.OpenUriAsync;
+
+    private StarInvitationState _state = new(false, true);
+    private bool _refreshWhenIdle = true, _pending, _hiddenThisRun, _disposed;
+    private int _readGeneration;
+    private string? _error;
+    private bool WorkBusy => Busy || IsWorkBusy?.Invoke() == true;
+    private bool Visible => Allowed && !_hiddenThisRun && _state.ShouldShow(WorkBusy || _pending);
+
+    protected override async Task OnParametersSetAsync()
+    {
+        if (!Allowed || WorkBusy) { _refreshWhenIdle = true; ++_readGeneration; return; }
+        if (!_refreshWhenIdle || _hiddenThisRun) return;
+        _refreshWhenIdle = false;
+        var generation = ++_readGeneration;
+        var state = await Invitations.ReadAsync();
+        if (!_disposed && generation == _readGeneration) _state = state;
+    }
+
+    private async Task DismissAsync()
+    {
+        if (!Visible || _pending) return;
+        _pending = true;
+        _hiddenThisRun = true;
+        ++_readGeneration;
+        try { await Invitations.DismissAsync(); _state = new(_state.Eligible, true); _error = null; }
+        catch (Exception) { _error = "Hidden for now, but your choice could not be saved. Check the data folder before reopening."; }
+        finally { _pending = false; }
+    }
+
+    private async Task OpenAsync()
+    {
+        if (!Visible || _pending) return;
+        _pending = true;
+        _error = null;
+        var opened = false;
+        try
+        {
+            // A second window may have dismissed it. Re-read before dispatching the external effect.
+            _state = await Invitations.ReadAsync();
+            if (_disposed || !Allowed || WorkBusy || !_state.ShouldShow(false)) return;
+            opened = await OpenLinkAsync(new Uri(StarInvitationStore.RepositoryUrl));
+            if (!opened) { _error = "Could not open your browser. You can try again or visit the address below."; return; }
+            _hiddenThisRun = true;
+            ++_readGeneration;
+            await Invitations.DismissAsync();
+            _state = new(_state.Eligible, true);
+        }
+        catch (Exception)
+        {
+            _error = opened
+                ? "The repository opened, but your choice could not be saved. The invitation is hidden for now."
+                : "Could not confirm that your browser opened. Check it before trying again.";
+        }
+        finally { _pending = false; }
+    }
+
+    public void Dispose() { _disposed = true; ++_readGeneration; }
+}

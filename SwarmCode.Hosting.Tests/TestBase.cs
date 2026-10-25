@@ -3,7 +3,7 @@ namespace SwarmCode.Hosting.Tests;
 public abstract class TempDirTest : IDisposable
 {
     protected string Tmp { get; } = SwarmCore.Missions.SandboxPathResolver.ResolvePhysicalPath(
-        Path.Combine(Path.GetTempPath(), "swarmcode-hosting-tests", Guid.NewGuid().ToString("N")));
+        Talavine.TestSupport.TestTempRoot.CreateDirectory("hosting"));
     protected SwarmCodeDataPaths Paths { get; }
 
     protected TempDirTest()
@@ -14,7 +14,8 @@ public abstract class TempDirTest : IDisposable
 
     public virtual void Dispose()
     {
-        try { Directory.Delete(Tmp, recursive: true); } catch { /* best effort */ }
+        if (!Talavine.TestSupport.TestTempRoot.DeleteDirectory(Tmp))
+            throw new IOException($"Hosting fixture did not release its scratch files: {Tmp}");
         GC.SuppressFinalize(this);
     }
 }

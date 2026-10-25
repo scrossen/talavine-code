@@ -48,10 +48,11 @@ public partial class LlmRouter
     /// <summary>
     /// Sets the tool-use provider registry. Wired up in a separate setter
     /// rather than the constructor so the existing LlmRouter constructor
-    /// signature stays stable. DI registration is responsible for calling
-    /// this during application startup.
+    /// signature stays stable. DI registration (AddToolUseProviders) calls this
+    /// during application startup; it is public so a host or a test that builds
+    /// a router by hand can attach its own registry without reflection.
     /// </summary>
-    internal void AttachToolUseRegistry(IToolUseProviderRegistry registry)
+    public void AttachToolUseRegistry(IToolUseProviderRegistry registry)
     {
         _toolUseRegistry = registry;
     }
@@ -64,7 +65,7 @@ public partial class LlmRouter
     /// before (unknown capability is refused), so hosts and tests that do not
     /// register one are unaffected.
     /// </summary>
-    internal void AttachToolUseProver(IToolUseCapabilityProver prover)
+    public void AttachToolUseProver(IToolUseCapabilityProver prover)
     {
         _toolUseProver = prover;
     }
@@ -148,12 +149,12 @@ public partial class LlmRouter
             localSlot = null;
             if (primaryExecutionStarted)
             {
-                await TrackToolUseErrorAsync(
+                // A user Stop is a cancellation receipt, never provider failure evidence.
+                await TrackCancellationAsync(
                     functionType,
                     selectedModel,
                     stopwatch.ElapsedMilliseconds,
-                    mutatedOptions,
-                    "Tool-use provider call was cancelled.").ConfigureAwait(false);
+                    mutatedOptions).ConfigureAwait(false);
             }
             throw;
         }
@@ -296,9 +297,38 @@ public partial class LlmRouter
             // Manual enumeration so we can wrap MoveNextAsync in a try/catch and
             // record a cooldown when the provider rate-limits. The yield-return
             // form (`await foreach { yield return ev; }`) doesn't allow try/catch
-            // around the yield, so we drive the enumerator by hand.
-            await using var enumerator = translator.StreamAsync(effective, ct).GetAsyncEnumerator(ct);
-            while (true)
+            // around the yield, so we drive the enumerator by hand. Creating the
+            // enumerator is guarded the same way: a translator may validate the
+            // request (and throw) eagerly.
+            IAsyncEnumerator<ToolUseStreamEvent>? enumerator = null;
+            try
+            {
+                enumerator = translator.StreamAsync(effective, ct).GetAsyncEnumerator(ct);
+            }
+            catch (RoutingAuditPersistenceException)
+            {
+                throw;
+            }
+            catch (OperationCanceledException) when (ct.IsCancellationRequested)
+            {
+                stopwatch.Stop();
+                await TrackCancellationAsync(functionType, selectedModel, stopwatch.ElapsedMilliseconds, mutatedOptions)
+                    .ConfigureAwait(false);
+                primaryTerminalReceiptWritten = true;
+                throw;
+            }
+            catch (ProviderContextReconstructionRequiredException) { throw; }
+            catch (Exception ex) when (ex is not SwarmCore.Abstractions.Budgets.MissionBudgetExceededException)
+            {
+                stopwatch.Stop();
+                await RecordPrimaryToolStreamFailureAsync(functionType, selectedModel, stopwatch.ElapsedMilliseconds, mutatedOptions, ex)
+                    .ConfigureAwait(false);
+                primaryTerminalReceiptWritten = true;
+                primaryException = ex;
+            }
+
+            await using var enumeratorLease = enumerator;
+            while (enumerator is not null)
             {
                 ToolUseStreamEvent ev;
                 try
@@ -312,22 +342,21 @@ public partial class LlmRouter
                 }
                 catch (OperationCanceledException) when (ct.IsCancellationRequested)
                 {
+                    // A user Stop: write the cancellation receipt so the finally
+                    // block does not report an abandoned stream as a failure.
+                    stopwatch.Stop();
+                    await TrackCancellationAsync(functionType, selectedModel, stopwatch.ElapsedMilliseconds, mutatedOptions)
+                        .ConfigureAwait(false);
+                    primaryTerminalReceiptWritten = true;
                     throw;
                 }
                 catch (ProviderContextReconstructionRequiredException) { throw; }
-        catch (Exception ex) when (ex is not SwarmCore.Abstractions.Budgets.MissionBudgetExceededException)
+                catch (Exception ex) when (ex is not SwarmCore.Abstractions.Budgets.MissionBudgetExceededException)
                 {
                     stopwatch.Stop();
-                    await TrackToolUseErrorAsync(functionType, selectedModel, stopwatch.ElapsedMilliseconds, mutatedOptions, ex.Message);
+                    await RecordPrimaryToolStreamFailureAsync(functionType, selectedModel, stopwatch.ElapsedMilliseconds, mutatedOptions, ex)
+                        .ConfigureAwait(false);
                     primaryTerminalReceiptWritten = true;
-                    if (IsRateLimitError(ex))
-                    {
-                        await RecordCooldownIfRateLimitAsync(selectedModel.Provider, ex).ConfigureAwait(false);
-                    }
-                    else if (IsTimeoutOrTransientError(ex))
-                    {
-                        await RecordCooldownIfTimeoutOrTransientAsync(selectedModel.Provider, ex).ConfigureAwait(false);
-                    }
                     primaryException = ex;
                     break;
                 }
@@ -467,6 +496,28 @@ public partial class LlmRouter
         }
     }
 
+    /// <summary>
+    /// Terminal receipt plus provider cooldown for a primary tool-use stream that
+    /// failed while it was being created or read.
+    /// </summary>
+    private async Task RecordPrimaryToolStreamFailureAsync(
+        string functionType,
+        LlmModelSelection selectedModel,
+        long elapsedMs,
+        LlmRouterOptions options,
+        Exception ex)
+    {
+        await TrackToolUseErrorAsync(functionType, selectedModel, elapsedMs, options, ex.Message).ConfigureAwait(false);
+        if (IsRateLimitError(ex))
+        {
+            await RecordCooldownIfRateLimitAsync(selectedModel.Provider, ex).ConfigureAwait(false);
+        }
+        else if (IsTimeoutOrTransientError(ex))
+        {
+            await RecordCooldownIfTimeoutOrTransientAsync(selectedModel.Provider, ex).ConfigureAwait(false);
+        }
+    }
+
     private async Task<ChatToolUseResponse?> TryToolUseFallbackAsync(
         string functionType,
         ChatToolUseRequest request,
@@ -511,7 +562,6 @@ public partial class LlmRouter
                 selectedModel,
                 promptSummary,
                 reason,
-                request.Options?.AllowAnyProviderFallback == true,
                 request.Options)
                 .WaitAsync(ct).ConfigureAwait(false);
         }
@@ -642,12 +692,11 @@ public partial class LlmRouter
             fallbackStopwatch.Stop();
             if (fallbackExecutionStarted)
             {
-                await TrackToolUseErrorAsync(
+                await TrackCancellationAsync(
                     functionType,
                     fallbackSelection,
                     fallbackStopwatch.ElapsedMilliseconds,
                     fallbackOptions,
-                    "Fallback tool-use provider call was cancelled.",
                     fallbackUsed: true).ConfigureAwait(false);
             }
             throw;
@@ -727,7 +776,6 @@ public partial class LlmRouter
                 selectedModel,
                 promptSummary,
                 reason,
-                request.Options?.AllowAnyProviderFallback == true,
                 request.Options)
                 .WaitAsync(ct).ConfigureAwait(false);
         }
@@ -861,6 +909,17 @@ public partial class LlmRouter
         }
         catch (OperationCanceledException) when (ct.IsCancellationRequested)
         {
+            fallbackStopwatch.Stop();
+            if (fallbackExecutionStarted)
+            {
+                await TrackCancellationAsync(
+                    functionType,
+                    fallbackSelection,
+                    fallbackStopwatch.ElapsedMilliseconds,
+                    fallbackOptions,
+                    fallbackUsed: true).ConfigureAwait(false);
+                fallbackTerminalReceiptWritten = true;
+            }
             throw;
         }
         catch (ProviderContextReconstructionRequiredException) { throw; }
@@ -905,6 +964,14 @@ public partial class LlmRouter
                 }
                 catch (OperationCanceledException) when (ct.IsCancellationRequested)
                 {
+                    fallbackStopwatch.Stop();
+                    await TrackCancellationAsync(
+                        functionType,
+                        fallbackSelection,
+                        fallbackStopwatch.ElapsedMilliseconds,
+                        fallbackOptions,
+                        fallbackUsed: true).ConfigureAwait(false);
+                    fallbackTerminalReceiptWritten = true;
                     throw;
                 }
                 catch (ProviderContextReconstructionRequiredException) { throw; }
@@ -1042,7 +1109,6 @@ public partial class LlmRouter
         LlmModelSelection selectedModel,
         string promptSummary,
         string reason,
-        bool allowAnyProviderFallback = false,
         LlmRouterOptions? options = null)
     {
         var fallbackRequirements = CloneOrCreate(options);
@@ -1053,7 +1119,6 @@ public partial class LlmRouter
             promptSummary,
             requiresVision: fallbackRequirements.RequiresVision == true,
             reason: reason,
-            allowAnyProviderFallback: allowAnyProviderFallback,
             options: fallbackRequirements).ConfigureAwait(false);
 
         var usesConfiguredEvidence = !string.IsNullOrWhiteSpace(selectedModel.FallbackProvider)

@@ -1,0 +1,17 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <TargetFramework>net11.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <LangVersion>latest</LangVersion>
+    <RootNamespace>SwarmCore.RemoteControl</RootNamespace>
+    <Description>SwarmCore RemoteControl - platform-neutral text command grammar, session state, and desktop automation contracts for controlling a computer with plain-text commands (screens, windows, controls, mouse, keyboard). Hosts supply the platform implementation of IDesktopAutomation.</Description>
+    <Authors>Scott Crossen</Authors>
+  </PropertyGroup>
+  <ItemGroup>
+    <ProjectReference Include="..\SwarmCore.Abstractions\SwarmCore.Abstractions.csproj" />
+  </ItemGroup>
+  <ItemGroup>
+    <InternalsVisibleTo Include="SwarmCore.RemoteControl.Tests" />
+  </ItemGroup>
+</Project>

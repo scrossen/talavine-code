@@ -39,25 +39,27 @@ public sealed class PlaywrightComputerSurface(IPage page, Func<CancellationToken
         await gate.WaitAsync(ct);
         var completed = 0;
         var dispatched = false;
+        var everDispatched = false;
         Task? inFlight = null;
         using var operationCancellation = CancellationTokenSource.CreateLinkedTokenSource(ct);
         try
         {
             await authorize(ct);
             if (current is null || batch.SessionId != sessionId || batch.SurfaceId != surfaceId
-                || batch.ObservationId != current.ObservationId) return Failure("stale-or-missing-observation");
-            if (batch.Actions.Count is < 1 or > 64) return Failure("invalid-action-batch");
-            foreach (var action in batch.Actions) Validate(action);
+                || batch.ObservationId != current.ObservationId) return GuardFailure("stale-or-missing-observation");
+            if (batch.Actions.Count is < 1 or > 64) return GuardFailure("invalid-action-batch");
+            try { foreach (var action in batch.Actions) Validate(action); }
+            catch (ArgumentException) { return GuardFailure("invalid-action"); }
             var expectedLayout = layout;
             foreach (var action in batch.Actions)
             {
                 ct.ThrowIfCancellationRequested();
                 await authorize(ct);
-                if (page.IsClosed) return Failure("surface-closed");
+                if (page.IsClosed) return GuardFailure("surface-closed");
                 // Layout, scroll, frame and document identity matter; animated pixels do not.
-                if (await LayoutAsync(ct) != expectedLayout) return Failure("layout-changed-reobserve");
-                dispatched = true;
-                inFlight = RunActionAsync(action, current.DeviceScaleFactor, operationCancellation.Token);
+                if (await LayoutAsync(ct) != expectedLayout) return GuardFailure("layout-changed-reobserve");
+                inFlight = RunActionAsync(action, current.DeviceScaleFactor, () =>
+                { dispatched = true; everDispatched = true; }, operationCancellation.Token);
                 await inFlight.WaitAsync(TimeSpan.FromMilliseconds(TimeoutMs), ct);
                 completed++;
                 dispatched = false;
@@ -85,6 +87,11 @@ public sealed class PlaywrightComputerSurface(IPage page, Func<CancellationToken
             if (inFlight is not null) await SettleAsync(inFlight);
             return Failure("browser-action-timeout", dispatched);
         }
+        catch (BrowserActionGuardException)
+        {
+            current = null; layout = null;
+            return GuardFailure("invalid-action");
+        }
         catch (Exception ex) when (ex is PlaywrightException or ArgumentException)
         {
             current = null; layout = null;
@@ -97,6 +104,7 @@ public sealed class PlaywrightComputerSurface(IPage page, Func<CancellationToken
         }
         finally { gate.Release(); }
 
+        ComputerActionResult GuardFailure(string reason) => Failure(reason) with { NoPhysicalAction = !everDispatched };
         ComputerActionResult Failure(string reason, bool uncertain = false) => new(false, completed, null, reason)
         { BeforeObservationId = batch.ObservationId, OutcomeUncertain = uncertain };
     }
@@ -114,30 +122,35 @@ public sealed class PlaywrightComputerSurface(IPage page, Func<CancellationToken
             throw new ArgumentException("Invalid action parameters.");
     }
 
-    private async Task RunActionAsync(ComputerAction a, double scale, CancellationToken ct)
+    private sealed class BrowserActionGuardException(string message) : ArgumentException(message);
+
+    private async Task RunActionAsync(ComputerAction a, double scale, Action onDispatch, CancellationToken ct)
     {
-        float X(double x) => x >= 0 && x < current!.Width ? (float)(x / scale) : throw new ArgumentException("Coordinate outside screenshot.");
-        float Y(double y) => y >= 0 && y < current!.Height ? (float)(y / scale) : throw new ArgumentException("Coordinate outside screenshot.");
-        var button = a.Button switch { null or "left" => MouseButton.Left, "right" => MouseButton.Right, "wheel" or "middle" => MouseButton.Middle, _ => throw new ArgumentException("Unknown button.") };
+        float X(double x) => x >= 0 && x < current!.Width ? (float)(x / scale) : throw new BrowserActionGuardException("Coordinate outside screenshot.");
+        float Y(double y) => y >= 0 && y < current!.Height ? (float)(y / scale) : throw new BrowserActionGuardException("Coordinate outside screenshot.");
+        var button = a.Button switch { null or "left" => MouseButton.Left, "right" => MouseButton.Right, "wheel" or "middle" => MouseButton.Middle, _ => throw new BrowserActionGuardException("Unknown button.") };
+        var x = a.X is { } ax ? X(ax) : 0;
+        var y = a.Y is { } ay ? Y(ay) : 0;
+        var path = a.Path.Select(p => (X: X(p.X), Y: Y(p.Y))).ToArray();
         switch (a.Type)
         {
-            case "click": await page.Mouse.ClickAsync(X(a.X!.Value), Y(a.Y!.Value), new() { Button = button }); break;
-            case "double_click": await page.Mouse.DblClickAsync(X(a.X!.Value), Y(a.Y!.Value), new() { Button = button }); break;
-            case "move": await page.Mouse.MoveAsync(X(a.X!.Value), Y(a.Y!.Value)); break;
-            case "scroll": await page.Mouse.MoveAsync(X(a.X!.Value), Y(a.Y!.Value)); await page.Mouse.WheelAsync((float)(a.ScrollX / scale), (float)(a.ScrollY / scale)); break;
-            case "type": await RejectSecretFocusAsync(ct); ct.ThrowIfCancellationRequested(); await page.Keyboard.InsertTextAsync(a.Text ?? ""); break;
+            case "click": onDispatch(); await page.Mouse.ClickAsync(x, y, new() { Button = button }); break;
+            case "double_click": onDispatch(); await page.Mouse.DblClickAsync(x, y, new() { Button = button }); break;
+            case "move": onDispatch(); await page.Mouse.MoveAsync(x, y); break;
+            case "scroll": onDispatch(); await page.Mouse.MoveAsync(x, y); await page.Mouse.WheelAsync((float)(a.ScrollX / scale), (float)(a.ScrollY / scale)); break;
+            case "type": await RejectSecretFocusAsync(ct); ct.ThrowIfCancellationRequested(); onDispatch(); await page.Keyboard.InsertTextAsync(a.Text ?? ""); break;
             case "keypress":
                 await RejectSecretFocusAsync(ct);
                 var keys = a.Keys.Select(Key).ToArray();
-                if (keys.Length == 0) throw new ArgumentException("Keys required.");
-                ct.ThrowIfCancellationRequested(); await page.Keyboard.PressAsync(string.Join("+", keys)); break;
+                if (keys.Length == 0) throw new BrowserActionGuardException("Keys required.");
+                ct.ThrowIfCancellationRequested(); onDispatch(); await page.Keyboard.PressAsync(string.Join("+", keys)); break;
             case "drag":
-                if (a.Path.Count < 2) throw new ArgumentException("Drag path required.");
-                await page.Mouse.MoveAsync(X(a.Path[0].X), Y(a.Path[0].Y)); await page.Mouse.DownAsync();
-                try { foreach (var point in a.Path.Skip(1)) { ct.ThrowIfCancellationRequested(); await page.Mouse.MoveAsync(X(point.X), Y(point.Y)); } }
+                if (a.Path.Count < 2) throw new BrowserActionGuardException("Drag path required.");
+                onDispatch(); await page.Mouse.MoveAsync(path[0].X, path[0].Y); await page.Mouse.DownAsync();
+                try { foreach (var point in path.Skip(1)) { ct.ThrowIfCancellationRequested(); await page.Mouse.MoveAsync(point.X, point.Y); } }
                 finally { await page.Mouse.UpAsync(); } break;
-            case "wait": await Task.Delay(a.WaitMilliseconds, ct); break;
-            case "screenshot": break;
+            case "wait": onDispatch(); await Task.Delay(a.WaitMilliseconds, ct); break;
+            case "screenshot": onDispatch(); break;
         }
     }
     private static string Key(string key) => key.ToUpperInvariant() switch
@@ -146,13 +159,13 @@ public sealed class PlaywrightComputerSurface(IPage page, Func<CancellationToken
         "ENTER" or "RETURN" => "Enter", "ESC" or "ESCAPE" => "Escape", "TAB" => "Tab", "SPACE" => "Space",
         "BACKSPACE" => "Backspace", "DELETE" => "Delete", "UP" => "ArrowUp", "DOWN" => "ArrowDown", "LEFT" => "ArrowLeft", "RIGHT" => "ArrowRight",
         "HOME" => "Home", "END" => "End", "PAGEUP" => "PageUp", "PAGEDOWN" => "PageDown",
-        _ when key.Length == 1 => key, _ => throw new ArgumentException("Unsupported key.")
+        _ when key.Length == 1 => key, _ => throw new BrowserActionGuardException("Unsupported key.")
     };
     private async Task RejectSecretFocusAsync(CancellationToken ct)
     {
         foreach (var frame in page.Frames)
             if (await BoundedReadAsync(page, frame.EvaluateAsync<bool>("() => {const e=document.activeElement; return document.hasFocus() && !!e?.matches('input[type=password],input[autocomplete*=password],input[autocomplete=username],input:-webkit-autofill,input[autocomplete=one-time-code],input[autocomplete^=cc-]');}"), TimeSpan.FromMilliseconds(TimeoutMs), ct))
-                throw new ArgumentException("Credential input remains browser-owned.");
+                throw new BrowserActionGuardException("Credential input remains browser-owned.");
     }
 
     private async Task<ComputerObservation> CaptureAsync(CancellationToken ct)

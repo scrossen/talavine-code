@@ -174,3 +174,22 @@ window.swarmcode = window.swarmcode || {};
         handlers = null;
     };
 })(window.swarmcode);
+
+// PDF preview handoff. The bytes go to pdf-preview.html by postMessage, not in its URL: Chromium (WebView2)
+// rejects URLs over 2 MB, so a URL fragment silently showed an empty frame for any PDF above ~1.5 MB.
+// The frame takes the first copy it receives and announces when it is listening, so a copy posted before
+// its script loaded is resent on that announcement. Same-window frames only: each side checks event.source.
+(function (sc) {
+    sc.showPdfPreview = function (frame, base64) {
+        if (!frame) return;
+        const post = () => frame.contentWindow && frame.contentWindow.postMessage({ type: 'swarmcode-pdf', data: base64 }, '*');
+        const onReady = event => {
+            if (event.source !== frame.contentWindow || !event.data || event.data.type !== 'swarmcode-pdf-ready') return;
+            window.removeEventListener('message', onReady);
+            post();
+        };
+        window.addEventListener('message', onReady);
+        setTimeout(() => window.removeEventListener('message', onReady), 30000);
+        post();
+    };
+})(window.swarmcode);

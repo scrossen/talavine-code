@@ -12,7 +12,7 @@ public enum CodingPermissionMode
     Auto,
     /// <summary>
     /// Reads and local workspace edits run; shell and code execution, external sends, destructive actions, git commit/push
-    /// and computer/browser control ask first.
+    /// and computer/browser/desktop control ask first.
     /// </summary>
     AskRisky,
     /// <summary>Every tool with a side effect asks first.</summary>
@@ -90,19 +90,19 @@ public sealed record CodingPermissionPolicy
 
     /// <summary>
     /// What <see cref="CodingPermissionMode.AskRisky"/> asks for: command and code execution, external sends, destructive
-    /// actions, git commit/push, and computer/browser control. Local workspace edits are not risky. The agents tools are
+    /// actions, git commit/push, and computer/browser/desktop control. Local workspace edits are not risky. The agents tools are
     /// not risky either: an agent works under the same policy as the session that started it.
     /// </summary>
     public static bool IsRisky(string toolId, ToolSideEffect sideEffect)
     {
         if (Matches("agents.*", toolId)) return false;
         if (RiskyToolIds.Any(p => Matches(p, toolId))) return true;
-        return sideEffect is not (ToolSideEffect.ReadOnly or ToolSideEffect.WritesLocal);
+        return sideEffect is not (ToolSideEffect.ReadOnly or ToolSideEffect.WritesLocal or ToolSideEffect.ExecutionMetadata);
     }
 
     /// <summary>Tool-id globs that are risky whatever side effect their descriptor declares.</summary>
     public static IReadOnlyList<string> RiskyToolIds { get; } =
-        ["shell.*", "git.commit*", "git.push*", "browser.*", "browser_*", "computer.*", "computer_*", "apps.*"];
+        ["shell.*", "git.commit*", "git.push*", "browser.*", "browser_*", "computer.*", "computer_*", "desktop.*", "desktop_*", "apps.*"];
 
     /// <summary>Case-insensitive glob over tool ids: <c>*</c> matches any run of characters, everything else is literal.</summary>
     public static bool Matches(string pattern, string toolId)
@@ -148,9 +148,18 @@ public sealed record CodingPermissionPolicy
 public sealed class ActiveCodingPermissions
 {
     private readonly ConcurrentDictionary<string, CodingPermissionPolicy> _active = new(StringComparer.Ordinal);
+    private sealed record Bound(string ConversationId, CodingPermissionPolicy? Policy);
+    private readonly AsyncLocal<Bound?> _bound = new();
+    internal IDisposable BindBridgePolicy(string conversationId, CodingPermissionPolicy? policy)
+    {
+        var prior = _bound.Value; _bound.Value = new(conversationId, policy);
+        return new EndBinding(() => _bound.Value = prior);
+    }
+    private sealed class EndBinding(Action end) : IDisposable { public void Dispose() => end(); }
 
     public CodingPermissionPolicy? Get(string? conversationId)
-        => conversationId is not null && _active.TryGetValue(conversationId, out var policy) ? policy : null;
+        => _bound.Value is { } bound && bound.ConversationId == conversationId ? bound.Policy
+            : conversationId is not null && _active.TryGetValue(conversationId, out var policy) ? policy : null;
 
     public IDisposable Enter(string conversationId, CodingPermissionPolicy policy)
     {

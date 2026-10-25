@@ -23,6 +23,37 @@ public class WorkspaceSessionCatalogTests : TempDirTest
     }
 
     [Fact]
+    public async Task A_damaged_index_is_moved_aside_and_the_catalog_keeps_working()
+    {
+        Directory.CreateDirectory(Path.GetDirectoryName(Paths.SessionIndexPath)!);
+        File.WriteAllText(Paths.SessionIndexPath, "{\"sessions\": [ {\"id\": ");
+        var catalog = new WorkspaceSessionCatalog(Paths);
+
+        Assert.Empty(await catalog.ListAsync());
+        var quarantined = Assert.Single(Directory.GetFiles(Path.GetDirectoryName(Paths.SessionIndexPath)!, "index.json.corrupt-*"));
+        Assert.Equal("{\"sessions\": [ {\"id\": ", File.ReadAllText(quarantined));
+
+        var created = await catalog.CreateAsync(Repo("r"));
+        Assert.Equal(created.Id, Assert.Single(await catalog.ListAsync()).Id);
+    }
+
+    [Fact]
+    public async Task Cached_reads_still_see_writes_from_another_catalog_instance()
+    {
+        var first = new WorkspaceSessionCatalog(Paths);
+        var second = new WorkspaceSessionCatalog(Paths); // another process, in effect
+        var a = await first.CreateAsync(Repo("a"));
+        Assert.Single(await second.ListAsync());
+
+        var b = await second.CreateAsync(Repo("b"));
+        await second.RenameAsync(a.Id, "Renamed elsewhere");
+
+        Assert.Equal(2, (await first.ListAsync()).Count);
+        Assert.Equal("Renamed elsewhere", (await first.GetAsync(a.Id))!.Title);
+        Assert.NotNull(await first.GetAsync(b.Id));
+    }
+
+    [Fact]
     public async Task Touch_SetsLane_AndReplacesDefaultTitleOnce()
     {
         var catalog = new WorkspaceSessionCatalog(Paths);
@@ -99,11 +130,13 @@ public class WorkspaceSessionCatalogTests : TempDirTest
     [Fact]
     public async Task CorruptIndex_IsPreserved_AndCannotBeOverwrittenAsEmpty()
     {
+        // The damaged bytes are never overwritten: a write first moves them aside intact, then starts an empty index.
+        Directory.CreateDirectory(Path.GetDirectoryName(Paths.SessionIndexPath)!);
         File.WriteAllText(Paths.SessionIndexPath, "{broken");
         var catalog = new WorkspaceSessionCatalog(Paths);
-        await Assert.ThrowsAsync<System.Text.Json.JsonException>(() => catalog.ListAsync());
-        await Assert.ThrowsAsync<System.Text.Json.JsonException>(() => catalog.CreateAsync(Tmp));
-        Assert.Equal("{broken", File.ReadAllText(Paths.SessionIndexPath));
+        await catalog.CreateAsync(Tmp);
+        var quarantined = Assert.Single(Directory.GetFiles(Path.GetDirectoryName(Paths.SessionIndexPath)!, "index.json.corrupt-*"));
+        Assert.Equal("{broken", File.ReadAllText(quarantined));
     }
 }
 

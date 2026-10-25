@@ -19,6 +19,9 @@ public sealed record SourceLink(string Id, string Kind, Guid RecordId, Guid? Acc
 
 public static class SourceLinks
 {
+    /// <summary>The public origin source links are published under.</summary>
+    public const string DefaultPublicOrigin = "https://talavine.com";
+
     /// <summary>Strict normal message coordinates. The host must still check its current profile and account authority.</summary>
     public static bool TryReadMessageAppUri(string? value, out SourceLink link)
     {
@@ -103,7 +106,7 @@ public static class SourceLinks
     public static string SafeReturnRoute(string? route)
     {
         if (route is not null && route.StartsWith("/sources/", StringComparison.Ordinal)
-            && Uri.TryCreate("https://talavine.com" + route, UriKind.Absolute, out var uri) && TryReadUri(uri, out var link)) return link.LocalRoute;
+            && Uri.TryCreate(DefaultPublicOrigin + route, UriKind.Absolute, out var uri) && TryReadUri(uri, out var link)) return link.LocalRoute;
         if (route is not null && route.StartsWith("/email/", StringComparison.Ordinal))
         {
             var parts = route.Split('/');

@@ -238,6 +238,9 @@ public sealed class LlmRoutingBenchmarkService
         string? response = null;
         string? error = null;
         LlmBenchmarkValidationResult validation;
+        // The exact physical calls this case made, reported by the router itself;
+        // a "recent usage" read could return another caller's row or none yet.
+        var completions = new List<LlmUsageCompletion>();
 
         try
         {
@@ -245,11 +248,30 @@ public sealed class LlmRoutingBenchmarkService
             options.OverrideProvider = candidate.Provider;
             options.OverrideModel = candidate.Model;
             options.OverrideProvenance = LlmOverrideProvenance.Benchmark;
+            // Score only the candidate: no runtime fallback or substitute route.
+            options.DisableFallback = true;
             options.Interactivity = LlmInteractivity.Background;
             options.RequestCancellationToken = cancellationToken;
+            options.UsageCompletionObserver = completion =>
+            {
+                lock (completions)
+                {
+                    completions.Add(completion);
+                }
+                return Task.CompletedTask;
+            };
 
             response = await router.GenerateResponseAsync(functionType, benchmarkCase.Prompt, options);
-            validation = benchmarkCase.Validator(response);
+            var foreign = completions.FirstOrDefault(c => !IsCandidateRoute(c, candidate));
+            if (foreign is not null)
+            {
+                error = $"Answered by {foreign.Provider}/{foreign.Model} instead of the candidate route.";
+                validation = LlmBenchmarkValidationResult.PassFail(false, error);
+            }
+            else
+            {
+                validation = benchmarkCase.Validator(response);
+            }
         }
         catch (Exception ex)
         {
@@ -261,7 +283,12 @@ public sealed class LlmRoutingBenchmarkService
             sw.Stop();
         }
 
-        var usage = (await router.GetRecentUsageAsync(functionType, 1)).FirstOrDefault();
+        List<LlmUsageCompletion> measured;
+        lock (completions)
+        {
+            measured = completions.Where(c => IsCandidateRoute(c, candidate)).ToList();
+        }
+
         return new LlmBenchmarkCaseResult
         {
             CaseName = benchmarkCase.Name,
@@ -271,13 +298,17 @@ public sealed class LlmRoutingBenchmarkService
             Score = validation.Score,
             MaxScore = validation.MaxScore,
             LatencyMs = sw.ElapsedMilliseconds,
-            EstimatedCost = usage?.EstimatedCost ?? 0m,
-            InputTokens = usage?.InputTokens ?? 0,
-            OutputTokens = usage?.OutputTokens ?? 0,
+            EstimatedCost = measured.Sum(c => c.EstimatedCost),
+            InputTokens = measured.Sum(c => c.InputTokens),
+            OutputTokens = measured.Sum(c => c.OutputTokens),
             Error = error,
             Notes = validation.Notes
         };
     }
+
+    private static bool IsCandidateRoute(LlmUsageCompletion completion, LlmBenchmarkCandidate candidate)
+        => string.Equals(completion.Provider, candidate.Provider, StringComparison.OrdinalIgnoreCase)
+           && string.Equals(completion.Model, candidate.Model, StringComparison.OrdinalIgnoreCase);
 
     private static List<LlmBenchmarkCandidateAggregate> BuildRankings(
         LlmBenchmarkPass pass,

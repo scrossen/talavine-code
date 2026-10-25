@@ -1,5 +1,6 @@
 using System.Text.Json;
 using System.Text.Json.Serialization;
+using Microsoft.Extensions.Logging;
 using SwarmCore.Abstractions.LlmRouting.Decisions;
 
 namespace SwarmCode.Hosting;
@@ -48,8 +49,21 @@ public sealed class WorkspaceSessionCatalog
     private readonly string _path;
     private readonly SwarmCodeDataPaths _paths;
     private readonly SemaphoreSlim _gate = new(1, 1);
+    private readonly ILogger<WorkspaceSessionCatalog>? _logger;
 
-    public WorkspaceSessionCatalog(SwarmCodeDataPaths paths) { _paths = paths; _path = paths.SessionIndexPath; }
+    // The last parsed index and the file stamp it was read at. Pages ask for a session on every render and every
+    // runner event; re-reading and re-parsing the whole index each time is wasted work while the file is unchanged.
+    // Other processes (console, bridge) write the same file, so the stamp is checked on every read, and a stamp too
+    // recent to trust on a coarse-timestamp file system is re-read. Never mutated: writers parse their own copy.
+    private Document? _cached;
+    private (DateTime WriteUtc, long Length) _cachedStamp;
+
+    public WorkspaceSessionCatalog(SwarmCodeDataPaths paths, ILogger<WorkspaceSessionCatalog>? logger = null)
+    {
+        _paths = paths;
+        _path = paths.SessionIndexPath;
+        _logger = logger;
+    }
 
     public event Action? Changed;
 
@@ -67,6 +81,30 @@ public sealed class WorkspaceSessionCatalog
 
     public async Task<WorkspaceSessionInfo?> GetAsync(string id, CancellationToken ct = default)
         => (await LoadAsync(ct).ConfigureAwait(false)).Sessions.FirstOrDefault(s => s.Id == id);
+
+    /// <summary>
+    /// A delegated tree shares one fair local-runtime slot while each conversation keeps its own UI owner.
+    /// Only recorded agent parentage joins owners; fork provenance and model-authored metadata never do.
+    /// An incomplete or ambiguous ancestry remains isolated under the requesting conversation's identity.
+    /// </summary>
+    public async Task<string> GetSchedulingOwnerIdAsync(string id, CancellationToken ct = default)
+    {
+        StorageIds.Validate(id);
+        var sessions = (await LoadAsync(ct).ConfigureAwait(false)).Sessions.ToLookup(session => session.Id, StringComparer.Ordinal);
+        var visited = new HashSet<string>(StringComparer.Ordinal);
+        var current = id;
+        while (visited.Add(current))
+        {
+            ct.ThrowIfCancellationRequested();
+            var matches = sessions[current].Take(2).ToArray();
+            if (matches.Length != 1) return id;
+            var parent = matches[0].ParentSessionId;
+            if (parent is null) return current;
+            if (!StorageIds.IsValid(parent)) return id;
+            current = parent;
+        }
+        return id;
+    }
 
     public async Task<IReadOnlyList<string>> RecentRepositoriesAsync(CancellationToken ct = default)
         => (await LoadAsync(ct).ConfigureAwait(false)).RecentRepositories.Where(r => !_paths.IsChatWorkspace(r)).ToList();
@@ -110,7 +148,8 @@ public sealed class WorkspaceSessionCatalog
         try
         {
             using var lease = await AcquireLeaseAsync(ct).ConfigureAwait(false);
-            var doc = await LoadUnlockedAsync(ct).ConfigureAwait(false);
+            // A fresh copy under the lease: never the cached document, which readers share.
+            var doc = await ReadOrQuarantineUnderLeaseAsync(ct).ConfigureAwait(false);
             var source = doc.Sessions.FirstOrDefault(s => s.Id == sourceId)
                 ?? throw new InvalidOperationException("The source session no longer exists.");
             if (source.ParentSessionId is not null)
@@ -130,6 +169,7 @@ public sealed class WorkspaceSessionCatalog
             {
                 await File.WriteAllTextAsync(tmp, JsonSerializer.Serialize(doc, Json), ct).ConfigureAwait(false);
                 File.Move(tmp, _path, overwrite: true);
+                Remember(doc);
             }
             finally { if (File.Exists(tmp)) File.Delete(tmp); }
         }
@@ -259,12 +299,14 @@ public sealed class WorkspaceSessionCatalog
         try
         {
             using var lease = await AcquireLeaseAsync(ct).ConfigureAwait(false);
-            var doc = await LoadUnlockedAsync(ct).ConfigureAwait(false);
+            // A fresh copy under the lease: never the cached document, which readers share.
+            var doc = await ReadOrQuarantineUnderLeaseAsync(ct).ConfigureAwait(false);
             change(doc);
             Directory.CreateDirectory(Path.GetDirectoryName(_path)!);
             var tmp = _path + "." + Guid.NewGuid().ToString("N") + ".tmp";
             await File.WriteAllTextAsync(tmp, JsonSerializer.Serialize(doc, Json), ct).ConfigureAwait(false);
             File.Move(tmp, _path, overwrite: true);
+            Remember(doc);
         }
         finally { _gate.Release(); }
         Changed?.Invoke();
@@ -273,18 +315,70 @@ public sealed class WorkspaceSessionCatalog
     private async Task<Document> LoadAsync(CancellationToken ct)
     {
         await _gate.WaitAsync(ct).ConfigureAwait(false);
-        try { return await LoadUnlockedAsync(ct).ConfigureAwait(false); }
+        try
+        {
+            var stamp = Stamp();
+            if (stamp is null) { _cached = null; return new Document(); }
+            if (_cached is not null && stamp == _cachedStamp && DateTime.UtcNow - stamp.Value.WriteUtc > TimeSpan.FromSeconds(2))
+                return _cached;
+            try
+            {
+                var doc = await ParseAsync(ct).ConfigureAwait(false);
+                _cached = doc;
+                _cachedStamp = stamp.Value;
+                return doc;
+            }
+            catch (Exception ex) when (ex is JsonException or InvalidDataException)
+            {
+                // Recheck under the cross-process lease before moving anything: another process may have just
+                // replaced a half-written file with a good one.
+                using var lease = await AcquireLeaseAsync(ct).ConfigureAwait(false);
+                return await ReadOrQuarantineUnderLeaseAsync(ct).ConfigureAwait(false);
+            }
+        }
         finally { _gate.Release(); }
     }
 
-    private async Task<Document> LoadUnlockedAsync(CancellationToken ct)
+    /// <summary>
+    /// The index, read fresh. A damaged index (a crash mid-write, a partial write by another process, a stray edit)
+    /// is moved aside as <c>index.json.corrupt-&lt;UTC stamp&gt;</c> and an empty index is used, so sessions can be
+    /// listed, created and opened again; the transcripts stay under <c>sessions/</c>. Call while holding the lease.
+    /// </summary>
+    private async Task<Document> ReadOrQuarantineUnderLeaseAsync(CancellationToken ct)
     {
-        if (File.Exists(_path))
+        if (!File.Exists(_path)) return new Document();
+        try { return await ParseAsync(ct).ConfigureAwait(false); }
+        catch (Exception ex) when (ex is JsonException or InvalidDataException)
         {
-            return JsonSerializer.Deserialize<Document>(await File.ReadAllTextAsync(_path, ct).ConfigureAwait(false), Json)
-                ?? throw new InvalidDataException("Session index is empty or invalid.");
+            var quarantine = $"{_path}.corrupt-{DateTime.UtcNow:yyyyMMddHHmmssfff}";
+            try
+            {
+                File.Move(_path, quarantine);
+                _logger?.LogWarning(ex, "The session index was unreadable; moved it to {Quarantine} and started an empty index.", quarantine);
+            }
+            catch (Exception moveError) when (moveError is IOException or UnauthorizedAccessException)
+            {
+                _logger?.LogWarning(moveError, "The session index was unreadable and could not be moved aside; using an empty index.");
+            }
+            _cached = null;
+            return new Document();
         }
-        return new Document();
+    }
+
+    private async Task<Document> ParseAsync(CancellationToken ct)
+        => JsonSerializer.Deserialize<Document>(await File.ReadAllTextAsync(_path, ct).ConfigureAwait(false), Json)
+           ?? throw new InvalidDataException("Session index is empty or invalid.");
+
+    private (DateTime WriteUtc, long Length)? Stamp()
+    {
+        var info = new FileInfo(_path);
+        return info.Exists ? (info.LastWriteTimeUtc, info.Length) : null;
+    }
+
+    private void Remember(Document written)
+    {
+        if (Stamp() is { } stamp) { _cached = written; _cachedStamp = stamp; }
+        else _cached = null;
     }
 
     private async Task<FileStream> AcquireLeaseAsync(CancellationToken ct)
@@ -296,6 +390,10 @@ public sealed class WorkspaceSessionCatalog
             ct.ThrowIfCancellationRequested();
             try { return new FileStream(_path + ".lock", FileMode.OpenOrCreate, FileAccess.ReadWrite, FileShare.None); }
             catch (IOException) when (DateTime.UtcNow < until) { await Task.Delay(25, ct).ConfigureAwait(false); }
+            catch (IOException ex)
+            {
+                throw new TimeoutException("Another Talavine Code process is holding the session list. Close it or wait, then retry.", ex);
+            }
         }
     }
 

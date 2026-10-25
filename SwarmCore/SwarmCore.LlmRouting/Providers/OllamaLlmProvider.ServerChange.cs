@@ -25,5 +25,11 @@ public partial class OllamaLlmProvider : ILocalRuntimeServerChangeObserver
         // nothing about the new one.
         _nodeServesWhole.Clear();
         _contextWindows?.ForgetProvider(ProviderName);
+        // The new server can serve a different model directory, artifacts and
+        // capabilities, and a CPU-grammar workaround learned on the old one
+        // does not apply to it.
+        ClearModelCache();
+        _visionCapabilityCache.Clear();
+        _cpuGrammarRecoveryUntil.Clear();
     }
 }

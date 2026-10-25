@@ -159,7 +159,7 @@ public sealed class SecurityTaskService(MissionService missions, IMissionStore s
         }
         async Task<SecurityCommandEvidence> Command(string file,IReadOnlyList<string> arguments)
         {
-            if(report.Commands.Count>=256) throw new ArgumentException("The retained command limit is reached; no additional command was dispatched.");
+            if(report.Commands.Count>=SecurityRunPolicy.MaxRetainedCommands) throw new ArgumentException("The retained command limit is reached; no additional command was dispatched.");
             await Fence(lifetime.Token);
             var started=time.GetUtcNow(); var id=Guid.NewGuid().ToString("N");
             SecurityCommandEvidence evidence;

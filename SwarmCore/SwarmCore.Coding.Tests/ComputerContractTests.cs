@@ -112,4 +112,25 @@ public sealed class ComputerContractTests
         await Assert.ThrowsAsync<InvalidOperationException>(() => browser.ListAsync());
         await Assert.ThrowsAnyAsync<InvalidOperationException>(() => desktop.ListAsync());
     }
+    [SwarmCore.Testing.WindowsTheory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task Windows_matching_observation_is_consumed_by_invalid_batch_before_any_native_call(bool invalidKeys)
+    {
+        var desktop = new WindowsComputerSession(Options.Create(new CodingComputerOptions { Enabled = true }));
+        // Seed only the host's captured observation. Both tested branches return before Win32 calls;
+        // this is a structural guard test, not proof of Windows capture or physical input.
+        var fields = System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic;
+        var sessionId = (string)typeof(WindowsComputerSession).GetField("sessionId", fields)!.GetValue(desktop)!;
+        var current = typeof(WindowsComputerSession).GetField("current", fields)!;
+        var observation = new ComputerObservation(sessionId, "0", "synthetic-observation", "", DateTimeOffset.UtcNow, 100, 100, 1);
+        current.SetValue(desktop, observation);
+        ComputerAction[] actions = invalidKeys ? [new("keypress") { Keys = ["unsupported"] }] : [];
+        var invalid = await desktop.ExecuteBatchAsync(new(sessionId, "0", observation.ObservationId, actions));
+        Assert.False(invalid.Succeeded); Assert.True(invalid.NoPhysicalAction); Assert.Equal(0, invalid.CompletedActions);
+        Assert.Null(current.GetValue(desktop));
+        var repeated = await desktop.ExecuteBatchAsync(new(sessionId, "0", observation.ObservationId, [new("screenshot")]));
+        Assert.Equal("stale-or-missing-observation", repeated.Error); Assert.True(repeated.NoPhysicalAction);
+    }
+
 }

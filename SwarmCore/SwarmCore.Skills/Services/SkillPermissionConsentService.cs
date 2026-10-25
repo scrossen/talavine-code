@@ -13,15 +13,6 @@ namespace SwarmCore.Skills.Services;
 /// </summary>
 public class SkillPermissionConsentService : ISkillPermissionConsentService
 {
-    /// <summary>
-    /// Bucket used for <see cref="PermissionGrantScope.Conversation"/> grants made by a
-    /// caller that supplied no session id. The user answered "this conversation", so the
-    /// grant must be remembered somewhere; with no conversation to pin it to, the closest
-    /// honest reading is "for the rest of this process". Previously such grants were
-    /// silently dropped and the user was re-prompted on every call.
-    /// </summary>
-    private const string ProcessWideSessionKey = "\0process";
-
     private readonly ConcurrentDictionary<string, TaskCompletionSource<PermissionConsentResult>> _pending = new();
     private readonly ConcurrentDictionary<string, HashSet<string>> _sessionGrants = new(StringComparer.Ordinal);
     private readonly IPermissionGrantStore _grantStore;
@@ -82,6 +73,19 @@ public class SkillPermissionConsentService : ISkillPermissionConsentService
             // cancellation ends the wait.
             var result = await tcs.Task.WaitAsync(ct);
 
+            // A "this conversation" answer needs a conversation to bind to. Without
+            // a session id it must not widen into a grant for every later
+            // conversation, so it applies to this request only.
+            if (result.Approved
+                && result.Scope == PermissionGrantScope.Conversation
+                && SessionKey(request.SessionId) is null)
+            {
+                _logger.LogWarning(
+                    "Conversation-scoped consent for {SkillId}.{Function} had no session id; applying it to this request only",
+                    request.SkillId, request.FunctionName);
+                result = new PermissionConsentResult { Approved = true, Scope = PermissionGrantScope.Once };
+            }
+
             // Store the scope the user selected. Existing durable authority is
             // authority; do not silently convert it into another prompt later.
             if (result.Approved)
@@ -122,19 +126,20 @@ public class SkillPermissionConsentService : ISkillPermissionConsentService
 
     public void ClearSession(string? sessionId)
     {
-        var key = SessionKey(sessionId);
+        if (SessionKey(sessionId) is not { } key) return;
         if (_sessionGrants.TryRemove(key, out var removed))
         {
             _logger.LogInformation(
                 "Cleared {Count} conversation-scoped grant(s) for session {SessionId}",
-                removed.Count, sessionId ?? "(process-wide)");
+                removed.Count, sessionId);
         }
     }
 
     public bool RevokeSessionGrant(string? sessionId, string permissionId)
     {
         if (string.IsNullOrWhiteSpace(permissionId)) return false;
-        if (!_sessionGrants.TryGetValue(SessionKey(sessionId), out var sessionSet)) return false;
+        if (SessionKey(sessionId) is not { } key) return false;
+        if (!_sessionGrants.TryGetValue(key, out var sessionSet)) return false;
 
         bool removed;
         lock (sessionSet)
@@ -146,14 +151,14 @@ public class SkillPermissionConsentService : ISkillPermissionConsentService
         {
             _logger.LogInformation(
                 "Revoked conversation-scoped grant {Permission} for session {SessionId}",
-                permissionId, sessionId ?? "(process-wide)");
+                permissionId, sessionId);
         }
 
         return removed;
     }
 
-    private static string SessionKey(string? sessionId) =>
-        string.IsNullOrWhiteSpace(sessionId) ? ProcessWideSessionKey : sessionId;
+    private static string? SessionKey(string? sessionId) =>
+        string.IsNullOrWhiteSpace(sessionId) ? null : sessionId;
 
     private async Task<IReadOnlyList<SkillPermission>> FilterAlreadyGrantedAsync(
         string? sessionId,
@@ -163,16 +168,15 @@ public class SkillPermissionConsentService : ISkillPermissionConsentService
         // Check persistent grants
         var persistent = await GetPersistentGrantsCachedAsync(ct);
 
-        // Check session grants. A caller with a session id sees its own grants plus
-        // anything granted process-wide; a caller with none sees the process-wide bucket.
-        _sessionGrants.TryGetValue(SessionKey(sessionId), out var sessionSet);
-        _sessionGrants.TryGetValue(ProcessWideSessionKey, out var processSet);
+        // Check session grants. A conversation grant covers only its own session; a
+        // caller with no session id can be covered only by a persistent grant.
+        HashSet<string>? sessionSet = null;
+        if (SessionKey(sessionId) is { } key) _sessionGrants.TryGetValue(key, out sessionSet);
 
         return permissions
             .Where(p =>
                 !persistent.Contains(p.PermissionId) &&
-                !ContainsLocked(sessionSet, p.PermissionId) &&
-                !ContainsLocked(processSet, p.PermissionId))
+                !ContainsLocked(sessionSet, p.PermissionId))
             .ToList();
     }
 
@@ -194,7 +198,8 @@ public class SkillPermissionConsentService : ISkillPermissionConsentService
         switch (scope)
         {
             case PermissionGrantScope.Conversation:
-                var key = SessionKey(sessionId);
+                // RequestConsentAsync downgrades a session-less conversation grant to Once.
+                if (SessionKey(sessionId) is not { } key) break;
                 var sessionSet = _sessionGrants.GetOrAdd(key, _ => new HashSet<string>(StringComparer.OrdinalIgnoreCase));
                 lock (sessionSet)
                 {
@@ -203,7 +208,7 @@ public class SkillPermissionConsentService : ISkillPermissionConsentService
                 }
                 _logger.LogInformation(
                     "Stored conversation-scoped grants for session {SessionId}: {Permissions}",
-                    sessionId ?? "(process-wide — no session id supplied)", string.Join(", ", permissionIds));
+                    sessionId, string.Join(", ", permissionIds));
                 break;
 
             case PermissionGrantScope.Always:

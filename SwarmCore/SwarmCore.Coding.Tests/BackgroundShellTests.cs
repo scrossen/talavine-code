@@ -341,7 +341,7 @@ public sealed class BackgroundShellTests : IDisposable
         using var otherTurn = active.Enter("other", new CodingWorkspace { RepositoryRoot = _root });
         static System.Text.Json.JsonElement Args(object value) => System.Text.Json.JsonSerializer.SerializeToElement(value);
 
-        var root = new Native.HostToolBridgeProxy(broker.GetEndpoint(), "root");
+        var root = new Native.HostToolBridgeProxy(broker.GetEndpoint(), "root", active.BridgeCapability("root"));
         var started = await root.CallAsync("shell_background_start", Args(new { command = "echo bridged", name = "bridge" }), default);
         Assert.False(started.IsError, started.Text);
         var manager = sp.GetRequiredService<BackgroundShellManager>();
@@ -352,7 +352,7 @@ public sealed class BackgroundShellTests : IDisposable
         Assert.Contains("bridged", output.Text);
 
         // Another conversation cannot stop this conversation's shell.
-        var other = new Native.HostToolBridgeProxy(broker.GetEndpoint(), "other");
+        var other = new Native.HostToolBridgeProxy(broker.GetEndpoint(), "other", active.BridgeCapability("other"));
         Assert.True((await other.CallAsync("shell_background_stop", Args(new { id = shell.Id }), default)).IsError);
         Assert.Empty(manager.List("other"));
 

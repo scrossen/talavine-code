@@ -12,6 +12,9 @@ public sealed class SelfImprovementOptions
 
     public bool Enabled { get; set; } = true;
 
+    /// <summary>Explicitly opt in to automatically installing verified goal-linked repairs at a safe idle point.</summary>
+    public bool AutoApplyGoalRepairs { get; set; }
+
     /// <summary>The product's source checkout that cycles repair. Null lets the host detect it; an installed app without source stays inert.</summary>
     public string? RepositoryRoot { get; set; }
 

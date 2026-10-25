@@ -11,6 +11,11 @@ namespace SwarmCore.Agent.ToolUseEngine;
 /// </summary>
 public sealed class AgentSession
 {
+    public Guid? GoalId { get; init; }
+    [System.Text.Json.Serialization.JsonIgnore]
+    public string? GoalMessageLeaseToken { get; init; }
+    [System.Text.Json.Serialization.JsonIgnore]
+    public SwarmCore.Agent.Communication.IGoalMailbox? GoalMailbox { get; init; }
     public AgentVisionRecovery? VisionRecovery { get; init; }
     /// <summary>Host research may require one exact route with no fallback attribution.</summary>
     public bool DisableRouteFallback { get; init; }

@@ -123,14 +123,19 @@ public abstract class SubscriptionCliToolUseProviderBase : IToolUseProvider
 
     private static int _captureSequence;
 
+    private const int MaxCapturedCharsPerFile = 256 * 1024;
+    private const int MaxCapturedFiles = 200;
+
     /// <summary>
     /// Opt-in diagnostic capture of the exact prompt/reply exchange, for
     /// investigating protocol drift (tool calls emitted as prose) that is
-    /// invisible once parsing has cleaned the reply up. Off unless
-    /// SWARMCORE_TOOLUSE_CAPTURE_DIR names a directory; failures are ignored —
-    /// diagnostics must never fail a turn. Raw replies can contain user data,
-    /// so this must only ever be enabled against harness/test profiles.
+    /// invisible once parsing has cleaned the reply up. Compiled into Debug
+    /// (harness) builds only, and off unless SWARMCORE_TOOLUSE_CAPTURE_DIR
+    /// names a directory. Raw prompts and replies carry user data, so each
+    /// file is truncated and only the newest captures are kept. Failures are
+    /// ignored — diagnostics must never fail a turn.
     /// </summary>
+    [System.Diagnostics.Conditional("DEBUG")]
     private void CaptureRawExchange(string prompt, string? reply, bool wasCorrective = false)
     {
         var dir = Environment.GetEnvironmentVariable("SWARMCORE_TOOLUSE_CAPTURE_DIR");
@@ -145,14 +150,24 @@ public abstract class SubscriptionCliToolUseProviderBase : IToolUseProvider
             var n = Interlocked.Increment(ref _captureSequence);
             var stamp = DateTime.UtcNow.ToString("HHmmss");
             var suffix = wasCorrective ? "-corrective" : string.Empty;
-            File.WriteAllText(Path.Combine(dir, $"{stamp}-{n:D3}{suffix}-prompt.txt"), prompt);
-            File.WriteAllText(Path.Combine(dir, $"{stamp}-{n:D3}{suffix}-reply.txt"), reply ?? string.Empty);
+            File.WriteAllText(Path.Combine(dir, $"{stamp}-{n:D3}{suffix}-prompt.txt"), BoundCapture(prompt));
+            File.WriteAllText(Path.Combine(dir, $"{stamp}-{n:D3}{suffix}-reply.txt"), BoundCapture(reply ?? string.Empty));
+            foreach (var stale in new DirectoryInfo(dir).EnumerateFiles("*-prompt.txt")
+                         .Concat(new DirectoryInfo(dir).EnumerateFiles("*-reply.txt"))
+                         .OrderByDescending(file => file.LastWriteTimeUtc)
+                         .Skip(MaxCapturedFiles))
+            {
+                stale.Delete();
+            }
         }
         catch
         {
             // Diagnostics only.
         }
     }
+
+    private static string BoundCapture(string text)
+        => text.Length <= MaxCapturedCharsPerFile ? text : text[..MaxCapturedCharsPerFile] + "\n[truncated]";
 
     private static string BuildCorrectivePrompt(string originalPrompt, string invalidOutput)
     {

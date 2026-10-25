@@ -10,9 +10,13 @@ namespace SwarmCode.Hosting;
 /// BYOK key resolution. Keys live in the OS-keystore-protected vault
 /// (<see cref="VaultApiKeyProvider"/>). A key still sitting in the legacy plaintext
 /// <c>llm-settings.json</c> is moved into the vault the first time it is read and
-/// removed from the JSON. After the vault come configuration and the standard
+/// removed from the JSON. After the vault (and that migration) comes the variable a
+/// configured model source names (<see cref="ModelSourceEnvironmentKeys"/>: the process
+/// environment or the repository's <c>.env</c>), then configuration and the standard
 /// environment variables handled by <see cref="OptionsBasedApiKeyProvider"/>, then
-/// SwarmCode's extra env aliases. Key values are never logged or printed.
+/// SwarmCode's extra env aliases. A key the person saved in the vault (<c>/key</c>,
+/// Settings) therefore always wins over a value left in the environment or a <c>.env</c>
+/// file. Key values are never logged or printed.
 /// </summary>
 public sealed class SwarmCodeApiKeyProvider : ILlmApiKeyProvider
 {
@@ -33,13 +37,14 @@ public sealed class SwarmCodeApiKeyProvider : ILlmApiKeyProvider
 
     public async Task<string?> GetApiKeyAsync(string providerName)
     {
-        var environmentKey = _sourceEnvironment?.Get(providerName);
-        if (!string.IsNullOrWhiteSpace(environmentKey)) return environmentKey;
         var key = await _vault.GetApiKeyAsync(providerName).ConfigureAwait(false);
         if (!string.IsNullOrEmpty(key)) return key;
 
         key = await MigrateLegacyAsync(providerName).ConfigureAwait(false);
         if (!string.IsNullOrEmpty(key)) return key;
+
+        var environmentKey = _sourceEnvironment?.Get(providerName);
+        if (!string.IsNullOrWhiteSpace(environmentKey)) return environmentKey;
 
         key = await _options.GetApiKeyAsync(providerName).ConfigureAwait(false);
         if (!string.IsNullOrEmpty(key)) return key;

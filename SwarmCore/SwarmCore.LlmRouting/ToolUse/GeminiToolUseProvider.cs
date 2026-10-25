@@ -142,6 +142,7 @@ public sealed class GeminiToolUseProvider : IToolUseProvider
         var textBuilder = new StringBuilder();
         var finalToolCalls = new List<ToolUsePart>();
         string? finishReason = null;
+        string? promptBlockReason = null;
         ChatUsage? usage = null;
         var toolCallCounter = 0;
         var toolCallNonce = NewToolCallNonce();
@@ -152,6 +153,11 @@ public sealed class GeminiToolUseProvider : IToolUseProvider
             try { node = JsonNode.Parse(sse.Data); }
             catch (JsonException) { continue; }
             if (node is not JsonObject evt) continue;
+
+            if (evt["promptFeedback"] is JsonObject feedback && feedback["blockReason"] is JsonValue blocked)
+            {
+                promptBlockReason = blocked.ToString();
+            }
 
             // Each event: { candidates: [{ content: { parts: [...] }, finishReason: ... }], usageMetadata: {...} }
             if (evt["candidates"] is JsonArray candidates && candidates.Count > 0
@@ -200,9 +206,17 @@ public sealed class GeminiToolUseProvider : IToolUseProvider
             if (evt["usageMetadata"] is JsonObject um)
             {
                 var input = (int?)um["promptTokenCount"] ?? usage?.InputTokens ?? 0;
-                var output = (int?)um["candidatesTokenCount"] ?? usage?.OutputTokens ?? 0;
-                usage = new ChatUsage(input, output);
+                var visible = (int?)um["candidatesTokenCount"]
+                              ?? (usage is null ? 0 : usage.OutputTokens - usage.ReasoningTokens);
+                var thoughts = (int?)um["thoughtsTokenCount"] ?? usage?.ReasoningTokens ?? 0;
+                usage = Usage(input, visible, thoughts);
             }
+        }
+
+        if (promptBlockReason is not null)
+        {
+            yield return new MessageStoppedEvent(PromptBlocked(promptBlockReason, model, usage));
+            yield break;
         }
 
         var stop = MapFinishReason(finishReason, finalToolCalls.Count > 0);
@@ -286,10 +300,20 @@ public sealed class GeminiToolUseProvider : IToolUseProvider
                 continue;
             }
 
+            var parts = BuildPartsArray(current);
+            if (parts.Count == 0)
+            {
+                // Gemini rejects "parts": [] with HTTP 400. A turn that carried
+                // only blank text or another provider's reasoning has nothing to
+                // send; dropping it keeps a failed-over transcript valid.
+                i++;
+                continue;
+            }
+
             contents.Add(new JsonObject
             {
                 ["role"] = current.Role == ChatRole.Assistant ? "model" : "user",
-                ["parts"] = BuildPartsArray(current),
+                ["parts"] = parts,
             });
             i++;
         }
@@ -697,7 +721,16 @@ public sealed class GeminiToolUseProvider : IToolUseProvider
         {
             var input = um.TryGetProperty("promptTokenCount", out var pt) ? pt.GetInt32() : 0;
             var output = um.TryGetProperty("candidatesTokenCount", out var ot) ? ot.GetInt32() : 0;
-            usage = new ChatUsage(input, output);
+            var thoughts = um.TryGetProperty("thoughtsTokenCount", out var th) ? th.GetInt32() : 0;
+            usage = Usage(input, output, thoughts);
+        }
+
+        if (root.TryGetProperty("promptFeedback", out var feedback)
+            && feedback.ValueKind == JsonValueKind.Object
+            && feedback.TryGetProperty("blockReason", out var blockReason)
+            && blockReason.ValueKind == JsonValueKind.String)
+        {
+            return PromptBlocked(blockReason.GetString()!, model, usage);
         }
 
         return new ChatToolUseResponse
@@ -712,6 +745,29 @@ public sealed class GeminiToolUseProvider : IToolUseProvider
             Usage = usage,
         };
     }
+
+    /// <summary>
+    /// Thinking is billed as output but reported apart from the visible
+    /// candidates, so it is added to the output count and kept as reasoning.
+    /// </summary>
+    private static ChatUsage Usage(int input, int candidates, int thoughts)
+        => new(input, candidates + thoughts) { ReasoningTokens = thoughts };
+
+    /// <summary>
+    /// Gemini answers a blocked prompt with HTTP 200, no candidates and a
+    /// <c>promptFeedback.blockReason</c>. That is a content-policy failure,
+    /// not an empty reply.
+    /// </summary>
+    private ChatToolUseResponse PromptBlocked(string blockReason, string model, ChatUsage? usage) => new()
+    {
+        ToolCalls = [],
+        StopReason = ChatStopReason.Error,
+        FailureCategory = LlmFailureCategory.ContentPolicy,
+        ErrorMessage = $"Gemini blocked this prompt (block reason: {Truncate(blockReason, 64)}).",
+        Provider = ProviderName,
+        Model = model,
+        Usage = usage,
+    };
 
     /// <summary>Safety and prohibited-content finishes are typed content-policy failures, not ordinary errors.</summary>
     private static LlmFailureCategory? RefusalCategory(string? finishReason)
@@ -759,8 +815,14 @@ public sealed class GeminiToolUseProvider : IToolUseProvider
         // Default posture: disable thinking for UserWaiting (latency-sensitive)
         // and Background (we control cost budgets, not the model). Callers can
         // flip back on via ExecutionSettings above when they actually want it.
-        return 0;
+        // 2.5 Pro only runs in thinking mode and rejects a budget of 0 with
+        // HTTP 400, so it gets its documented minimum instead.
+        return model.Contains("pro", StringComparison.OrdinalIgnoreCase)
+            ? MinimumProThinkingBudget
+            : 0;
     }
+
+    private const int MinimumProThinkingBudget = 128;
 
     private static string Truncate(string s, int max) => s.Length <= max ? s : s[..max] + "…";
 }

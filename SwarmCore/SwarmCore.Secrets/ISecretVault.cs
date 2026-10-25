@@ -77,6 +77,15 @@ public interface ISecretVault
 
     Task<bool> DeleteAsync(string name, CancellationToken ct = default);
 
+    /// <summary>
+    /// Sets the site of an existing secret without touching its value, username or notes. With
+    /// <paramref name="onlyWhenUnset"/> the site is written only when the entry has none (trust on first use),
+    /// so a site the user chose is never replaced. False when the secret is absent, already has a site in that
+    /// mode, or the vault cannot record sites.
+    /// </summary>
+    Task<bool> TrySetSiteAsync(string name, string site, bool onlyWhenUnset = false, CancellationToken ct = default)
+        => Task.FromResult(false);
+
     /// <summary>Every entry's metadata, ordered by name. Values are never included.</summary>
     Task<IReadOnlyList<SecretEntry>> ListAsync(CancellationToken ct = default);
 }

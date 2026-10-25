@@ -226,8 +226,8 @@ public partial class LlmRouter
             _debugLogger.LogEmbeddingResponse(new LlmDebugEmbeddingResponse(
                 RequestId: requestId,
                 FunctionType: functionType,
-                Provider: "unknown",
-                Model: "unknown",
+                Provider: selectedModel?.Provider ?? "unknown",
+                Model: selectedModel?.Model ?? "unknown",
                 Success: false,
                 VectorDimension: null,
                 TokenCount: null,
@@ -237,8 +237,8 @@ public partial class LlmRouter
             return new LlmEmbeddingResult
             {
                 Success = false,
-                Provider = "unknown",
-                Model = "unknown",
+                Provider = selectedModel?.Provider ?? "unknown",
+                Model = selectedModel?.Model ?? "unknown",
                 FunctionType = functionType,
                 Duration = stopwatch.Elapsed,
                 ErrorMessage = ex.Message
@@ -416,8 +416,8 @@ public partial class LlmRouter
             _debugLogger.LogEmbeddingResponse(new LlmDebugEmbeddingResponse(
                 RequestId: requestId,
                 FunctionType: functionType,
-                Provider: "unknown",
-                Model: "unknown",
+                Provider: selectedModel?.Provider ?? "unknown",
+                Model: selectedModel?.Model ?? "unknown",
                 Success: false,
                 VectorDimension: null,
                 TokenCount: null,
@@ -427,8 +427,8 @@ public partial class LlmRouter
             return texts.Select(_ => new LlmEmbeddingResult
             {
                 Success = false,
-                Provider = "unknown",
-                Model = "unknown",
+                Provider = selectedModel?.Provider ?? "unknown",
+                Model = selectedModel?.Model ?? "unknown",
                 FunctionType = functionType,
                 Duration = stopwatch.Elapsed,
                 ErrorMessage = ex.Message

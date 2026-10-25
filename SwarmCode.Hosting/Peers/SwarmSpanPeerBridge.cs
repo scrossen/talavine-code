@@ -6,7 +6,7 @@ using SwarmCore.Coding.Peers;
 namespace SwarmCode.Hosting.Peers;
 
 /// <summary>In-process, authenticated loopback adapter: no MCP subprocess, second pairing store, or LAN credentials.</summary>
-public sealed class SwarmSpanPeerBridge(HttpClient http, Func<string?> tokenPath) : IPeerWorkBridge, IPeerFileBridge, IDisposable
+public sealed class SwarmSpanPeerBridge(HttpClient http, Func<string?> tokenPath) : IPeerWorkBridge, IPeerFileBridge, IPeerCollaborationBridge, IDisposable
 {
     private static readonly JsonSerializerOptions Json = new(JsonSerializerDefaults.Web);
     private const string Setup = "Start SwarmSpan on this computer and enable its MCP bridge. Pair the devices in SwarmSpan. If installed in a custom location, set Peers:SwarmSpanDataDirectory.";
@@ -29,6 +29,14 @@ public sealed class SwarmSpanPeerBridge(HttpClient http, Func<string?> tokenPath
         => Send<JsonElement>(HttpMethod.Post, "/v1/pull", new { peerDeviceId = peer, remotePath, localDest }, ct);
     public Task<JsonElement> TransferAsync(string transferId, CancellationToken ct)
         => Send<JsonElement>(HttpMethod.Get, "/v1/transfers/" + Uri.EscapeDataString(transferId), null, ct);
+    public async Task<PeerMessageHandle> SendMessageAsync(string peerDeviceId, string text, string conversationId, CancellationToken ct)
+        => await Send<PeerMessageHandle>(HttpMethod.Post, "/v1/messages/send", new { peerDeviceId, text, conversationId }, ct).ConfigureAwait(false);
+    public Task<IReadOnlyList<PeerMessage>> InboxAsync(string conversationId, CancellationToken ct)
+        => GetList<PeerMessage>("/v1/messages/inbox?conversationId=" + Uri.EscapeDataString(conversationId), ct);
+    public Task<PeerScreenResult> StartScreenAsync(string peerDeviceId, string commands, CancellationToken ct)
+        => Send<PeerScreenResult>(HttpMethod.Post, "/v1/remote-control/start", new { peerDeviceId, script = commands }, ct);
+    public Task<PeerScreenResult> PollScreenAsync(string peerDeviceId, string runId, int after, int waitMs, bool cancel, CancellationToken ct)
+        => Send<PeerScreenResult>(HttpMethod.Post, "/v1/remote-control/poll", new { peerDeviceId, runId, after, waitMs, cancel }, ct);
     private static string WorkPath(string id) => "/v1/work/" + Uri.EscapeDataString(id);
     private async Task<IReadOnlyList<T>> GetList<T>(string path, CancellationToken ct)
         => await Send<List<T>>(HttpMethod.Get, path, null, ct).ConfigureAwait(false);
@@ -64,7 +72,7 @@ public sealed class SwarmSpanPeerBridge(HttpClient http, Func<string?> tokenPath
             return json.RootElement.Deserialize<T>(Json) ?? throw new InvalidOperationException("SwarmSpan returned an empty response.");
         }
         catch (OperationCanceledException) when (!ct.IsCancellationRequested)
-        { throw new InvalidOperationException("SwarmSpan timed out. A dispatched task may still be running; inspect peers.work before retrying."); }
+        { throw new InvalidOperationException("SwarmSpan timed out. A dispatched task or screen action may still be running; inspect peers.work or take a screenshot before retrying."); }
         catch (JsonException) { throw new InvalidOperationException("SwarmSpan returned an incompatible response. Update SwarmSpan and inspect peers.work before retrying work."); }
     }
 

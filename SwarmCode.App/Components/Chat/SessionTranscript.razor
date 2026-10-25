@@ -1,0 +1,96 @@
+@namespace SwarmCode.App.Components.Chat
+@using SwarmCode.Hosting
+@using SwarmCode.App.Services
+
+@{
+    DateTime? shownDay = null;
+}
+@foreach (var row in Rows())
+{
+    var day = row.Entry.AtUtc.ToLocalTime().Date;
+    if (shownDay != day)
+    {
+        shownDay = day;
+        <div class="sess-day" role="separator" aria-label="@AppNavigation.DayLabel(day)"><span class="sess-day__label" title="@day.ToString("D")">@AppNavigation.DayLabel(day)</span></div>
+    }
+    if (row.Tools is { } tools)
+    {
+        var expanded = _expanded.Contains(row.Entry.Id);
+        var detailsId = "activity-" + row.Entry.Id;
+        <div class="sess-activity" @key="row.Entry.Id">
+            <button type="button" class="sess-activity__toggle" aria-expanded="@(expanded ? "true" : "false")"
+                    aria-controls="@detailsId" title="@(expanded ? "Hide tool activity" : "Show tool activity")"
+                    @onclick="() => Toggle(row.Entry.Id)">
+                <span class="sess-activity__chevron" aria-hidden="true">›</span>
+                <span class="sess-activity__count">@tools.Count @(tools.Count == 1 ? "tool call" : "tool calls")</span>
+                <span class="sess-activity__names">@Names(tools)</span>
+                <span class="sess-activity__state">@ActivityState(tools)</span>
+            </button>
+            <div id="@detailsId" class="sess-activity__details" hidden="@(!expanded)">
+                @if (expanded)
+                {
+                    @foreach (var tool in tools)
+                    {
+                        @EntryContent(tool)
+                    }
+                }
+            </div>
+        </div>
+    }
+    else
+    {
+        @EntryContent(row.Entry)
+    }
+}
+
+@code {
+    [Parameter, EditorRequired] public IReadOnlyList<TranscriptEntry> Entries { get; set; } = [];
+    [Parameter, EditorRequired] public RenderFragment<TranscriptEntry> EntryContent { get; set; } = default!;
+
+    private readonly HashSet<string> _expanded = new(StringComparer.Ordinal);
+    private sealed record Row(TranscriptEntry Entry, IReadOnlyList<ToolCallEntry>? Tools = null);
+
+    // Presentation only: retain exact outcomes in the expanded history. A failed attempt is
+    // not a task-level blocker or proof of recovery; notices/unknown outcomes remain separate.
+    private IEnumerable<Row> Rows()
+    {
+        for (var index = 0; index < Entries.Count;)
+        {
+            var entry = Entries[index++];
+            if (entry is not ToolCallEntry first || !IsFinishedAttempt(first))
+            {
+                yield return new(entry);
+                continue;
+            }
+            var day = first.AtUtc.ToLocalTime().Date;
+            var tools = new List<ToolCallEntry> { first };
+            while (index < Entries.Count && Entries[index] is ToolCallEntry next && IsFinishedAttempt(next)
+                && next.AtUtc.ToLocalTime().Date == day)
+            {
+                tools.Add(next);
+                index++;
+            }
+            yield return new(first, tools);
+        }
+    }
+
+    private static bool IsFinishedAttempt(ToolCallEntry tool) =>
+        tool.State is ToolCallState.Completed or ToolCallState.Failed;
+
+    private static string ActivityState(IReadOnlyList<ToolCallEntry> tools)
+    {
+        var failed = tools.Count(tool => tool.State == ToolCallState.Failed);
+        return failed == 0 ? "Completed" : $"{failed} failed {(failed == 1 ? "attempt" : "attempts")}";
+    }
+
+    private void Toggle(string id)
+    {
+        if (!_expanded.Add(id)) _expanded.Remove(id);
+    }
+
+    private static string Names(IReadOnlyList<ToolCallEntry> tools)
+    {
+        var names = tools.Select(tool => tool.ToolName).Distinct(StringComparer.Ordinal).ToArray();
+        return string.Join(", ", names.Take(3)) + (names.Length > 3 ? $" +{names.Length - 3} more" : "");
+    }
+}

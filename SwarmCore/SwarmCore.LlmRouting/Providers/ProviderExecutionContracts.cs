@@ -1,5 +1,6 @@
 using System.Globalization;
 using System.Text.Json;
+using System.Text.Json.Nodes;
 using SwarmCore.Abstractions.LlmRouting;
 using SwarmCore.LlmRouting.ProviderPacks;
 
@@ -301,7 +302,11 @@ public sealed class OpenAICompatibleExecutionContract(OpenAICompatibleContractFl
 
         if (parameters.Reasoning != LlmReasoningMode.ProviderDefault)
         {
-            if (flavor == OpenAICompatibleContractFlavor.OpenRouter)
+            if (flavor == OpenAICompatibleContractFlavor.LMStudio)
+                Reject(diagnostics, "reasoning", "LM Studio reasoning control is not portable across loaded models.");
+            else if (ReasoningValue(flavor, parameters.Reasoning) is not { } effort)
+                Reject(diagnostics, "reasoning", $"Reasoning mode {parameters.Reasoning} has no wire value in this contract.");
+            else if (flavor == OpenAICompatibleContractFlavor.OpenRouter)
             {
                 // OpenRouter owns a provider-neutral reasoning object. An
                 // OpenAI model-name heuristic must not discard the requested
@@ -309,9 +314,9 @@ public sealed class OpenAICompatibleExecutionContract(OpenAICompatibleContractFl
                 wire.Remove("reasoning_effort");
                 wire["reasoning"] = new Dictionary<string, object>
                 {
-                    ["effort"] = ReasoningValue(parameters.Reasoning)
+                    ["effort"] = effort
                 };
-                Applied(diagnostics, "reasoning");
+                AppliedReasoning(diagnostics, parameters.Reasoning, effort);
             }
             else if (flavor == OpenAICompatibleContractFlavor.DeepSeek)
             {
@@ -321,29 +326,45 @@ public sealed class OpenAICompatibleExecutionContract(OpenAICompatibleContractFl
                 };
                 wire.Remove("reasoning_effort");
                 if (parameters.Reasoning != LlmReasoningMode.Disabled)
-                    wire["reasoning_effort"] = ReasoningValue(parameters.Reasoning);
-                Applied(diagnostics, "reasoning");
+                    wire["reasoning_effort"] = effort;
+                AppliedReasoning(diagnostics, parameters.Reasoning, effort);
             }
-            else if (flavor == OpenAICompatibleContractFlavor.LMStudio)
-                Reject(diagnostics, "reasoning", "LM Studio reasoning control is not portable across loaded models.");
             else if (!reasoningModel)
                 Omit(diagnostics, "reasoning", "The selected model has no reasoning-effort contract.");
             else
-                Apply(wire, diagnostics, ReasoningValue(parameters.Reasoning), "reasoning_effort", "reasoning");
+            {
+                wire["reasoning_effort"] = effort;
+                AppliedReasoning(diagnostics, parameters.Reasoning, effort);
+            }
         }
 
         if (parameters.StructuredOutput != LlmStructuredOutputMode.None)
         {
-            if (parameters.StructuredOutput == LlmStructuredOutputMode.JsonSchema
-                && string.IsNullOrWhiteSpace(parameters.JsonSchema))
+            if (parameters.StructuredOutput == LlmStructuredOutputMode.JsonSchema)
             {
-                Reject(diagnostics, "structured_output", "JSON-schema mode requires a schema.");
+                if (ParseObjectSchema(parameters.JsonSchema) is not { } schema)
+                {
+                    Reject(diagnostics, "structured_output", "JSON-schema mode requires an object schema.");
+                }
+                else
+                {
+                    // Chat completions take a named schema object, never the schema text.
+                    wire["response_format"] = new Dictionary<string, object>
+                    {
+                        ["type"] = "json_schema",
+                        ["json_schema"] = new Dictionary<string, object>
+                        {
+                            ["name"] = "response",
+                            ["strict"] = true,
+                            ["schema"] = schema,
+                        },
+                    };
+                    Applied(diagnostics, "structured_output");
+                }
             }
             else
             {
-                wire["response_format"] = parameters.StructuredOutput == LlmStructuredOutputMode.JsonSchema
-                    ? new Dictionary<string, object> { ["type"] = "json_schema", ["json_schema"] = parameters.JsonSchema! }
-                    : new Dictionary<string, object> { ["type"] = "json_object" };
+                wire["response_format"] = new Dictionary<string, object> { ["type"] = "json_object" };
                 Applied(diagnostics, "structured_output");
             }
         }
@@ -386,16 +407,43 @@ public sealed class OpenAICompatibleExecutionContract(OpenAICompatibleContractFl
             ? new(StringComparer.OrdinalIgnoreCase)
             : new(source, StringComparer.OrdinalIgnoreCase);
 
-    private static string ReasoningValue(LlmReasoningMode mode) => mode switch
+    /// <summary>
+    /// The wire effort for a semantic reasoning mode, or null when the flavor
+    /// cannot express it. Max maps to the flavor's highest documented tier:
+    /// DeepSeek's <c>max</c>, otherwise <c>xhigh</c>.
+    /// </summary>
+    private static string? ReasoningValue(OpenAICompatibleContractFlavor flavor, LlmReasoningMode mode) => mode switch
     {
         LlmReasoningMode.Disabled => "none",
         LlmReasoningMode.Low => "low",
         LlmReasoningMode.Medium => "medium",
         LlmReasoningMode.High => "high",
         LlmReasoningMode.XHigh => "xhigh",
-        LlmReasoningMode.Max => "max",
-        _ => "medium",
+        LlmReasoningMode.Max => flavor == OpenAICompatibleContractFlavor.DeepSeek ? "max" : "xhigh",
+        _ => null,
     };
+
+    private static void AppliedReasoning(List<LlmExecutionParameterDiagnostic> diagnostics, LlmReasoningMode mode, string effort)
+    {
+        if (mode == LlmReasoningMode.Max && effort != "max")
+            diagnostics.Add(new("reasoning", LlmExecutionParameterDisposition.Applied,
+                $"Max effort is sent as {effort}, the highest effort this contract expresses."));
+        else
+            Applied(diagnostics, "reasoning");
+    }
+
+    private static JsonObject? ParseObjectSchema(string? schema)
+    {
+        if (string.IsNullOrWhiteSpace(schema)) return null;
+        try
+        {
+            return JsonNode.Parse(schema) as JsonObject;
+        }
+        catch (JsonException)
+        {
+            return null;
+        }
+    }
 
     internal static LlmProviderExecutionTranslation Finish(
         Dictionary<string, object> wire,

@@ -18,7 +18,7 @@ public sealed record AgentView(
     string AgentId, string Title, string State, int Depth, string? Lane, int Turns, int ToolCalls,
     string? Activity, int? ElapsedSeconds, string? Result, string? Error,
     string? Branch = null, string? WorktreePath = null, bool? UncommittedChanges = null, int? BranchCommits = null, string? Agent = null,
-    bool Independent = false)
+    bool Independent = false, string? Model = null, string? RoutingNote = null)
 {
     public static AgentView From(AgentRecord r, DateTime now)
     {
@@ -26,7 +26,8 @@ public sealed record AgentView(
         return new(r.Id, r.Title, r.State.ToString().ToLowerInvariant(), r.Depth, r.Lane, r.Turns, r.ToolCalls,
             r.Activity, r.StartedUtc is { } s ? (int)Math.Max(0, (end - s).TotalSeconds) : null,
             r.IsTerminal ? r.Result : null, r.Error,
-            r.Worktree?.Branch, r.Worktree?.Path, r.Worktree?.HasUncommittedChanges, r.Worktree?.CommitsAhead, r.Agent, r.Independent);
+            r.Worktree?.Branch, r.Worktree?.Path, r.Worktree?.HasUncommittedChanges, r.Worktree?.CommitsAhead, r.Agent, r.Independent,
+            r.Model, r.RoutingNote);
     }
 }
 
@@ -58,7 +59,8 @@ public static class AgentTeamTools
         ToolDescriptor.Create<AgentsSpawnInput, AgentsResult>(SpawnToolId, OwnerAgentId,
             "Start an agent: a full coding agent with your tools, in its own session, working in the background. Returns at once with "
             + "agentId. task must be complete and self-contained (it cannot see this conversation): goal, files/URLs, constraints, "
-            + "the result to report. Optional title (short), lane and model (defaults: the session's). isolation: \"worktree\" gives it its own "
+            + "the result to report. Optional title (short), lane and model (explicit choices are preserved; otherwise automatic routine "
+            + "delegation may choose a local worker when enabled, with the session's model retained for difficult work). isolation: \"worktree\" gives it its own "
             + "git worktree on a new branch from your HEAD (use when agents edit files in parallel; review and merge the branch with git). "
             + "agent: the name of a role from the Agent roles index (its instructions, lane/model and tool limits apply). Collect with agents.wait. "
             + "independent: true starts separate follow-up work you noticed that is outside the current task (a bug spotted in passing, a "

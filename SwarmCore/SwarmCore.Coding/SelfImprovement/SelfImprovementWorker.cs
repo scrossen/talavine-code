@@ -54,6 +54,9 @@ public sealed class SelfImprovementWorker : IAsyncDisposable, IDisposable
     /// <summary>Raised on any thread after an item or the worker's status changes.</summary>
     public event Action? Changed;
 
+    /// <summary>Natural idle check boundary, including unchanged checks; hosts can retry a postponed verified installation.</summary>
+    public event Action? Checkpoint;
+
     /// <summary>What the worker is doing, in plain words (for a status line).</summary>
     public string Status { get { lock (_loopGate) return _status; } }
 
@@ -125,24 +128,39 @@ public sealed class SelfImprovementWorker : IAsyncDisposable, IDisposable
         {
             await InitializeAsync(ct).ConfigureAwait(false);
             var options = _options();
+            if (_active is { } running) { SetStatus($"Working on \"{running.Item.Title}\".", []); return; }
             if (!options.Enabled) { SetStatus("Off. Turn self-improvement on in Settings.", []); return; }
             if (_paused()) { SetStatus("Paused.", []); return; }
-            if (_active is { } running) { SetStatus($"Working on \"{running.Item.Title}\".", []); return; }
             var root = _host.ResolveRepositoryRoot();
-            var queued = (await _backlog.ListAsync(ct).ConfigureAwait(false)).Where(i => i.Stage == SelfImprovementStage.Queued).ToList();
+            var items = await _backlog.ListAsync(ct).ConfigureAwait(false);
+            // Leave the worker idle while the owning host installs an applicable goal repair. Starting another
+            // cycle at this boundary could otherwise starve the host's asynchronous checkpoint listener forever.
+            foreach (var ready in items.Where(i => PersistentGoalRepair(i, options)
+                         && i.Stage is SelfImprovementStage.Verified or SelfImprovementStage.Merged))
+                if (await _host.CanRunAsync(ready, ct).ConfigureAwait(false))
+                {
+                    SetStatus("A verified goal repair is waiting for installation.", []);
+                    return;
+                }
+            var queued = items.Where(i => i.Stage == SelfImprovementStage.Queued).ToList();
             if (root is null)
             {
                 SetStatus(queued.Count == 0 ? "Nothing to do." : $"{queued.Count} item(s) waiting: the Talavine Code source repository was not found. Set it in Settings.", []);
                 return;
             }
             var now = Now;
-            var due = queued
-                .Where(i => i.Attempts < Math.Max(1, options.MaxAttemptsPerItem))
-                .Where(i => i.LastAttemptUtc is not { } last || now - last >= options.RetryCooldown)
-                .OrderBy(i => i.Kind == SelfImprovementKind.Defect ? 0 : 1)
+            var candidates = queued
+                .Where(i => PersistentGoalRepair(i, options) || i.Attempts < Math.Max(1, options.MaxAttemptsPerItem))
+                .Where(i => i.LastAttemptUtc is not { } last || now - last >= (PersistentGoalRepair(i, options)
+                    ? TimeSpan.FromMinutes(Math.Min(60, 2 * Math.Pow(2, Math.Clamp(i.Attempts - 1, 0, 5)))) : options.RetryCooldown))
+                .OrderBy(i => PersistentGoalRepair(i, options) ? 0 : 1)
+                .ThenBy(i => i.Kind == SelfImprovementKind.Defect ? 0 : 1)
                 .ThenByDescending(i => i.Occurrences)
                 .ThenBy(i => i.FirstSeenUtc)
-                .FirstOrDefault();
+                .ToList();
+            SelfImprovementItem? due = null;
+            foreach (var candidate in candidates)
+                if (await _host.CanRunAsync(candidate, ct).ConfigureAwait(false)) { due = candidate; break; }
             if (due is null)
             {
                 SetStatus(queued.Count == 0 ? "Nothing to do." : $"{queued.Count} item(s) waiting for their retry time.", []);
@@ -155,7 +173,11 @@ public sealed class SelfImprovementWorker : IAsyncDisposable, IDisposable
             }
             await FireAsync(due, root, options, manual: false, ct).ConfigureAwait(false);
         }
-        finally { _tickGate.Release(); }
+        finally
+        {
+            _tickGate.Release();
+            try { Checkpoint?.Invoke(); } catch (Exception ex) { _logger.LogWarning(ex, "A self-improvement checkpoint listener failed."); }
+        }
     }
 
     /// <summary>Runs an item's cycle now, idle or not (the person asked). Refused while another cycle runs or the repository is missing.</summary>
@@ -171,6 +193,7 @@ public sealed class SelfImprovementWorker : IAsyncDisposable, IDisposable
             if (root is null) return new(false, "The Talavine Code source repository was not found. Set it in Settings.");
             var item = await _backlog.GetAsync(id, ct).ConfigureAwait(false);
             if (item is null) return new(false, "That item no longer exists.");
+            if (!await _host.CanRunAsync(item, ct).ConfigureAwait(false)) return new(false, "The original goal changed or is paused; no repair was started.");
             if (item.Stage is SelfImprovementStage.InProgress) return new(false, "That item is already in progress.");
             if (item.Stage is SelfImprovementStage.Verified or SelfImprovementStage.Merged) return new(false, "That item already has a verified fix.");
             if (item.Stage is SelfImprovementStage.Dismissed or SelfImprovementStage.NeedsHuman)
@@ -273,16 +296,22 @@ public sealed class SelfImprovementWorker : IAsyncDisposable, IDisposable
                     return common with
                     {
                         Attempts = attempts, LastAttemptUtc = now,
-                        Stage = attempts >= Math.Max(1, options.MaxAttemptsPerItem) ? SelfImprovementStage.NeedsHuman : SelfImprovementStage.Queued,
+                        Stage = !PersistentGoalRepair(fresh, options) && attempts >= Math.Max(1, options.MaxAttemptsPerItem)
+                            ? SelfImprovementStage.NeedsHuman : SelfImprovementStage.Queued,
                         WorktreePath = result.WorktreePath ?? fresh.WorktreePath,
                     };
                 case SelfImprovementCycleOutcome.Unverifiable:
                     return common with { Stage = SelfImprovementStage.NeedsHuman };
                 default:
-                    return common with { Stage = SelfImprovementStage.Queued };
+                    return common with { Stage = SelfImprovementStage.Queued,
+                        Branch = result.Branch ?? fresh.Branch, WorktreePath = result.WorktreePath ?? fresh.WorktreePath,
+                        Commit = result.Branch is not null || result.WorktreePath is not null ? null : fresh.Commit };
             }
         }).ConfigureAwait(false);
     }
+
+    private static bool PersistentGoalRepair(SelfImprovementItem item, SelfImprovementOptions options)
+        => options.AutoApplyGoalRepairs && item.GoalRepair is not null;
 
     private bool OwnerAlive(string? owner)
     {

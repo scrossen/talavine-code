@@ -42,13 +42,44 @@ public static class AppControlDiscovery
 
     private static LoopbackDiscoveryDirectory Current => new(Directory);
 
+    // Mac Catalyst mapped LocalApplicationData to Documents, while native macOS
+    // maps it to Application Support. Read both without moving a publisher's
+    // record/token or scanning other users' or sandboxed profiles.
+    private static IReadOnlyList<string> CandidateDirectories => ResolveDirectories(
+        Environment.GetEnvironmentVariable("SWARMCORE_APP_CONTROL_DIR"),
+        Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+        Environment.GetFolderPath(Environment.SpecialFolder.MyDocuments),
+        OperatingSystem.IsMacOS() || OperatingSystem.IsMacCatalyst(),
+        Environment.GetFolderPath(Environment.SpecialFolder.UserProfile));
+
+    internal static IReadOnlyList<string> ResolveDirectories(string? overridden, string localApplicationData,
+        string documents, bool includeLegacyMacDirectory, string? userProfile = null)
+    {
+        if (!string.IsNullOrWhiteSpace(overridden)) return [overridden];
+        var directories = new List<string> { Path.Combine(localApplicationData, "SwarmCore", "app-control") };
+        if (includeLegacyMacDirectory && !string.IsNullOrWhiteSpace(userProfile))
+            directories.Add(Path.Combine(userProfile, "Library", "Application Support", "SwarmCore", "app-control"));
+        if (includeLegacyMacDirectory && !string.IsNullOrWhiteSpace(documents))
+            directories.Add(Path.Combine(documents, "SwarmCore", "app-control"));
+        return directories.Distinct(OperatingSystem.IsWindows() ? StringComparer.OrdinalIgnoreCase : StringComparer.Ordinal).ToArray();
+    }
+
     public static string PathFor(string app) => Current.PathFor(app);
 
     /// <summary>
     /// Publishes the endpoint. A second running instance of the same app does not replace the first one's live
     /// record (agents keep reaching the first); it returns false and the caller keeps serving without publishing.
     /// </summary>
-    public static bool Publish(AppControlEndpoint endpoint) => Current.Publish(endpoint);
+    public static bool Publish(AppControlEndpoint endpoint) => Publish(endpoint, Directory, CandidateDirectories);
+
+    internal static bool Publish(AppControlEndpoint endpoint, string directory, IReadOnlyList<string> candidates)
+    {
+        // A legacy publisher retains ownership even when this runtime writes to a
+        // different default directory. Never replace or migrate its bearer.
+        if (candidates.Select(path => new LoopbackDiscoveryDirectory(path).Find(endpoint.App, requireReadable: true))
+            .Any(existing => existing is not null && existing.ProcessId != endpoint.ProcessId)) return false;
+        return new LoopbackDiscoveryDirectory(directory).Publish(endpoint);
+    }
 
     /// <summary>
     /// The app's token, kept across restarts in the same user-private folder so a connection an agent saved keeps
@@ -60,10 +91,27 @@ public static class AppControlDiscovery
     public static void Withdraw(string app, int processId) => Current.Withdraw(app, processId);
 
     /// <summary>The live endpoint for <paramref name="app"/>, or null when the app is not running.</summary>
-    public static AppControlEndpoint? Find(string app) => Current.Find(app);
+    public static AppControlEndpoint? Find(string app) => Find(app, CandidateDirectories);
+
+    internal static AppControlEndpoint? Find(string app, IReadOnlyList<string> candidates)
+    {
+        var matches = UniquePublishers(candidates.Select(path => new LoopbackDiscoveryDirectory(path).Find(app, requireReadable: true))
+            .OfType<AppControlEndpoint>()).ToArray();
+        if (matches.Length > 1)
+            throw new InvalidOperationException($"More than one live instance of '{app}' publishes app control. "
+                + "Close the unintended instance or explicitly select its discovery directory before connecting.");
+        return matches.FirstOrDefault();
+    }
 
     /// <summary>Every running app that published an endpoint.</summary>
-    public static IReadOnlyList<AppControlEndpoint> List() => Current.List();
+    public static IReadOnlyList<AppControlEndpoint> List() => List(CandidateDirectories);
+
+    internal static IReadOnlyList<AppControlEndpoint> List(IReadOnlyList<string> candidates)
+        => UniquePublishers(candidates.SelectMany(path => new LoopbackDiscoveryDirectory(path).List(requireReadable: true))).ToArray();
+
+    private static IEnumerable<AppControlEndpoint> UniquePublishers(IEnumerable<AppControlEndpoint> endpoints)
+        => endpoints.DistinctBy(endpoint => (endpoint.App.ToLowerInvariant(), endpoint.ProcessId,
+            endpoint.Url, endpoint.Profile, endpoint.Token));
 }
 
 /// <summary>
@@ -116,21 +164,25 @@ public sealed class LoopbackDiscoveryDirectory(string directory)
         catch (UnauthorizedAccessException) { }
     }
 
-    public AppControlEndpoint? Find(string app)
+    public AppControlEndpoint? Find(string app) => Find(app, requireReadable: false);
+
+    internal AppControlEndpoint? Find(string app, bool requireReadable)
     {
         var path = PathFor(app);
-        var endpoint = Read(path);
+        var endpoint = Read(path, requireReadable);
         if (endpoint is null) return null;
         if (IsLive(endpoint)) return endpoint;
         try { File.Delete(path); } catch (IOException) { } catch (UnauthorizedAccessException) { }
         return null;
     }
 
-    public IReadOnlyList<AppControlEndpoint> List()
+    public IReadOnlyList<AppControlEndpoint> List() => List(requireReadable: false);
+
+    internal IReadOnlyList<AppControlEndpoint> List(bool requireReadable)
     {
         if (!System.IO.Directory.Exists(Directory)) return [];
         return System.IO.Directory.EnumerateFiles(Directory, "*.json")
-            .Select(f => Find(Path.GetFileNameWithoutExtension(f)))
+            .Select(f => Find(Path.GetFileNameWithoutExtension(f), requireReadable))
             .OfType<AppControlEndpoint>()
             .ToList();
     }
@@ -155,12 +207,34 @@ public sealed class LoopbackDiscoveryDirectory(string directory)
         File.Move(temporary, path, overwrite: true);
     }
 
-    private static AppControlEndpoint? Read(string path)
+    private static AppControlEndpoint? Read(string path, bool requireReadable = false)
     {
-        try { return File.Exists(path) ? JsonSerializer.Deserialize<AppControlEndpoint>(File.ReadAllText(path), Json) : null; }
-        catch (JsonException) { return null; }
-        catch (IOException) { return null; }
+        try
+        {
+            if (!requireReadable && !File.Exists(path)) return null;
+            var endpoint = JsonSerializer.Deserialize<AppControlEndpoint>(File.ReadAllText(path), Json);
+            if (requireReadable && (endpoint is null || string.IsNullOrWhiteSpace(endpoint.App)
+                || !string.Equals(endpoint.App, Path.GetFileNameWithoutExtension(path), StringComparison.OrdinalIgnoreCase)
+                || string.IsNullOrWhiteSpace(endpoint.Token) || endpoint.ProcessId <= 0
+                || !Uri.TryCreate(endpoint.Url, UriKind.Absolute, out var url) || !url.IsLoopback
+                || url.Scheme != "http" || !string.IsNullOrEmpty(url.UserInfo)))
+                throw UnreadableRecord();
+            return endpoint;
+        }
+        catch (FileNotFoundException) { return null; }
+        catch (DirectoryNotFoundException) { return null; }
+        catch (JsonException) when (!requireReadable) { return null; }
+        catch (IOException) when (!requireReadable) { return null; }
+        catch (Exception ex) when (requireReadable && ex is JsonException or IOException or UnauthorizedAccessException)
+        {
+            // Choosing another candidate could silently change the connected
+            // profile. Do not include record contents or bearer values in errors.
+            throw UnreadableRecord();
+        }
     }
+
+    private static InvalidOperationException UnreadableRecord()
+        => new("An app-control discovery record is unreadable. Repair it or explicitly select the intended discovery directory before connecting.");
 
     private static DateTimeOffset? StartTime(int processId)
     {

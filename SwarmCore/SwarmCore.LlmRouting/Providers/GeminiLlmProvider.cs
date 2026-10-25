@@ -141,7 +141,7 @@ public class GeminiLlmProvider : LlmProviderBase, ILlmModelCatalogProvider
             if (response.IsSuccessStatusCode)
             {
                 var geminiResponse = JsonSerializer.Deserialize<GeminiResponse>(responseContent, SwarmJsonOptions.ExternalApi);
-                var responseText = geminiResponse?.Candidates?.FirstOrDefault()?.Content?.Parts?.FirstOrDefault()?.Text ?? "";
+                var responseText = CandidateText(geminiResponse);
                 var usage = geminiResponse?.UsageMetadata;
 
                 return new LlmResponse
@@ -209,6 +209,8 @@ public class GeminiLlmProvider : LlmProviderBase, ILlmModelCatalogProvider
                 }
             };
 
+            ApplyExecutionSettings(request, executionSettings);
+
             var json = JsonSerializer.Serialize(request);
             var content = new StringContent(json, Encoding.UTF8, "application/json");
 
@@ -220,7 +222,7 @@ public class GeminiLlmProvider : LlmProviderBase, ILlmModelCatalogProvider
             if (response.IsSuccessStatusCode)
             {
                 var geminiResponse = JsonSerializer.Deserialize<GeminiResponse>(responseContent, SwarmJsonOptions.ExternalApi);
-                var responseText = geminiResponse?.Candidates?.FirstOrDefault()?.Content?.Parts?.FirstOrDefault()?.Text ?? "";
+                var responseText = CandidateText(geminiResponse);
                 var usage = geminiResponse?.UsageMetadata;
 
                 return new LlmResponse
@@ -329,7 +331,7 @@ public class GeminiLlmProvider : LlmProviderBase, ILlmModelCatalogProvider
                 if (parts is null) continue;
                 foreach (var part in parts)
                 {
-                    if (string.IsNullOrEmpty(part.Text)) continue;
+                    if (part.Thought == true || string.IsNullOrEmpty(part.Text)) continue;
                     content.Append(part.Text);
                     await onChunk(part.Text).ConfigureAwait(false);
                 }
@@ -415,6 +417,16 @@ public class GeminiLlmProvider : LlmProviderBase, ILlmModelCatalogProvider
             };
         }
     }
+
+    /// <summary>
+    /// The answer text of the first candidate. Gemini can split a reply across
+    /// several parts and put a function-call or code part first; every visible
+    /// text part counts, as in the streaming path.
+    /// </summary>
+    private static string CandidateText(GeminiResponse? response)
+        => string.Concat(response?.Candidates?.FirstOrDefault()?.Content?.Parts?
+            .Where(part => part.Thought != true)
+            .Select(part => part.Text) ?? []);
 
     private static int GetBillableOutputTokens(GeminiUsageMetadata? usage, int fallback)
     {
@@ -512,6 +524,11 @@ internal class GeminiPart
     [JsonPropertyName("inline_data")]
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     public GeminiInlineData? InlineData { get; set; }
+
+    /// <summary>Set on thought-summary parts, which are not part of the answer.</summary>
+    [JsonPropertyName("thought")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public bool? Thought { get; set; }
 }
 
 internal class GeminiInlineData

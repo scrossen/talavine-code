@@ -71,7 +71,6 @@ public sealed class MissionDeploymentService(IMissionStore store, ISandboxPathRe
         var root = SandboxPathResolver.ResolvePhysicalPath(options.Value.DevelopmentDirectories[target]);
         if (!authority.EnvironmentBindings.TryGetValue(target, out var boundRoot) || boundRoot != root)
             throw new MissionActionSkippedException("The configured environment changed after assignment; inspect its binding before deployment.");
-        Directory.CreateDirectory(root);
         var destination = SandboxPathResolver.ResolvePhysicalPath(Path.Combine(root, Path.GetFileName(artifact)));
         if (Path.GetDirectoryName(destination) != root) throw new MissionActionSkippedException("Deployment destination escaped its configured directory.");
         var bytes = await File.ReadAllBytesAsync(artifact, ct);
@@ -86,9 +85,17 @@ public sealed class MissionDeploymentService(IMissionStore store, ISandboxPathRe
         var temporary = Path.Combine(root, ".mission-" + id.ToString("N") + "-" + operation + ".tmp");
         try
         {
+            // No task-resource mutation before all preparation checks and the durable intent.
+            Directory.CreateDirectory(root);
             await File.WriteAllBytesAsync(temporary, bytes, ct);
             await MissionPrimitiveFence.ValidateAsync(ct);
             File.Move(temporary, destination, overwrite: true);
+        }
+        catch (MissionActionSkippedException ex)
+        {
+            // The directory or temporary file may already exist. A revoked fence cannot
+            // retroactively turn this invocation into a never-dispatched action.
+            throw new IOException("Deployment stopped after local preparation started; inspect its saved intent before retrying.", ex);
         }
         finally { if (File.Exists(temporary)) File.Delete(temporary); }
         var actual = Convert.ToHexString(SHA256.HashData(await File.ReadAllBytesAsync(destination, ct)));

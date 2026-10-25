@@ -277,11 +277,6 @@ public interface ILlmProviderRegistry
     bool HasProvider(string providerName);
 
     /// <summary>
-    /// Get providers that support vision
-    /// </summary>
-    IEnumerable<ILlmProvider> GetVisionCapableProviders();
-
-    /// <summary>
     /// Get providers that support embeddings
     /// </summary>
     IEnumerable<ILlmProvider> GetEmbeddingCapableProviders();

@@ -80,6 +80,13 @@ public sealed class ConsoleRenderer
         if (_options.Quiet) _out.WriteLine(FinalText);
     }
 
+    /// <summary>A goal's buffered answer becomes deliverable only after independent goal verification.</summary>
+    public void FinishVerifiedGoal()
+    {
+        Outcome = TurnOutcome.Completed;
+        if (_options.Quiet && !_options.Json && FinalText is not null) _out.WriteLine(FinalText);
+    }
+
     public void Reset()
     {
         Outcome = TurnOutcome.None;

@@ -61,6 +61,48 @@ public class ConversationRunnerTests : TempDirTest
     }
 
     [Fact]
+    public async Task Queued_message_survives_restart_admission_and_drains_once_when_helper_exits()
+    {
+        var admission = new ConversationRunAdmission();
+        using var h = Build(_ => (_, _) => Yield(new TurnCompleted("t", "done", TimeSpan.Zero)),
+            configure: services => services.AddSingleton(admission));
+        var restart = admission.TryQuiesce(); Assert.NotNull(restart);
+        try
+        {
+            Assert.False(h.Runner.TrySend("saved follow-up", "claude"));
+            Assert.True(await h.Runner.EnqueueAsync("saved follow-up", "claude", modelOverride: "selected"));
+            var queued = Assert.Single(h.Runner.QueuedMessages);
+            Assert.Equal("saved follow-up", queued.Text);
+            Assert.Equal("selected", queued.ModelOverride);
+            Assert.Equal(queued.Id, Assert.Single(h.Provider.GetRequiredService<FileConversationJobStore>().Load("conv")!.Queue).Id);
+            Assert.Null(h.Orchestrator.LastRequest);
+            var finish = NextFinish(h.Runner);
+            restart!.Dispose();
+            await finish;
+            Assert.Equal("saved follow-up", h.Orchestrator.LastRequest!.UserMessage);
+            Assert.Empty(h.Runner.QueuedMessages);
+        }
+        finally { restart!.Dispose(); }
+    }
+
+    [Fact]
+    public async Task Failed_restart_keeps_a_newer_explicit_queue_stop()
+    {
+        var admission = new ConversationRunAdmission();
+        using var h = Build(_ => (_, _) => Yield(new TurnCompleted("t", "should not run", TimeSpan.Zero)),
+            configure: services => services.AddSingleton(admission));
+        using (var restart = admission.TryQuiesce())
+        {
+            Assert.NotNull(restart);
+            Assert.True(await h.Runner.EnqueueAsync("retained", "claude"));
+            h.Runner.Cancel();
+        }
+        Assert.True(h.Runner.QueuePaused);
+        Assert.Single(h.Runner.QueuedMessages);
+        Assert.Null(h.Orchestrator.LastRequest);
+    }
+
+    [Fact]
     public async Task Interrupted_work_retains_its_review_requirement_and_does_not_repeat_obtained_opinions()
     {
         var catalog = new WorkspaceSessionCatalog(Paths);
@@ -158,6 +200,37 @@ public class ConversationRunnerTests : TempDirTest
 
         Assert.False(h.Runner.IsRunning);
         Assert.True(h.Runner.TrySend("again", "claude")); // another turn can start after finish
+    }
+
+    [Fact]
+    public async Task Consumer_cancellation_releases_a_producer_blocked_on_the_full_relay()
+    {
+        // The producer writes with CancellationToken.None into a bounded(512) relay. When the consumer leaves on an
+        // OperationCanceledException (as a cancelled decision-index read does after Stop), the turn must still finish:
+        // the consumer stops the turn and drains, so the blocked producer completes and FinishAsync runs.
+        static async IAsyncEnumerable<TurnEvent> Flood()
+        {
+            await Task.Yield();
+            yield return new CodingLaneSelected("t", Lane, 1);
+            for (var i = 0; i < 2000; i++) yield return new TextChunk("t", "x"); // ignores cancellation on purpose
+            yield return new TurnCompleted("t", "done", TimeSpan.Zero);
+        }
+
+        using var h = Build(_ => (_, _) => Flood());
+        var thrown = 0;
+        h.Runner.Changed += () =>
+        {
+            if (h.Runner.Entries.OfType<AssistantEntry>().Any() && Interlocked.Exchange(ref thrown, 1) == 0)
+                throw new OperationCanceledException("consumer observed cancellation");
+        };
+        var finished = NextFinish(h.Runner);
+
+        Assert.True(h.Runner.TrySend("go", "claude"));
+        var result = await finished;
+
+        Assert.Equal(1, thrown);
+        Assert.True(result.Cancelled);
+        Assert.False(h.Runner.IsRunning);
     }
 
     [Fact]

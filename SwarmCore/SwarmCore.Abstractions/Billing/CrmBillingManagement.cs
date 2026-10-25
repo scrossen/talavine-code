@@ -94,7 +94,17 @@ public sealed class CrmBillingManagementResponse
     /// <summary>One sentence describing what happened, for the confirmation banner and audit log.</summary>
     public string? Message { get; set; }
 
+    /// <summary>
+    /// Set by the caller (never sent on the wire) when the request may have reached the billing service but no
+    /// answer came back — a timeout or an unreachable endpoint after sending. The change may have been applied.
+    /// </summary>
+    [System.Text.Json.Serialization.JsonIgnore]
+    public bool OutcomeUnknown { get; set; }
+
     public static CrmBillingManagementResponse Fail(string error) => new() { Ok = false, Error = error };
+
+    /// <summary>A failure whose effect on the subscription is not known.</summary>
+    public static CrmBillingManagementResponse Unknown(string error) => new() { Ok = false, Error = error, OutcomeUnknown = true };
 }
 
 public sealed class CrmBillingOverview
@@ -210,9 +220,10 @@ public static class CrmBillingManagementRules
 
     /// <summary>
     /// A portal return address must be https on the workspace's own host, so a signed request cannot
-    /// turn the billing authority into an open redirect.
+    /// turn the billing authority into an open redirect. A loopback address (http or https) is
+    /// admitted only when the host says it is a development deployment.
     /// </summary>
-    public static bool IsAllowedReturnUrl(string? returnUrl, string? tenantHostname)
+    public static bool IsAllowedReturnUrl(string? returnUrl, string? tenantHostname, bool allowLoopback = false)
     {
         if (string.IsNullOrWhiteSpace(tenantHostname)
             || !Uri.TryCreate(returnUrl, UriKind.Absolute, out var uri))
@@ -220,7 +231,7 @@ public static class CrmBillingManagementRules
             return false;
         }
 
-        var local = uri.IsLoopback && uri.Scheme is "http" or "https";
+        var local = allowLoopback && uri.IsLoopback && uri.Scheme is "http" or "https";
         return (uri.Scheme == Uri.UriSchemeHttps || local)
             && (string.Equals(uri.Host, tenantHostname.Trim(), StringComparison.OrdinalIgnoreCase) || local);
     }

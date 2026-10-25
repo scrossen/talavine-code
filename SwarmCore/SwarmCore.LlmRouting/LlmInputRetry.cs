@@ -18,7 +18,7 @@ public sealed record LlmInputRetryRequest(string Function, string Prompt, string
         Options.ExpectedFormat, Options.ForceJson, Options.SuppressStructuredOutputRetry,
         Options.RequiresToolUse, Options.RequiresStructuredOutput, Options.AllowTextJsonContractRepair,
         Options.RequireCurrentWorkloadSizing, Options.MinimumContextTokens,
-        Options.DisableFallback, Options.AllowAnyProviderFallback, Options.Workload, Options.Urgency,
+        Options.DisableFallback, Options.Workload, Options.Urgency,
         Options.MinimumCapabilityScore, Options.RequireMeasuredCapabilityScore, Options.RequiredTier,
         Options.BlockWeakerPolicyFallback, Options.RequireCurrentFunctionEvidence,
         Settings = Options.ExecutionSettings?.OrderBy(p => p.Key, StringComparer.Ordinal).ToArray()

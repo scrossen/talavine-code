@@ -182,6 +182,7 @@ public sealed class AgentDefinitionTests : IDisposable
         Assert.Equal("deepseek-chat", agent.Model);
         Assert.StartsWith("reviewer: ", agent.Title);
         Assert.Equal("deepseek", host.LastCreate!.Lane);
+        Assert.True(host.LastCreate.ExplicitModelSelection);
         var (_, brief) = Assert.Single(host.Started);
         Assert.Contains("\"reviewer\" role", brief);
         Assert.Contains("Only report findings.", brief);

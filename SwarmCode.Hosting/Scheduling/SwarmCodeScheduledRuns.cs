@@ -1,4 +1,5 @@
 using System.Collections.Concurrent;
+using Microsoft.Extensions.Logging;
 using SwarmCode.Hosting.Agents;
 using SwarmCore.Coding.Scheduling;
 
@@ -64,7 +65,8 @@ namespace SwarmCode.Hosting.Scheduling
         WorkspaceSessionCatalog sessions,
         AppPreferencesStore preferences,
         IScheduledRunWorkspaces workspaces,
-        TimeProvider? time = null) : IScheduledRunHost
+        TimeProvider? time = null,
+        ILogger<SwarmCodeScheduledRunHost>? logger = null) : IScheduledRunHost
     {
         public static string SessionTitle(string title, DateTime firedUtc, TimeZoneInfo? zone = null)
             => $"⏱ {title} — {TimeZoneInfo.ConvertTimeFromUtc(DateTime.SpecifyKind(firedUtc, DateTimeKind.Utc), zone ?? TimeZoneInfo.Local):MMM d, HH:mm}";
@@ -77,9 +79,18 @@ namespace SwarmCode.Hosting.Scheduling
             var model = request.Model ?? (request.Lane is null && prefs.DefaultLane is not null ? prefs.DefaultModel : null);
             var fired = request.FiredUtc == default ? (time ?? TimeProvider.System).GetUtcNow().UtcDateTime : request.FiredUtc;
             var session = await sessions.CreateAsync(request.RepositoryRoot, SessionTitle(request.Title, fired), lane, ct, model).ConfigureAwait(false);
-            await sessions.SetTemporaryAsync(session.Id, true, ct).ConfigureAwait(false);
-
-            var lease = await workspaces.AcquireAsync(request.RepositoryRoot, session.Id, ct).ConfigureAwait(false);
+            ScheduledRunnerLease lease;
+            try
+            {
+                await sessions.SetTemporaryAsync(session.Id, true, ct).ConfigureAwait(false);
+                lease = await workspaces.AcquireAsync(request.RepositoryRoot, session.Id, ct).ConfigureAwait(false);
+            }
+            catch
+            {
+                // A run that never started leaves no empty "⏱" session behind (each scheduler retry would add one).
+                await DeleteUnstartedSessionAsync(session.Id).ConfigureAwait(false);
+                throw;
+            }
             var runner = lease.Runner;
             var completion = new TaskCompletionSource<ScheduledRunResult>(TaskCreationOptions.RunContinuationsAsynchronously);
             void OnFinished(TurnResult result)
@@ -89,7 +100,11 @@ namespace SwarmCode.Hosting.Scheduling
                 if (runner.IsRunning || (runner.QueuedMessages.Count > 0 && !runner.QueuePaused)) return;
                 runner.TurnFinished -= OnFinished;
                 // Never from inside the runner's own turn: releasing disposes the runner, which waits for that turn.
-                _ = Task.Run(async () => await lease.ReleaseAsync().ConfigureAwait(false));
+                _ = Task.Run(async () =>
+                {
+                    try { await lease.ReleaseAsync().ConfigureAwait(false); }
+                    catch (Exception ex) { logger?.LogWarning(ex, "Releasing scheduled session {Session}'s runner failed.", session.Id); }
+                });
             }
             runner.TurnFinished += OnFinished;
             if (!runner.TrySend(request.Prompt, lane, prefs.Mode, prefs.HandOffOnRefusal, model,
@@ -97,9 +112,16 @@ namespace SwarmCode.Hosting.Scheduling
             {
                 runner.TurnFinished -= OnFinished;
                 await lease.ReleaseAsync().ConfigureAwait(false);
+                await DeleteUnstartedSessionAsync(session.Id).ConfigureAwait(false);
                 throw new InvalidOperationException("The scheduled session could not start its turn.");
             }
             return new ScheduledRunHandle(session.Id, completion.Task);
+        }
+
+        private async Task DeleteUnstartedSessionAsync(string sessionId)
+        {
+            try { await sessions.DeleteAsync(sessionId, CancellationToken.None).ConfigureAwait(false); }
+            catch (Exception ex) { logger?.LogWarning(ex, "Could not remove scheduled session {Session} after its run failed to start.", sessionId); }
         }
 
         internal static ScheduledRunResult Outcome(TurnResult result)
@@ -118,7 +140,8 @@ namespace SwarmCode.Hosting.Scheduling
     /// </summary>
     public sealed class ScheduledRunWorkspaces(
         Func<string, string, CancellationToken, Task<ConversationRunner?>> openInCurrentWorkspace,
-        Func<string, CancellationToken, Task<WorkspaceHost>> createBackgroundWorkspace) : IScheduledRunWorkspaces, IConversationRunnerSource, IAsyncDisposable
+        Func<string, CancellationToken, Task<WorkspaceHost>> createBackgroundWorkspace,
+        ILogger<ScheduledRunWorkspaces>? logger = null) : IScheduledRunWorkspaces, IConversationRunnerSource, IAsyncDisposable
     {
         private readonly object _gate = new();
         private readonly Dictionary<string, Pooled> _hosts = new(StringComparer.OrdinalIgnoreCase);
@@ -178,11 +201,16 @@ namespace SwarmCode.Hosting.Scheduling
             return new ScheduledRunnerLease(runner, async () =>
             {
                 // Dispose first (drains the transcript journal), then stop serving it, so a window that opens the
-                // session afterwards reads complete history.
-                await runner.DisposeAsync().ConfigureAwait(false);
-                _runners.TryRemove(new KeyValuePair<string, ConversationRunner>(sessionId, runner));
-                Changed?.Invoke();
-                await ReleaseHostAsync(key, pooled).ConfigureAwait(false);
+                // session afterwards reads complete history. A disposal that throws (a faulted turn) still stops
+                // serving the runner and releases the pooled workspace, or it would outlive every run.
+                try { await runner.DisposeAsync().ConfigureAwait(false); }
+                catch (Exception ex) { logger?.LogWarning(ex, "Disposing scheduled session {Session}'s runner failed.", sessionId); }
+                finally
+                {
+                    _runners.TryRemove(new KeyValuePair<string, ConversationRunner>(sessionId, runner));
+                    Changed?.Invoke();
+                    await ReleaseHostAsync(key, pooled).ConfigureAwait(false);
+                }
             });
         }
 

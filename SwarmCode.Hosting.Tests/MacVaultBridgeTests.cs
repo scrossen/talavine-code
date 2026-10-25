@@ -22,7 +22,9 @@ public sealed class MacVaultBridgeTests : TempDirTest
         await hostVault.SetAsync(new() { Name = "fixture", Value = value });
         // Transport and composition proof; Darwin peer identity is a separate native runtime gate.
         await using var broker = new KeyStoreBrokerServer(keyStore, Paths.RootDirectory, _ => true, NullLogger<KeyStoreBrokerServer>.Instance);
-        Assert.True(await broker.StartAsync());
+        Assert.True(await broker.StartAsync(), broker.StartupFailure);
+        var socketDirectory = Path.GetDirectoryName(broker.SocketPath!)!;
+        Assert.True(System.Text.Encoding.UTF8.GetByteCount(broker.SocketPath!) < 104);
         var helperStore = new BrokeredKeyStore(Paths.RootDirectory, (_, endpoint) => endpoint.ProcessId == Environment.ProcessId);
         var services = new ServiceCollection(); services.AddLogging();
         services.AddSingleton<IOsKeyStore>(helperStore);
@@ -43,6 +45,9 @@ public sealed class MacVaultBridgeTests : TempDirTest
         Assert.DoesNotContain(value, result);
         foreach (var file in Directory.EnumerateFiles(Paths.RootDirectory, "secrets.db*"))
             Assert.DoesNotContain(value, System.Text.Encoding.UTF8.GetString(File.ReadAllBytes(file)));
+        await broker.DisposeAsync();
+        Assert.False(Directory.Exists(socketDirectory));
+        Assert.False(new BrokeredKeyStore(Paths.RootDirectory, (_, _) => true).IsAvailable);
     }
 
     [Fact]

@@ -15,7 +15,7 @@
     </div>
     <div class="sc-repo__actions">
         <button type="button" class="sc-btn sc-btn--sm sc-grow" @onclick="OpenAsync" disabled="@State.IsOpeningWorkspace">Open…</button>
-        <button type="button" class="sc-btn sc-btn--sm" @onclick="ToggleRecentAsync" aria-expanded="@_showRecent">Recent ▾</button>
+        <button type="button" class="sc-btn sc-btn--sm" @onclick="ToggleRecentAsync" aria-expanded="@(_showRecent ? "true" : "false")">Recent ▾</button>
     </div>
     <div class="sc-repo__actions">
         <button type="button" class="sc-btn sc-btn--sm sc-grow" disabled="@State.IsOpeningWorkspace" @onclick='() => Nav.NavigateTo("/new-project")'>New Project…</button>

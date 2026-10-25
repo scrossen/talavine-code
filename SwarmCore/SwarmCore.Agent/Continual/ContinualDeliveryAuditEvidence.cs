@@ -54,4 +54,8 @@ public static class ContinualDeliveryAuditEvidence
 }
 
 public sealed record DeliveryAuditEvidenceReceipt(
-    string Reference, string Tool, string Status, string SideEffect, string? Input, string? Result);
+    string Reference, string Tool, string Status, string SideEffect, string? Input, string? Result)
+{
+    [System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull)]
+    public ContinualReceiptResolution? HostResolution { get; init; }
+}

@@ -25,6 +25,11 @@ public sealed class FileWorkingContextCheckpointStore : IWorkingContextCheckpoin
     private readonly TimeProvider _time;
     private readonly ILogger _logger;
     private readonly object _gate = new();
+    // The data directory is shared by the desktop app, the console and bridge processes: the in-process gate alone
+    // would let two processes both observe generation N and both write N+1. Writes also hold this directory lock.
+    private readonly SemaphoreSlim _writeGate = new(1, 1);
+    private readonly string _lockPath;
+    private static readonly TimeSpan LockTimeout = TimeSpan.FromSeconds(10);
 
     private sealed record Envelope(long Generation, string? Payload);
 
@@ -35,6 +40,7 @@ public sealed class FileWorkingContextCheckpointStore : IWorkingContextCheckpoin
         _time = time ?? TimeProvider.System;
         _logger = logger ?? NullLogger<FileWorkingContextCheckpointStore>.Instance;
         Directory.CreateDirectory(_directory);
+        _lockPath = Path.Combine(_directory, ".lock");
     }
 
     public Task<WorkingContextLoadResult> LoadAsync(WorkingContextIdentity identity, CancellationToken ct = default)
@@ -62,47 +68,72 @@ public sealed class FileWorkingContextCheckpointStore : IWorkingContextCheckpoin
         }
     }
 
-    public Task<bool> TrySaveAsync(WorkingContextCheckpoint checkpoint, long expectedGeneration, CancellationToken ct = default)
+    public async Task<bool> TrySaveAsync(WorkingContextCheckpoint checkpoint, long expectedGeneration, CancellationToken ct = default)
     {
-        if (expectedGeneration == long.MaxValue) return Task.FromResult(false); // exhausted tombstone
+        if (expectedGeneration == long.MaxValue) return false; // exhausted tombstone
         if (expectedGeneration < 0 || checkpoint.Generation != expectedGeneration + 1 || checkpoint.Identity.ProfileId == Guid.Empty
             || string.IsNullOrWhiteSpace(checkpoint.Identity.ConversationId) || checkpoint.SchemaVersion != WorkingContextCheckpoint.CurrentSchemaVersion)
             throw new ArgumentException("Invalid working-context generation or identity.");
         if (!RetentionValid(checkpoint))
         {
             _logger.LogDebug("Checkpoint for {Conversation} rejected: retention policy or timestamps invalid.", checkpoint.Identity.ConversationId);
-            return Task.FromResult(false);
+            return false;
         }
         var payload = JsonSerializer.Serialize(checkpoint, Json);
         if (payload.Length > _policy.MaximumPayloadCharacters)
         {
             _logger.LogDebug("Checkpoint for {Conversation} rejected: {Length} characters exceeds the retention maximum.", checkpoint.Identity.ConversationId, payload.Length);
-            return Task.FromResult(false);
+            return false;
         }
 
-        lock (_gate)
+        return await WithWriteLockAsync(() =>
         {
             var current = Read(checkpoint.Identity, out var corrupt);
-            if (corrupt) return Task.FromResult(false);
+            if (corrupt) return false;
             if ((current?.Generation ?? 0) != expectedGeneration)
             {
                 _logger.LogDebug("Checkpoint for {Conversation} lost the compare-and-swap: expected generation {Expected}, found {Found}.", checkpoint.Identity.ConversationId, expectedGeneration, current?.Generation ?? 0);
-                return Task.FromResult(false);
+                return false;
             }
             Write(checkpoint.Identity, new Envelope(checkpoint.Generation, payload));
-            return Task.FromResult(true);
-        }
+            return true;
+        }, ct).ConfigureAwait(false);
     }
 
     public Task DeleteAsync(WorkingContextIdentity identity, CancellationToken ct = default)
-    {
-        lock (_gate)
+        => WithWriteLockAsync(() =>
         {
             var current = Read(identity, out _);
             var generation = current?.Generation ?? 0;
             Write(identity, new Envelope(generation == long.MaxValue ? long.MaxValue : Math.Max(0, generation) + 1, null));
+            return true;
+        }, ct);
+
+    /// <summary>Runs a read-compare-write under the in-process gates and the cross-process directory lock.</summary>
+    private async Task<T> WithWriteLockAsync<T>(Func<T> write, CancellationToken ct)
+    {
+        await _writeGate.WaitAsync(ct).ConfigureAwait(false);
+        try
+        {
+            using var fileLock = await AcquireFileLockAsync(ct).ConfigureAwait(false);
+            lock (_gate) return write();
         }
-        return Task.CompletedTask;
+        finally { _writeGate.Release(); }
+    }
+
+    private async Task<FileStream> AcquireFileLockAsync(CancellationToken ct)
+    {
+        var deadline = DateTime.UtcNow + LockTimeout;
+        while (true)
+        {
+            ct.ThrowIfCancellationRequested();
+            try { return new FileStream(_lockPath, FileMode.OpenOrCreate, FileAccess.ReadWrite, FileShare.None); }
+            catch (IOException) when (DateTime.UtcNow < deadline) { await Task.Delay(25, ct).ConfigureAwait(false); }
+            catch (IOException ex)
+            {
+                throw new TimeoutException("Another Talavine Code process is holding the working-context checkpoints. Close it or wait, then retry.", ex);
+            }
+        }
     }
 
     private bool RetentionValid(WorkingContextCheckpoint checkpoint)

@@ -43,6 +43,8 @@ else if (_runner is null)
 }
 else
 {
+    var useGoalState = _runner.IsGoalJob || _runner.HasUnfinishedGoal;
+    var activity = SessionActivityView.Create(_runner.IsRunning, _runner.JobState, _runner.Goal, _runner.Entries, _localRuntimeStatus, _runner.Phase, useGoalState, plan: _runner.Plan, jobStartedUtc: _runner.JobStartedUtc);
     <div class="sess-page @(_showChanges ? "sess-page--changes" : "")" tabindex="-1" @onkeydown="OnPageKeyDown">
         <div class="sess-main">
             <SessionHeader Title="@_session.Title"
@@ -53,6 +55,7 @@ else
                            ArtifactsOpen="_showArtifacts"
                            OnToggleArtifacts="ToggleArtifacts"
                            IsRunning="_runner.IsRunning"
+                           DisplayStatus="@activity.State"
                            ChangesOpen="_showChanges"
                            ChangeCount="_changeCount"
                            OnRename="RenameAsync"
@@ -65,7 +68,15 @@ else
                            ParentTitle="@_parentTitle"
                            CreatedUtc="_session.CreatedUtc"
                            LastActivityUtc="_session.LastActivityUtc"
-                           ActiveAgents="@App.Agents.Children(_session.Id).Count(a => App.Agents.IsActive(a.Id))" />
+                           ActiveAgents="@App.Agents.Children(_session.Id).Count(a => a.State == SwarmCore.Coding.Agents.AgentState.Running)"
+                           WaitingAgents="@App.Agents.Children(_session.Id).Count(a => a.State == SwarmCore.Coding.Agents.AgentState.Queued)" />
+            @if (_runner.Goal is { } repairGoal && App.GoalRepairProgress(repairGoal) is { } repairActivity)
+            {
+                <p class="sess-current__reason" role="status">@repairActivity <a href="/self-improvement">View harness repair</a></p>
+            }
+            <GitHubStarInvitationHost Allowed="@(_session.ParentSessionId is null && !_session.Temporary && !_runner.PlanMode && _runner.JobState == "Completed" && _runner.Acceptance?.Status != CodingAcceptanceStatus.Failed && App.ScheduledRuns.TryGetRunner(SessionId) is null)"
+                                      Busy="@(App.HasActiveOrQueuedWork || App.LastError is not null)"
+                                      IsWorkBusy="@(() => App.HasActiveOrQueuedWork || App.LastError is not null)" />
             <BackgroundShellStrip Manager="@(App.Workspace?.Services.GetService<SwarmCore.Coding.Tools.BackgroundShell.BackgroundShellManager>())" SessionId="@_session.Id" />
             <div class="sess-memory-bar">
                 <label class="sc-toggle" title="A temporary session neither uses nor adds to what Talavine Code remembers about you.">
@@ -80,6 +91,28 @@ else
 
             <RepoHooksPrompt Workspace="App.Workspace" />
             <RepoSettingsPrompt Workspace="App.Workspace" />
+            @if (_runner.IsRunning || _runner.Entries.Count > 0 || useGoalState && _runner.Goal is not null)
+            {
+            <SessionActivity Activity="activity"
+                             InboxUrl="@(useGoalState && _runner.Goal is { } activityGoal ? $"/goals/{activityGoal.Id:D}" : null)">
+                <Controls>
+                @if (useGoalState && _runner.Goal is { } goal)
+                {
+                    <div class="sess-current__controls">
+                        @if (_runner.HasUnfinishedGoal)
+                        {
+                            @if (_runner.IsGoalRunning) { <button type="button" class="sess-btn" @onclick='() => RunGoalCommandAsync("pause", [])'>Pause</button> }
+                            else { <button type="button" class="sess-btn" disabled="@(_runner.IsRunning || _runner.PlanMode)" @onclick='() => RunGoalCommandAsync("resume", [])'>Resume</button> }
+                        }
+                        <a class="sess-btn" href="@($"/goals/{goal.Id:D}?view=reports")">Daily reports</a>
+                        <a class="sess-btn" href="@($"/goals/{goal.Id:D}?view=done")">What's been done</a>
+                        <details class="sess-current__diagnostics"><summary>Work details</summary><p>@goal.ObjectiveText</p>
+                        @if (_runner.HasUnfinishedGoal) { <button type="button" class="sess-btn" @onclick='() => RunGoalCommandAsync("cancel", [])'>Cancel goal</button> }</details>
+                    </div>
+                }
+                </Controls>
+            </SessionActivity>
+            }
             <div class="sess-body">
                 <ChatScrollRegion @ref="_scroll" AutoFollow="true">
                     @{
@@ -91,19 +124,9 @@ else
                     }
                     @{
                         _recoveryNoticeId = FindRecoveryNotice(entries, _runner.IsRunning);
-                        DateTime? shownDay = null;
                     }
-                    @foreach (var entry in entries)
-                    {
-                        var day = entry.AtUtc.ToLocalTime().Date;
-                        if (shownDay != day)
-                        {
-                            shownDay = day;
-                            <div class="sess-day" role="separator" aria-label="@AppNavigation.DayLabel(day)"><span class="sess-day__label" title="@day.ToString("D")">@AppNavigation.DayLabel(day)</span></div>
-                        }
-                        @RenderEntry(entry)
-                    }
-                    @if (_runner.IsRunning && ShowWorkingIndicator(entries))
+                    <SessionTranscript @key="_session.Id" Entries="entries" EntryContent="RenderEntry" />
+                    @if (activity.Busy && ShowWorkingIndicator(entries))
                     {
                         <div class="sess-working"><span class="sc-spinner"></span> @(_localRuntimeStatus ?? "Working…")</div>
                     }
@@ -118,22 +141,18 @@ else
                 <div class="sess-footer-activity">
                 @if (_runner.JobState != "Idle")
                 {
-                    <div class="sess-job-status" role="status">
-                        <span class="sess-job-status__label">
-                            @if (_runner.IsRunning) { <span class="sc-spinner" aria-hidden="true"></span> }
-                            @(_runner.IsRunning ? _localRuntimeStatus ?? JobStateLabel(_runner.JobState) : JobStateLabel(_runner.JobState))
-                        </span>
-                        @if (_runner.ActiveLane is { } activeLane) { <span class="sess-muted">@activeLane</span> }
-                        <span class="sess-muted">@_runner.CompletedToolCalls tools · @ToolCallSummary.FormatElapsed(_runner.Elapsed)</span>
-                        <details class="sess-job-details">
-                            <summary>Run details</summary>
+                    <div class="sess-job-status">
+                        <details class="sess-job-details sess-run-details">
+                            <summary>Run details · @_runner.CompletedToolCalls tools</summary>
                             <div class="sess-job-details__body">
+                                <span>@ToolCallSummary.FormatElapsed(_runner.Elapsed) elapsed</span>
+                                @if (_runner.ActiveLane is { } activeLane) { <span>@activeLane</span> }
                                 @if (_runner.Phase is { } phase) { <span>Phase: @phase</span> }
                                 <span>@(_runner.ReportedTokens is { } tokens ? $"{tokens:N0} reported tokens" : "Token usage unavailable")</span>
                                 @if (_runner.ReportedCostUsd is { } cost) { <span>$@cost.ToString("0.0000") reported cost</span> }
                             </div>
                         </details>
-                        @if (_runner.Acceptance is { } acceptance) { <span>@AcceptanceLabel(acceptance.Status)</span> }
+                        @if (!_runner.IsGoalJob && _runner.Acceptance is { } acceptance) { <span>@AcceptanceLabel(acceptance.Status)</span> }
                         @if (_runner.HasInterruptedWork)
                         {
                             <button type="button" class="sess-btn" @onclick="ContinueInterruptedWork">Continue interrupted work</button>
@@ -150,6 +169,11 @@ else
                     ReadQueue="_runner.ReadLocalRuntimeQueueAsync" OnStop="StopAsync" OnChooseModel="OpenRuntimeModelChoicesAsync"
                     OnStatusChanged="status => _localRuntimeStatus = status" />
                 <QueuedMessages Items="_runner.QueuedMessages" IsRunning="_runner.IsRunning" OnRemove="RemoveQueued" OnEdit="EditQueuedAsync" OnSteer="SteerQueuedAsync" />
+                @if (GoalDraft.Pending is not null)
+                {
+                    <div class="sess-job-status" role="status"><span>Message delivery not confirmed. Your draft is kept.</span>
+                    <button type="button" class="sess-btn" @onclick="RetryGoalMessageAsync">Retry same message</button></div>
+                }
                 </div>
                 <AttachmentIntake @ref="_attachmentIntake" Compact="true" PickerId="@("session-attachments-" + SessionId)" @key="SessionId" SessionId="@SessionId" @bind-Files="_attachments" BusyChanged="value => _attachmentsBusy = value" OnOpen="OpenArtifact">
                 <ChatComposer Compact="true" @ref="_composer"
@@ -157,10 +181,10 @@ else
                               Disabled="_attachmentsBusy"
                               Value="@_draft"
                               ValueChanged="OnDraftChanged"
-                              Placeholder="@(_runner.IsRunning ? (_sendMode == "steer" ? "Correct the current task…" : "Queue a follow-up…") : (App.HasProject ? "Ask Talavine Code to work on this project" : "Ask Talavine Code anything"))"
+                              Placeholder="@(UsesGoalInbox ? "Send an idea or question to this agent…" : _runner.IsRunning ? (_sendMode == "steer" ? "Correct the current task…" : "Queue a follow-up…") : (App.HasProject ? "Ask Talavine Code to work on this project" : "Ask Talavine Code anything"))"
                               IsRunning="_runner.IsRunning"
                               ShowSendWhileRunning="true"
-                              SendLabel="@(_runner.IsRunning ? (_sendMode == "steer" ? "Steer now" : "Queue") : "Send")"
+                              SendLabel="@(UsesGoalInbox ? "Send to agent inbox" : _runner.IsRunning ? (_sendMode == "steer" ? "Steer now" : "Queue") : "Send")"
                               OnSend="OnSendAsync"
                               OnStop="StopAsync"
                               SlashCommands="SlashCommands">
@@ -191,11 +215,17 @@ else
                         @if (_modelError is not null) { <span class="sess-muted" title="@_modelError">Model list unavailable; custom IDs still work.</span> }
                         <button type="button" class="sess-btn @(_runner.PlanMode ? "sess-btn--active" : "")" aria-pressed="@(_runner.PlanMode ? "true" : "false")"
                                 title="Investigate read-only and propose a plan before changing anything" @onclick="TogglePlanMode">Plan first</button>
-                        @if (_runner.IsRunning)
+                        @if (_runner.IsRunning || _runner.HasUnfinishedGoal)
                         {
                             <select class="sess-lane-select" aria-label="Follow-up delivery" @bind="_sendMode">
-                                <option value="queue">Queue after current work</option>
+                                <option value="queue">@(_runner.HasUnfinishedGoal ? "Send to agent inbox" : "Queue after current work")</option>
                                 <option value="steer">Interrupt and steer now</option>
+                            </select>
+                        }
+                        @if (UsesGoalInbox)
+                        {
+                            <select class="sess-lane-select" aria-label="Goal message kind" @bind="_goalMessageKind">
+                                @foreach (var kind in Enum.GetValues<SwarmCore.Agent.Communication.GoalMessageKind>()) { <option value="@kind">@kind</option> }
                             </select>
                         }
                         </ChildContent>

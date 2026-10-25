@@ -167,6 +167,14 @@ public interface IAgentTurnRunner
 /// </summary>
 public sealed record AgentTurnRequest
 {
+    /// <summary>Host-authenticated restriction retained across attempts. Only narrows tool access; runtime only.</summary>
+    [System.Text.Json.Serialization.JsonIgnore]
+    public bool HostToolsWithheld { get; init; }
+    public Guid? GoalId { get; init; }
+    [System.Text.Json.Serialization.JsonIgnore]
+    public string? GoalMessageLeaseToken { get; init; }
+    [System.Text.Json.Serialization.JsonIgnore]
+    public SwarmCore.Agent.Communication.IGoalMailbox? GoalMailbox { get; init; }
     [System.Text.Json.Serialization.JsonIgnore]
     public AgentVisionRecovery? VisionRecovery { get; init; }
     /// <summary>Explicit host-selected limits also apply to attended work; null preserves the profile/default policy.</summary>
@@ -205,6 +213,10 @@ public sealed record AgentTurnRequest
     /// <summary>Optional per-request model override (for the "try this with GPT" UX).</summary>
     public string? ProviderOverride { get; init; }
     public string? ModelOverride { get; init; }
+    /// <summary>Trusted host provenance for a complete route pair; null retains the legacy explicit-user override behavior.</summary>
+    public SwarmCore.Abstractions.LlmRouting.LlmOverrideProvenance? RouteOverrideProvenance { get; init; }
+    /// <summary>Host-declared routing urgency, independent of the turn's permission and unattended authority.</summary>
+    public SwarmCore.Abstractions.LlmRouting.LlmInteractivity? RoutingInteractivity { get; init; }
     public string? ReasoningEffort { get; init; }
     /// <summary>Keep the exact route supplied by the host; do not use lower-level provider/model fallbacks.</summary>
     public bool DisableRouteFallback { get; init; }

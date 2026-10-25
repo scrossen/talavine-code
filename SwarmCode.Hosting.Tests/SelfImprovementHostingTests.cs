@@ -81,7 +81,8 @@ public class SelfImprovementHostingTests : TempDirTest
     }
 
     private (SwarmCodeHostOptions Options, Func<CycleOrchestrator> Orchestrator) HostOptions(string root, WorkspaceSessionCatalog sessions,
-        SessionWorkspaceOverrides overrides, ISelfImprovementBacklog backlog, bool pass)
+        SessionWorkspaceOverrides overrides, ISelfImprovementBacklog backlog, bool pass,
+        Func<IServiceProvider, ICodingTurnOrchestrator>? orchestratorOverride = null)
     {
         CycleOrchestrator? created = null;
         var options = new SwarmCodeHostOptions
@@ -95,7 +96,7 @@ public class SelfImprovementHostingTests : TempDirTest
                 services.AddSingleton(sessions);
                 services.AddSingleton(overrides);
                 services.AddSingleton(backlog);
-                services.AddSingleton<ICodingTurnOrchestrator>(sp => created = new CycleOrchestrator(sp, pass));
+                services.AddSingleton<ICodingTurnOrchestrator>(sp => orchestratorOverride?.Invoke(sp) ?? (created = new CycleOrchestrator(sp, pass)));
                 services.AddSingleton<IAgentTeamStore>(new InMemoryAgentTeamStore());
             },
         };
@@ -205,6 +206,86 @@ public class SelfImprovementHostingTests : TempDirTest
         var noChecks = new SwarmCodeSelfImprovementCycleHost(sessions, preferences, workspaces, overrides, Paths, () => new SelfImprovementOptions { RepositoryRoot = repo });
         var unverifiable = await noChecks.RunAsync(item, new SelfImprovementCycleContext("owner", Path.Combine(Tmp, "plain"), new SelfImprovementOptions()), default);
         Assert.Equal(SelfImprovementCycleOutcome.Unverifiable, unverifiable.Outcome);
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task Interrupted_cycle_retains_unverified_work_and_next_attempt_uses_another_worktree(bool cancelHostToken)
+    {
+        var repo = await SourceRepositoryAsync();
+        var sourceHead = await GitOut(repo, "rev-parse", "HEAD");
+        var sessions = new WorkspaceSessionCatalog(Paths);
+        var preferences = new AppPreferencesStore(Paths);
+        var overrides = new SessionWorkspaceOverrides();
+        var backlog = new InMemorySelfImprovementBacklog();
+        var entered = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var roots = new List<string>();
+        var requests = new List<CodingTurnRequest>();
+        async IAsyncEnumerable<TurnEvent> Cycle(IServiceProvider services, CodingTurnRequest request,
+            [EnumeratorCancellation] CancellationToken ct)
+        {
+            using var scope = services.CreateScope();
+            var workspace = (await scope.ServiceProvider.GetRequiredService<ICodingWorkspaceResolver>().ResolveAsync(request.ConversationId, ct))!;
+            roots.Add(workspace.FullRoot);
+            requests.Add(request);
+            yield return new CodingLaneSelected("t", Lane, 1);
+            await File.WriteAllTextAsync(Path.Combine(workspace.FullRoot, "README.md"), "unverified tracked change", ct);
+            await File.WriteAllTextAsync(Path.Combine(workspace.FullRoot, "checkpoint.txt"), "unverified new file", ct);
+            if (roots.Count == 1)
+            {
+                entered.TrySetResult();
+                if (cancelHostToken) await Task.Delay(Timeout.InfiniteTimeSpan, ct);
+                throw new OperationCanceledException("Stopped at the runner's checkpoint.");
+            }
+            yield return new TurnCompleted("t", "Independently implemented and verified", TimeSpan.FromMilliseconds(1));
+            yield return new CodingAcceptanceEvaluated("t", new CodingAcceptanceResult(CodingAcceptanceStatus.Passed,
+                "Synthetic check passed", [new("build", true, 0, false, "ok")]));
+        }
+        await using var workspaces = new ScheduledRunWorkspaces((_, _, _) => Task.FromResult<ConversationRunner?>(null),
+            (root, ct) => WorkspaceHost.CreateAsync(HostOptions(root, sessions, overrides, backlog, pass: true,
+                sp => new ScriptedOrchestrator((request, token) => Cycle(sp, request, token))).Options, ct: ct));
+        var settings = new SelfImprovementOptions { RepositoryRoot = repo, Checks = [Check()], KeepFailedWorktrees = false };
+        var host = new SwarmCodeSelfImprovementCycleHost(sessions, preferences, workspaces, overrides, Paths, () => settings);
+        var item = new SelfImprovementItem { Id = Guid.NewGuid().ToString("N"), Kind = SelfImprovementKind.Defect,
+            Title = "Interrupted source repair", Fingerprint = "cancelled", Details = "Synthetic test", FirstSeenUtc = DateTime.UtcNow, LastSeenUtc = DateTime.UtcNow };
+        using var stop = new CancellationTokenSource();
+        var running = host.RunAsync(item, new("owner", repo, settings), stop.Token);
+        await entered.Task.WaitAsync(TimeSpan.FromSeconds(10));
+        if (cancelHostToken) stop.Cancel();
+        var result = await running.WaitAsync(TimeSpan.FromSeconds(20));
+
+        Assert.Equal(SelfImprovementCycleOutcome.Cancelled, result.Outcome);
+        Assert.NotNull(result.WorktreePath);
+        Assert.NotNull(result.Branch);
+        Assert.Null(result.Commit);
+        Assert.False(result.Merged);
+        Assert.Contains(result.WorktreePath, result.Evidence);
+        Assert.Contains("not a verified repair", result.Evidence);
+        Assert.Equal("unverified tracked change", await File.ReadAllTextAsync(Path.Combine(result.WorktreePath, "README.md")));
+        Assert.Equal("unverified new file", await File.ReadAllTextAsync(Path.Combine(result.WorktreePath, "checkpoint.txt")));
+        var checkpointStatus = await GitOut(result.WorktreePath, "status", "--porcelain", "--untracked-files=all");
+        Assert.Contains("README.md", checkpointStatus);
+        Assert.Contains("checkpoint.txt", checkpointStatus);
+        Assert.Equal(sourceHead, await GitOut(repo, "rev-parse", "refs/heads/" + result.Branch));
+        Assert.Equal("", await GitOut(repo, "status", "--porcelain"));
+        Assert.Equal(0, overrides.Count);
+        Assert.Equal(0, workspaces.BackgroundWorkspaceCount);
+
+        // A retry reads the checkpoint guidance but gets an unused branch and folder; the old WIP is untouched.
+        var next = await host.RunAsync(item with { Branch = result.Branch, WorktreePath = result.WorktreePath,
+            Evidence = result.Evidence, SessionId = result.SessionId }, new("owner", repo, settings), default);
+        Assert.Equal(SelfImprovementCycleOutcome.Verified, next.Outcome);
+        Assert.NotEqual(result.WorktreePath, next.WorktreePath);
+        Assert.NotEqual(result.Branch, next.Branch);
+        Assert.Contains(result.WorktreePath, requests[1].UserMessage);
+        Assert.Contains("Inspect that checkpoint read-only before reimplementing", requests[1].UserMessage);
+        Assert.Equal(checkpointStatus, await GitOut(result.WorktreePath, "status", "--porcelain", "--untracked-files=all"));
+        Assert.Equal(sourceHead, await GitOut(result.WorktreePath, "rev-parse", "HEAD"));
+        Assert.Equal("unverified tracked change", await File.ReadAllTextAsync(Path.Combine(result.WorktreePath, "README.md")));
+        Assert.Equal("unverified new file", await File.ReadAllTextAsync(Path.Combine(result.WorktreePath, "checkpoint.txt")));
+        Assert.Equal(sourceHead, await GitOut(repo, "rev-parse", "HEAD"));
+        Assert.Equal("", await GitOut(repo, "status", "--porcelain"));
     }
 
     // ---- capture in the runner ---------------------------------------------------------------------

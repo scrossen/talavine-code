@@ -65,9 +65,17 @@ public sealed record SelfImprovementItem
 
     public long Revision { get; init; }
 
+    /// <summary>Host-owned continuation binding; repair cycles cannot replace the original goal or its authority.</summary>
+    public GoalRepairLink? GoalRepair { get; init; }
+    /// <summary>Host-verified failed installation of this exact repair; never a model-authored command to replay.</summary>
+    public SelfImprovementActivationFailure? ActivationFailure { get; init; }
+
     [JsonIgnore]
     public bool IsOpen => Stage is SelfImprovementStage.Queued or SelfImprovementStage.InProgress;
 }
+
+public sealed record SelfImprovementActivationFailure(string AttemptId, string Commit, int ExitCode, string Phase,
+    DateTime FailedAtUtc, string Diagnostic);
 
 /// <summary>A sighting to fold into the backlog. A null <see cref="Fingerprint"/> is computed from kind, title and details.</summary>
 public sealed record SelfImprovementReport(

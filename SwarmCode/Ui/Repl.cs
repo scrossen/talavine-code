@@ -4,6 +4,7 @@ using SwarmCode.Hosting.Web;
 using SwarmCore.Abstractions.LlmRouting;
 using SwarmCore.Coding.Routing;
 using SwarmCore.Coding.Extensions;
+using SwarmCore.Coding.Goals;
 using SwarmCore.LlmRouting.Configuration;
 using SwarmCore.Secrets;
 
@@ -31,7 +32,7 @@ public sealed class Repl
     /// <summary>Built-in command names; a custom command with one of these names is ignored.</summary>
     private static readonly string[] BuiltInCommands =
         ["quit", "exit", "q", "help", "?", GreetingCommand.Name, "lanes", "lane", "models", "keys", "key", "import-passwords", "new", "clear", "auto", "secret", "secrets", "forget", "hooks",
-         "undo", "rewind", "review", "sessions", "resume", "fork", "plan", "approve", "compact", "cost", "status", "agents", "mcp", "export", "model", "mode", "init", "permissions"];
+         "undo", "rewind", "review", "sessions", "resume", "fork", "plan", "approve", CodingGoalCommand.Name, "compact", "cost", "status", "agents", "mcp", "export", "model", "mode", "init", "permissions"];
 
     /// <summary>The session to start in (<c>--continue</c>, <c>--resume</c>); a new one when null.</summary>
     public string? InitialConversationId { get; init; }
@@ -79,7 +80,8 @@ public sealed class Repl
 
         await OfferRepositoryHooksAsync(onlyWhenPending: true).ConfigureAwait(false);
         await OfferRepositoryPermissionsAsync(onlyWhenPending: true).ConfigureAwait(false);
-        await RunSessionStartAsync("startup").ConfigureAwait(false);
+        // A saved session continued with --continue/--resume starts as "resume", like the one-shot path and /resume.
+        await RunSessionStartAsync(InitialConversationId is null ? "startup" : "resume").ConfigureAwait(false);
 
         Console.CancelKeyPress += OnCancelKeyPress;
         try
@@ -87,7 +89,7 @@ public sealed class Repl
             while (!_exitRequested)
             {
                 Console.Write($"swarmcode ({_lane ?? "none"})> ");
-                var line = Console.ReadLine();
+                var line = await ReadPromptLineAsync().ConfigureAwait(false);
                 if (line is null) break;
                 line = line.Trim();
                 if (line.Length == 0) continue;
@@ -109,6 +111,24 @@ public sealed class Repl
             await _runner.ForgetConversationAsync(_conversationId).ConfigureAwait(false);
         }
     }
+
+    /// <summary>
+    /// The next prompt line, or null at end of input or once a second idle Ctrl+C asked to exit. The read runs off the
+    /// loop so that exit request can end the wait; the loop then leaves normally and the SessionEnd hooks and
+    /// checkpoint cleanup in <see cref="RunAsync"/> still run (the runtime's own Ctrl+C exit would skip them).
+    /// </summary>
+    private async Task<string?> ReadPromptLineAsync()
+    {
+        _pendingRead ??= Task.Run(Console.ReadLine);
+        var done = await Task.WhenAny(_pendingRead, _exitSignal.Task).ConfigureAwait(false);
+        if (!ReferenceEquals(done, _pendingRead)) return null; // exit requested; the abandoned read ends with the process
+        var line = await _pendingRead.ConfigureAwait(false);
+        _pendingRead = null;
+        return line;
+    }
+
+    private Task<string?>? _pendingRead;
+    private readonly TaskCompletionSource _exitSignal = new(TaskCreationOptions.RunContinuationsAsynchronously);
 
     /// <summary>SessionStart hooks for the current conversation; their context rides on the next message.</summary>
     private async Task RunSessionStartAsync(string source)
@@ -239,11 +259,13 @@ public sealed class Repl
             return;
         }
 
-        // Idle at the prompt: first Ctrl+C warns, second (within 5 s) exits.
+        // Idle at the prompt: first Ctrl+C warns, second (within 5 s) exits through the same path as /quit.
         if (DateTime.UtcNow - _lastIdleInterrupt < TimeSpan.FromSeconds(5))
         {
             _exitRequested = true;
-            e.Cancel = false;
+            e.Cancel = true;
+            Console.WriteLine();
+            _exitSignal.TrySetResult();
             return;
         }
         _lastIdleInterrupt = DateTime.UtcNow;
@@ -452,6 +474,10 @@ public sealed class Repl
                     : "Plan mode is off.");
                 break;
 
+            case "/" + CodingGoalCommand.Name:
+                await RunGoalCommandAsync(line[parts[0].Length..].Trim()).ConfigureAwait(false);
+                break;
+
             case "/approve":
                 if (!_runner.PlanMode) { Console.WriteLine("Plan mode is off; there is no plan waiting for approval."); break; }
                 if (!_runner.PlanAwaitingApproval) { Console.WriteLine("No plan has been delivered yet. Ask for one first (plan mode is on)."); break; }
@@ -537,6 +563,30 @@ public sealed class Repl
         return true;
     }
 
+    private async Task RunGoalCommandAsync(string arguments)
+    {
+        var command = CodingGoalCommand.Parse(arguments);
+        if (command.Kind == CodingGoalCommandKind.Invalid)
+        {
+            Console.WriteLine(command.Error);
+            Console.WriteLine(CodingGoalCommand.Usage);
+            return;
+        }
+        if (_runner.PlanMode && command.Kind is CodingGoalCommandKind.Start or CodingGoalCommandKind.Resume)
+        {
+            Console.WriteLine("Turn off plan mode with /plan before starting or resuming a goal.");
+            return;
+        }
+        using var cts = new CancellationTokenSource();
+        _turnCts = cts;
+        try
+        {
+            await _runner.RunGoalAsync(command, _conversationId, _lane, _runner.PermissionMode, null, _runner.ModelOverride, cts.Token).ConfigureAwait(false);
+        }
+        finally { _turnCts = null; }
+        _lastIdleInterrupt = DateTime.MinValue;
+    }
+
     /// <summary>Recent sessions of this repository, newest first, numbered for <c>/resume n</c>.</summary>
     private async Task<IReadOnlyList<SwarmCode.Hosting.WorkspaceSessionInfo>> RecentSessionsAsync()
     {
@@ -572,11 +622,17 @@ public sealed class Repl
         }
         if (target is null) { Console.WriteLine($"No session '{selector}'. /sessions lists them."); return; }
         if (target.Id == _conversationId) { Console.WriteLine("That is the current session."); return; }
+        // Same lifecycle as /new and --resume: the old conversation ends, and context gathered for it never rides
+        // on the resumed conversation's first message.
+        await RunSessionEndAsync("resume").ConfigureAwait(false);
         await _runner.ForgetConversationAsync(_conversationId).ConfigureAwait(false);
+        _runner.PendingContext = null;
         _conversationId = target.Id;
         _explicitLane = false;
         if (target.LaneName is { } lane && _orchestrator.ResolveLane(lane) is not null) _lane = lane;
         Console.WriteLine($"Resumed session {target.Id[..Math.Min(8, target.Id.Length)]} \"{target.Title}\" (last activity {target.LastActivityUtc.ToLocalTime():g}). The earlier transcript is restored for the next message.");
+        if (target.Temporary) Console.WriteLine("This session is temporary: memory is off for it.");
+        await RunSessionStartAsync("resume").ConfigureAwait(false);
     }
 
     private async Task PrintCostAsync()
@@ -589,10 +645,15 @@ public sealed class Repl
         {
             var today = await tracker.GetCostSummaryAsync(null, DateTime.UtcNow.Date, null).ConfigureAwait(false);
             var all = await tracker.GetCostSummaryAsync().ConfigureAwait(false);
-            Console.WriteLine($"Tracked API usage today: {today.TotalRequests:N0} requests, {today.TotalTokens:N0} tokens, ${today.TotalCost:0.0000}.");
-            Console.WriteLine($"Tracked API usage overall: {all.TotalRequests:N0} requests, {all.TotalTokens:N0} tokens, ${all.TotalCost:0.0000}.");
-            foreach (var (model, modelCost) in all.CostByModel.OrderByDescending(kv => kv.Value).Take(5))
-                Console.WriteLine($"  {model,-40} ${modelCost:0.0000}");
+            // SwarmCode ships no price table, so a zero total means "not priced", not "free": say so rather than print $0.
+            static string Cost(decimal cost) => cost > 0 ? $"${cost:0.0000}" : "cost not tracked";
+            Console.WriteLine($"Tracked API usage today: {today.TotalRequests:N0} requests, {today.TotalTokens:N0} tokens, {Cost(today.TotalCost)}.");
+            Console.WriteLine($"Tracked API usage overall: {all.TotalRequests:N0} requests, {all.TotalTokens:N0} tokens, {Cost(all.TotalCost)}.");
+            foreach (var (model, modelTokens) in all.TokensByModel.Where(kv => kv.Key.Length > 0).OrderByDescending(kv => kv.Value).Take(5))
+            {
+                var modelCost = all.CostByModel.GetValueOrDefault(model);
+                Console.WriteLine($"  {model,-40} {modelTokens,12:N0} tokens{(modelCost > 0 ? $"  ${modelCost:0.0000}" : "")}");
+            }
         }
         catch (Exception ex) { Console.WriteLine($"Usage history is unavailable: {ex.Message}"); }
     }
@@ -605,7 +666,7 @@ public sealed class Repl
         Console.WriteLine($"Lane:        {_lane ?? "none"}{(_runner.ModelOverride is { } m ? $"  model {m}" : "")}");
         Console.WriteLine($"Permissions: {SwarmCore.Coding.Permissions.CodingPermissionPolicy.Name(_runner.PermissionMode)}");
         Console.WriteLine($"Plan mode:   {(_runner.PlanMode ? (_runner.PlanAwaitingApproval ? "on (plan delivered; /approve)" : "on") : "off")}");
-        Console.WriteLine($"Memory:      {(_runner.Temporary ? "off (temporary)" : "on")}");
+        Console.WriteLine($"Memory:      {(await _runner.IsTemporaryAsync(_conversationId).ConfigureAwait(false) ? "off (temporary)" : "on")}");
         Console.WriteLine($"Usage:       {(_runner.SessionTokens is { } t ? $"{t:N0} reported tokens" : "no usage reported")}{(_runner.SessionCostUsd is { } c ? $", ${c:0.0000}" : "")}");
         if (_runner.CompactNextTurn) Console.WriteLine("Next turn:   compacts the working context first");
         var agents = _runner.Agents?.Team.Children(_conversationId) ?? [];
@@ -689,8 +750,8 @@ public sealed class Repl
         {
             var value = ReadHidden($"Value for {name}: ");
             if (value.Length == 0) { Console.WriteLine("Nothing saved."); return; }
-            await _secrets.StoreAsync(name, value).ConfigureAwait(false);
-            Console.WriteLine($"Saved {name}. Reference it as {SecretReference.Placeholder(name)}; the value is never shown to the model.");
+            await _secrets.StoreAsync(name, value, site: outcome.PromptForValueSite).ConfigureAwait(false);
+            Console.WriteLine(SecretIntake.SavedMessage(name, outcome.PromptForValueSite));
             return;
         }
         if (outcome.Message is not null) Console.WriteLine(outcome.Message);
@@ -831,7 +892,8 @@ public sealed class Repl
               /models                  probe providers and list available models
               /keys                    show which provider keys are set (names only)
               /key <provider> [value]  save an API key to the vault (omit the value to type it hidden; brave = web search)
-              /secret <name> [value]   save a password/token/key to the vault (omit the value to type it hidden)
+              /secret [--site <host>] <name> [value]   save a password/token/key to the vault (omit the value to type it hidden;
+                                       --site limits where it may be sent, else the first host it is sent to is kept)
               /secrets                 list stored secret names (never values)
               /forget <name>           delete a stored secret
               /import-passwords <csv>  import a browser or password-manager CSV export into the vault
@@ -842,6 +904,10 @@ public sealed class Repl
               /model [id|auto]         run the lane with an exact model id (auto = the lane's configured model)
               /mode [auto|ask-risky|ask] permission mode: ask before risky or every side effect
               /plan                    toggle plan mode (investigate read-only, propose a plan); /approve implements it
+              /goal <objective>        keep working toward a verified goal across turns
+              /goal status|pause|resume|cancel
+                                       inspect or control the current goal; Ctrl+C pauses a running goal
+              /goal start <objective>  start a goal whose wording begins with status, pause, resume, cancel or start
               /compact                 compact the working context at the start of the next message
               /cost                    tokens and cost reported in this process, plus tracked API usage
               /status                  repository, session, lane, modes and usage at a glance

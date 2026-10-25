@@ -1793,18 +1793,6 @@ public partial class LlmRouter
         ModelScoutRankedCandidate selected)
         => ModelScoutRuntimeDecisionReceipt.FromDecision(decision, selected);
 
-    private static InvalidOperationException MissingCurrentFunctionProof(string functionType)
-        => new MissingCurrentFunctionProofException(
-            $"No current function-scoped Model Scout proof is available for {functionType}. "
-            + "Automatic routing is paused while bounded Model Scout recovery searches for a proven route.");
-
-    private sealed class MissingCurrentFunctionProofException : InvalidOperationException
-    {
-        public MissingCurrentFunctionProofException(string message) : base(message)
-        {
-        }
-    }
-
     /// <summary>
     /// Carries non-negotiable per-call policy across every transient route object.
     /// Runtime fallback, streaming, vision, tool use and self-heal all construct
@@ -2408,6 +2396,10 @@ public partial class LlmRouter
         Exception? failure,
         RoutingSelectionTrace trace)
     {
+        // Selection failures surface validator/discovery exception text, which
+        // can carry endpoint URLs or provider bodies; persist only the same
+        // redacted diagnostic the execution audit stores.
+        var persistedError = RoutingDiagnosticSanitizer.Sanitize(error, 2_000);
         try
         {
             var explicitOverride = !string.IsNullOrWhiteSpace(options?.OverrideProvider)
@@ -2521,7 +2513,6 @@ public partial class LlmRouter
                     requireCurrentWorkloadSizing = options?.RequireCurrentWorkloadSizing == true,
                     estimatedOutputTokens = ResolveEstimatedOutputTokens(options),
                     disableFallback = options?.DisableFallback == true,
-                    allowAnyProviderFallback = options?.AllowAnyProviderFallback == true,
                     overrideProvenance = options?.OverrideProvenance.ToString(),
                     interactivity = selection?.Context?.Interactivity.ToString(),
                     privacy = selection?.Context?.PrivacyClass.ToString(),
@@ -2614,7 +2605,7 @@ public partial class LlmRouter
                 FallbackProvider = selection?.FallbackProvider,
                 FallbackModel = selection?.FallbackModel,
                 AdvisorOrPolicy = selection?.Reason,
-                Reason = selection?.Reason ?? error,
+                Reason = selection?.Reason ?? persistedError,
                 EvidenceJson = evidence,
                 PromptSha256 = ComputeHash(prompt),
                 BenchmarkPromptSha256 = selection?.ValidatedAdmissionReceipt?.PromptSha256,
@@ -2625,7 +2616,7 @@ public partial class LlmRouter
                 TurnId = options?.TurnId,
                 IsUserOverride = userOverride,
                 Succeeded = selection is not null && error is null,
-                Error = error
+                Error = persistedError
             }).ConfigureAwait(false);
         }
         catch (Exception auditEx)
@@ -2657,7 +2648,6 @@ public partial class LlmRouter
         {
             null => null,
             LlmRouteSelectionBlockedException => LlmRoutingAuditFailureScopes.RequestProofOrPolicyGate,
-            MissingCurrentFunctionProofException => LlmRoutingAuditFailureScopes.RequestProofOrPolicyGate,
             _ => LlmRoutingAuditFailureScopes.FunctionRouteFailure,
         };
 
@@ -3225,58 +3215,6 @@ public partial class LlmRouter
         return selection;
     }
 
-    private string? GetAdvisorCapabilityRejection(
-        LlmRouteAdvisorRecommendation recommendation,
-        string provider,
-        string model,
-        bool requiresVision,
-        LlmRouterOptions? options)
-    {
-        var providerImpl = _providerRegistry.GetProvider(provider);
-        var capability = _capabilitiesService.GetModelCapability(provider, model);
-
-        if ((requiresVision || recommendation.RequiresVision)
-            && providerImpl?.SupportsVision(model) != true
-            && _capabilitiesService.SupportsVision(provider, model) != true)
-        {
-            return "vision capability is not proven";
-        }
-
-        if (options?.RequiresToolUse == true)
-        {
-            if (_toolUseRegistry?.Supports(provider) != true)
-                return "no native tool-use translator is registered";
-            var supportsToolUse = recommendation.SupportsToolUse
-                                  ?? capability?.SupportsFunctionCalling;
-            if (supportsToolUse != true)
-                return "model-level tool-use capability is not proven";
-        }
-
-        if (RequiresNativeStructuredOutput(options))
-        {
-            var supportsStructuredOutput = recommendation.SupportsStructuredOutput
-                                           ?? (capability is null
-                                               ? null
-                                               : capability.SupportsStructuredOutput);
-            if (supportsStructuredOutput != true)
-                return "structured-output capability is not proven";
-        }
-
-        if (options?.MinimumContextTokens is > 0 and var minimumContextTokens)
-        {
-            var contextSizes = new[] { recommendation.MaxContextTokens, capability?.MaxContextTokens }
-                .Where(value => value is > 0)
-                .Select(value => value!.Value)
-                .ToList();
-            if (contextSizes.Count == 0)
-                return $"a {minimumContextTokens:N0}-token context window is required but unverified";
-            if (contextSizes.Min() < minimumContextTokens)
-                return $"verified context window is below the {minimumContextTokens:N0}-token requirement";
-        }
-
-        return null;
-    }
-
     /// <summary>
     /// A typed caller may explicitly accept the router's strict parse/repair boundary.
     /// In that case provider-native schema support is not a hard admission prerequisite;
@@ -3663,11 +3601,15 @@ public partial class LlmRouter
             var candidateProvider = settings.ProviderName;
             if (!await IsProviderAvailableAsync(candidateProvider)) continue;
 
+            // A vision request resolves the model from the provider's advertised
+            // vision-capable (and, for a local daemon, installed) catalog rather
+            // than a guessed family name the user may never have pulled.
             var candidateModel = !string.IsNullOrWhiteSpace(settings.DefaultModel)
                 ? settings.DefaultModel!
                 : requiresVision
-                    ? GetVisionFallbackModel(candidateProvider)
+                    ? await GetVisionCapableModelAsync(candidateProvider).ConfigureAwait(false)
                     : _settingsProvider.GetDefaultModel(candidateProvider);
+            if (string.IsNullOrWhiteSpace(candidateModel)) continue;
 
             if (!LlmProviderLocalityPolicy.IsTrustedLocalRoute(
                     candidateProvider,
@@ -4094,7 +4036,7 @@ public partial class LlmRouter
         var fallbackModel = await ShouldUseConfiguredFallbackModelAsync(selectedModel, fallbackProvider)
             ? selectedModel.FallbackModel!
             : requiresVision
-                ? GetVisionFallbackModel(fallbackProvider ?? "unknown")
+                ? fallbackProvider is null ? null : await GetVisionCapableModelAsync(fallbackProvider).ConfigureAwait(false)
                 : await GetFallbackModelAsync(fallbackProvider);
 
         return new LlmModelSelection

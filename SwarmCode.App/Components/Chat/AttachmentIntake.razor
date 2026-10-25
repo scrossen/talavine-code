@@ -19,7 +19,7 @@
     @ChildContent
     <div class="sess-attachment-actions @(Compact ? "sess-attachment-actions--compact" : "")">
         <label for="@_inputId" class="sess-btn" tabindex="0" @onkeydown="OnPickerKeyDown">Attach files</label>
-        <InputFile id="@_inputId" class="sess-attachment-input" @ref="_input" OnChange="ImportBrowserFilesAsync" multiple disabled="@_busy" />
+        <InputFile id="@_inputId" class="sess-attachment-input" tabindex="-1" @ref="_input" OnChange="ImportBrowserFilesAsync" multiple disabled="@_busy" />
         <span class="sess-muted" role="status">@(_busy ? "Adding attachments…" : Compact ? "" : "Paste images or files · Drop files here")</span>
     </div>
     @if (_error is not null) { <p class="sess-error" role="alert">@_error</p> }
@@ -115,6 +115,36 @@
                 }
                 if (!_disposed) await FilesChanged.InvokeAsync(added);
             }
+#elif MACOS
+            // Files copied in Finder reach the pasteboard as file URLs, which the web view's
+            // paste event does not expose; read them from the general pasteboard instead.
+            var paths = await SwarmCode.App.Services.DesktopPlatform.InvokeAsync(() =>
+                (AppKit.NSPasteboard.GeneralPasteboard.ReadObjectsForClasses(
+                        new[] { new ObjCRuntime.Class(typeof(Foundation.NSUrl)) }, null) ?? [])
+                    .OfType<Foundation.NSUrl>()
+                    .Where(url => url.IsFileUrl && !string.IsNullOrEmpty(url.Path))
+                    .Select(url => url.Path!)
+                    .ToList());
+            var pastedFiles = paths.Where(File.Exists).ToList();
+            if (pastedFiles.Count == 0)
+            {
+                _error = paths.Count > 0
+                    ? "Folders can't be pasted as attachments. Paste or attach the files inside them."
+                    : "There are no copied files to paste.";
+            }
+            else
+            {
+                var store = new AttachmentStore(App.Paths, Limits);
+                foreach (var path in pastedFiles)
+                {
+                    Limits.ValidateBatch(added.Count + 1, added.Sum(f => f.Length) + new FileInfo(path).Length);
+                    await using var stream = File.OpenRead(path);
+                    added.Add(await store.ImportAsync(SessionId, Path.GetFileName(path), stream));
+                }
+                if (!_disposed) await FilesChanged.InvokeAsync(added);
+            }
+#else
+            _error = "Pasting copied files isn't supported on this computer. Use Attach files, or drag the files in.";
 #endif
         }
         catch (Exception ex) { _error = "Could not paste files: " + ex.Message; }

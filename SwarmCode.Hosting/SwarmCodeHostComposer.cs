@@ -119,12 +119,13 @@ public static class SwarmCodeHostComposer
 
         services.AddSingleton(options.DataPaths);
         services.AddSingleton(configuration);
-        services.AddSingleton(new ModelSourceEnvironmentKeys(repoRoot, new ModelSourcesStore(options.DataPaths).Read().Sources));
+        services.AddSingleton(new ModelSourceEnvironmentKeys(repoRoot, new ModelSourcesStore(options.DataPaths).ReadOrEmpty(out _).Sources));
         services.AddHttpClient();
         options.ConfigureServices?.Invoke(services);
         services.AddSwarmCoreDecisions();
         services.TryAddSingleton<SwarmCore.Abstractions.LlmRouting.Decisions.IDecisionCredentials, VaultDecisionCredentials>();
         services.TryAddSingleton<DecisionSettingsStore>();
+        services.TryAddSingleton<IDelegatedModelInventory, DelegatedModelInventory>();
         services.TryAddSingleton<DecisionSessionCoordinator>();
 
         var providerOptions = new LlmProvidersOptions();
@@ -153,7 +154,8 @@ public static class SwarmCodeHostComposer
         services.AddSwarmCoreLlmRouting(o =>
         {
             o.UseSettingsProvider(sp => new JsonLlmSettingsProvider(sp.GetRequiredService<SwarmCodeDataPaths>()));
-            o.UseUsageTracker(sp => new JsonLlmUsageTracker(sp.GetRequiredService<SwarmCodeDataPaths>()));
+            o.UseUsageTracker(sp => new JsonLlmUsageTracker(sp.GetRequiredService<SwarmCodeDataPaths>(),
+                sp.GetService<Microsoft.Extensions.Logging.ILogger<JsonLlmUsageTracker>>()));
             o.UseApiKeyProvider(sp => sp.GetRequiredService<SwarmCodeApiKeyProvider>());
             o.UseCapabilitiesService<SwarmCodeLlmCapabilitiesService>(ServiceLifetime.Singleton);
             o.UseCostService<SwarmCodeLlmCostService>(ServiceLifetime.Singleton);
@@ -210,7 +212,7 @@ public static class SwarmCodeHostComposer
         {
             o.BrowserProfileDirectory = Path.Combine(options.DataPaths.RootDirectory, "browser", "chrome");
             configuration.GetSection(CodingComputerOptions.SectionName).Bind(o);
-        });
+        }, desktopCaptureDirectory: Path.Combine(options.DataPaths.RootDirectory, "desktop-captures"));
 
         if (options.PermissionBroker is not null)
             services.AddSingleton(options.PermissionBroker);
@@ -222,6 +224,7 @@ public static class SwarmCodeHostComposer
         else
             services.TryAddSingleton<SwarmCore.Coding.Interaction.IUserQuestionBroker>(sp => new UiUserQuestionBroker(sp.GetService<WorkspaceSessionCatalog>()));
         services.TryAddSingleton<AppPreferencesStore>();
+        services.TryAddSingleton<StarInvitationStore>();
         services.TryAddSingleton<UserSettingsFile>();
         services.TryAddSingleton<Settings.SettingsActivation>();
         services.TryAddSingleton<SwarmCore.Coding.Settings.IAgentSettingsHost, Settings.SwarmCodeSettingsHost>();
@@ -241,6 +244,7 @@ public static class SwarmCodeHostComposer
                 coding.RepositoryRoot = repoRoot;
             },
             lanes => configuration.GetSection(CodingLaneOptions.SectionName).Bind(lanes));
+        Goals.SwarmCodeGoals.AddSwarmCodeGoals(services);
         services.AddSingleton<IPostConfigureOptions<CodingLaneOptions>, DefaultLaneSeeder>();
         // user.ask: the agent asks the person a question mid-turn (native lanes reach it as user_ask through the bridge).
         SwarmCore.Coding.Interaction.UserQuestionServiceCollectionExtensions.AddSwarmCoreUserQuestions(services);
@@ -248,6 +252,7 @@ public static class SwarmCodeHostComposer
             ? SwarmCore.Coding.Interaction.UserQuestionPrompts.Guidance
             : coding.AdditionalInstructions.Trim() + Environment.NewLine + SwarmCore.Coding.Interaction.UserQuestionPrompts.Guidance);
         services.AddSwarmCodeModelSources(options.DataPaths, configuration);
+        services.AddSwarmCoreModelScout<SwarmCodeModelScoutCandidateSource>();
         var learningOptions = new SwarmCore.HarnessLearning.HarnessLearningOptions();
         configuration.GetSection("HarnessLearning").Bind(learningOptions);
         SwarmCore.Agent.Learning.HarnessLearningRegistration.AddHarnessLearning(services,

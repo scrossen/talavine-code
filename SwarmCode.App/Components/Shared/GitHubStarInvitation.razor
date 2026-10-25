@@ -1,0 +1,34 @@
+@namespace SwarmCode.App.Components.Shared
+
+@if (Visible)
+{
+    <section class="sc-card" aria-label="Support Talavine Code">
+        <div class="sc-row sc-row--between">
+            <h2 class="sc-card__title">Finding Talavine Code useful?</h2>
+            <button type="button" class="sc-btn sc-btn--ghost sc-btn--sm" disabled="@Busy"
+                    aria-label="Dismiss GitHub invitation" title="Don't ask again" @onclick="OnDismiss">✕</button>
+        </div>
+        <p class="sc-card__copy">A GitHub star helps other developers discover it. It's optional.</p>
+        <div class="sc-row">
+            <button type="button" class="sc-btn sc-btn--sm" disabled="@Busy"
+                    title="@($"Open {RepositoryUrl}")" @onclick="OnOpen">Star on GitHub</button>
+            <button type="button" class="sc-btn sc-btn--ghost sc-btn--sm" disabled="@Busy"
+                    @onclick="OnDismiss">Don't ask again</button>
+        </div>
+        @if (!string.IsNullOrWhiteSpace(Error))
+        {
+            <p class="sc-notice sc-notice--error" role="alert">@Error</p>
+            <p class="sc-note sc-muted">GitHub: <span class="sc-mono">@RepositoryUrl</span></p>
+        }
+    </section>
+}
+
+@code {
+    public const string RepositoryUrl = SwarmCode.Hosting.StarInvitationStore.RepositoryUrl;
+
+    [Parameter] public bool Visible { get; set; }
+    [Parameter] public bool Busy { get; set; }
+    [Parameter] public string? Error { get; set; }
+    [Parameter] public EventCallback OnDismiss { get; set; }
+    [Parameter] public EventCallback OnOpen { get; set; }
+}

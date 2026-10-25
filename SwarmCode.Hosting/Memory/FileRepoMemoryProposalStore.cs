@@ -112,6 +112,10 @@ public sealed class FileRepoMemoryProposalStore : IRepoMemoryProposalStore
             {
                 try { fileLock = new FileStream(Path.Combine(_directory, ".lock"), FileMode.OpenOrCreate, FileAccess.ReadWrite, FileShare.None); }
                 catch (IOException) when (DateTime.UtcNow < deadline) { await Task.Delay(40, ct).ConfigureAwait(false); }
+                catch (IOException ex)
+                {
+                    throw new TimeoutException("Another Talavine Code process is holding the repository memory proposals. Close it or wait, then retry.", ex);
+                }
             }
             using (fileLock) return await action().ConfigureAwait(false);
         }

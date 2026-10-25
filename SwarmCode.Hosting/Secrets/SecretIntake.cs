@@ -13,7 +13,8 @@ public sealed record SecretIntakeOutcome(
     IReadOnlyList<string> StoredNames,
     bool HandledAsCommand,
     string? Message,
-    string? PromptForValueName = null)
+    string? PromptForValueName = null,
+    string? PromptForValueSite = null)
 {
     public static SecretIntakeOutcome PassThrough(string text) => new(text, [], false, null);
 }
@@ -69,19 +70,67 @@ public sealed partial class SecretIntake(ISecretVault vault, ILogger<SecretIntak
             return new SecretIntakeOutcome("", [], true, removed ? $"Forgot {SecretNames.Normalize(rest)}." : $"No secret named {rest}.");
         }
 
-        // /secret <name> [value]
+        // /secret [--site <host>] <name> [value]
+        if (!TryTakeSite(ref rest, out var site, out var siteProblem))
+            return new SecretIntakeOutcome("", [], true, siteProblem);
         if (rest.Length == 0)
-            return new SecretIntakeOutcome("", [], true, "Usage: /secret <name> <value>  (or /secret <name> to be prompted for the value)");
+            return new SecretIntakeOutcome("", [], true, SecretUsage);
         var split = rest.IndexOfAny([' ', '\t', '\n']);
         var rawName = split < 0 ? rest : rest[..split];
         var value = split < 0 ? "" : rest[(split + 1)..].Trim();
         if (!SecretNames.TryNormalize(rawName, out var name))
             return new SecretIntakeOutcome("", [], true, $"'{rawName}' is not a usable secret name. Use letters, digits, dots, dashes.");
         if (value.Length == 0)
-            return new SecretIntakeOutcome("", [], true, null, PromptForValueName: name);
+        {
+            // "/secret --site api.example.com name" on a saved secret sets where it may be sent.
+            if (site is not null && await vault.TrySetSiteAsync(name, site, onlyWhenUnset: false, ct).ConfigureAwait(false))
+                return new SecretIntakeOutcome("", [], true, $"{name} may now be sent to {site}. Its value was not changed.");
+            return new SecretIntakeOutcome("", [], true, null, PromptForValueName: name, PromptForValueSite: site);
+        }
 
-        await vault.SetAsync(new SecretWriteRequest { Name = name, Value = value, Kind = GuessKind(name, value) }, ct).ConfigureAwait(false);
-        return new SecretIntakeOutcome("", [name], true, $"Saved {name}. Reference it as {SecretReference.Placeholder(name)}; the value is never shown to the model.");
+        await vault.SetAsync(new SecretWriteRequest { Name = name, Value = value, Kind = GuessKind(name, value), Site = site }, ct).ConfigureAwait(false);
+        return new SecretIntakeOutcome("", [name], true, SavedMessage(name, site));
+    }
+
+    private const string SecretUsage =
+        "Usage: /secret [--site <host>] <name> <value>  (or /secret <name> to be prompted for the value). " +
+        "--site names the only host the secret may be sent to; without it, the first host it is sent to is remembered.";
+
+    /// <summary>The confirmation after a save; never contains the value.</summary>
+    public static string SavedMessage(string name, string? site) =>
+        $"Saved {name}. Reference it as {SecretReference.Placeholder(name)}; the value is never shown to the model. " +
+        (site is null
+            ? "It will be bound to the first host it is sent to."
+            : $"It may be sent only to {site}.");
+
+    /// <summary>Removes a leading <c>--site host</c> or <c>--site=host</c> from <paramref name="rest"/>.</summary>
+    private static bool TryTakeSite(ref string rest, out string? site, out string? problem)
+    {
+        site = null; problem = null;
+        if (!rest.StartsWith("--site", StringComparison.OrdinalIgnoreCase)) return true;
+        var afterFlag = rest[6..];
+        string raw;
+        if (afterFlag.StartsWith('='))
+        {
+            var end = afterFlag.IndexOfAny([' ', '\t', '\n']);
+            raw = end < 0 ? afterFlag[1..] : afterFlag[1..end];
+            rest = end < 0 ? "" : afterFlag[end..].Trim();
+        }
+        else if (afterFlag.Length > 0 && char.IsWhiteSpace(afterFlag[0]))
+        {
+            var trimmed = afterFlag.TrimStart();
+            var end = trimmed.IndexOfAny([' ', '\t', '\n']);
+            raw = end < 0 ? trimmed : trimmed[..end];
+            rest = end < 0 ? "" : trimmed[end..].Trim();
+        }
+        else
+        {
+            return true; // "--sitefoo" is a name, not the flag.
+        }
+
+        site = SecretNames.Host(raw);
+        if (site is null) problem = $"'{raw}' is not a host. Use a host such as api.example.com.";
+        return site is not null;
     }
 
     /// <summary>Stores a value a host collected out of band (hidden console input, password field).</summary>

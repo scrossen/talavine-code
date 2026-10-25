@@ -178,6 +178,16 @@ public sealed class LlmExecutionParameterRejectedException(
     public IReadOnlyList<LlmExecutionParameterDiagnostic> Diagnostics { get; } = diagnostics;
 }
 
+/// <summary>
+/// Optional adapter capability: a runtime that needs an explicit instruction to
+/// recover from an unparseable JSON reply supplies it for the router's
+/// same-route JSON contract retry. The router never branches on provider names.
+/// </summary>
+public interface ILlmJsonRecoveryPromptProvider
+{
+    string BuildJsonRecoveryPrompt(string originalPrompt);
+}
+
 /// <summary>Implemented by provider adapters; the router never translates wire keys.</summary>
 public interface ILlmProviderExecutionContract
 {

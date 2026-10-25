@@ -233,7 +233,8 @@ public sealed class AgentTeam : IAsyncDisposable, IDisposable
         var lane = Bound(request.Lane, 100) ?? definition?.Lane;
         var model = Bound(request.Model, 200) ?? definition?.Model;
         var isolation = AgentIsolation.Normalize(request.Isolation ?? definition?.Isolation);
-        var conversation = await host.CreateAgentConversationAsync(new AgentConversationRequest(parentId, title, lane, model, isolation), ct).ConfigureAwait(false);
+        var conversation = await host.CreateAgentConversationAsync(new AgentConversationRequest(parentId, title, lane, model, isolation,
+            task, ExplicitModelSelection: lane is not null || model is not null), ct).ConfigureAwait(false);
         var id = conversation.Id;
         if (!AgentIds.IsValid(id)) throw new InvalidOperationException("The host returned an invalid conversation id.");
         if (isolation is not null && conversation.Worktree is null)
@@ -242,8 +243,10 @@ public sealed class AgentTeam : IAsyncDisposable, IDisposable
         var record = new AgentRecord
         {
             Id = id, ParentId = parentId, RootId = rootId, Depth = depth, Title = title, Task = task,
-            Lane = lane, Model = model, State = AgentState.Queued, CreatedUtc = now, UpdatedUtc = now,
-            Pending = [AgentTeamPrompts.Brief(title, task, depth, depth < options.MaxDepth, conversation.Worktree, definition, request.Independent)], Owner = _instance,
+            Lane = conversation.Lane ?? lane, Model = conversation.Model ?? model, RoutingNote = conversation.RoutingNote,
+            State = AgentState.Queued, CreatedUtc = now, UpdatedUtc = now,
+            Pending = [AgentTeamPrompts.Brief(title, task, depth, depth < options.MaxDepth, conversation.Worktree, definition,
+                request.Independent, conversation.RoutingNote)], Owner = _instance,
             Worktree = conversation.Worktree,
             Agent = definition?.Name, AllowedTools = definition?.Tools ?? [], Independent = request.Independent,
         };

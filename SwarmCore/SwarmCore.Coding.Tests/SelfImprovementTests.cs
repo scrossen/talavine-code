@@ -196,6 +196,9 @@ public sealed class SelfImprovementTests : IDisposable
 
     private sealed class FakeCycleHost : ISelfImprovementCycleHost
     {
+        public bool Allowed { get; set; } = true;
+        public Func<SelfImprovementItem, bool>? Allows { get; set; }
+        public Task<bool> CanRunAsync(SelfImprovementItem item, CancellationToken ct = default) => Task.FromResult(Allowed && (Allows?.Invoke(item) ?? true));
         public string? Root { get; set; } = "C:/fake/repo";
         public Func<SelfImprovementItem, SelfImprovementCycleContext, CancellationToken, Task<SelfImprovementCycleResult>> Run { get; set; }
             = (_, _, _) => Task.FromResult(new SelfImprovementCycleResult(SelfImprovementCycleOutcome.Verified, "ok", "evidence", "swarmcode/self-improvement-1", new string('a', 40), "wt", "sess"));
@@ -296,6 +299,168 @@ public sealed class SelfImprovementTests : IDisposable
     }
 
     [Fact]
+    public async Task Eligible_goal_repair_takes_precedence_over_old_frequent_unrelated_backlog()
+    {
+        var time = new ManualTime(DateTimeOffset.UtcNow);
+        SelfImprovementOptions Opts() => Options(o => { o.AutoApplyGoalRepairs = true; o.UserIdleAfter = TimeSpan.Zero; });
+        var backlog = new InMemorySelfImprovementBacklog(); var reporter = new SelfImprovementReporter(backlog, Opts, time);
+        var unrelated = (await reporter.ReportAsync(new(SelfImprovementKind.Defect, "Old unrelated defect", "Unrelated synthetic defect")))!;
+        await backlog.UpdateAsync(unrelated.Id, current => current with { Occurrences = 10000 });
+        time.Advance(TimeSpan.FromMinutes(1));
+        var linked = (await reporter.ReportAsync(new(SelfImprovementKind.Defect, "Current goal defect", "Current synthetic goal failure")))!;
+        await backlog.UpdateAsync(linked.Id, current => current with { GoalRepair = new(Guid.NewGuid(), 2, "intent", "failure",
+            SwarmCore.Agent.Continual.ContinualObjectiveStatus.Uncertain, time.GetUtcNow()) });
+        var host = new FakeCycleHost();
+        await using var worker = new SelfImprovementWorker(backlog, host, new SelfImprovementIdleGate(Opts, time), Opts, time: time);
+        await worker.TickAsync(); await Until(() => !worker.IsRunning && host.Calls.Count == 1);
+        Assert.Equal(linked.Id, Assert.Single(host.Calls).Id);
+        Assert.Equal(SelfImprovementStage.Queued, (await backlog.GetAsync(unrelated.Id))!.Stage);
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task Finished_goal_repair_yields_idle_checkpoints_until_host_observes_it_no_longer_applicable(bool merged)
+    {
+        var time = new ManualTime(DateTimeOffset.UtcNow);
+        SelfImprovementOptions Opts() => Options(o => { o.AutoApplyGoalRepairs = true; o.UserIdleAfter = TimeSpan.Zero; });
+        var backlog = new InMemorySelfImprovementBacklog();
+        var reporter = new SelfImprovementReporter(backlog, Opts, time);
+        var unrelated = (await reporter.ReportAsync(new(SelfImprovementKind.Defect, "Ordinary defect", "Unrelated work")))!;
+        var linked = (await reporter.ReportAsync(new(SelfImprovementKind.Defect, "Goal defect", "Goal work")))!;
+        await backlog.UpdateAsync(linked.Id, current => current with { GoalRepair = new(Guid.NewGuid(), 2, "intent", "failure",
+            SwarmCore.Agent.Continual.ContinualObjectiveStatus.Uncertain, time.GetUtcNow()) });
+        var applicable = true;
+        var host = new FakeCycleHost
+        {
+            Allows = item => item.GoalRepair is null || applicable,
+            Run = (_, _, _) => Task.FromResult(new SelfImprovementCycleResult(SelfImprovementCycleOutcome.Verified, "Checked",
+                "evidence", "repair", new string('a', 40), Merged: merged))
+        };
+        await using var worker = new SelfImprovementWorker(backlog, host, new SelfImprovementIdleGate(Opts, time), Opts, time: time);
+        await worker.TickAsync();
+        await Until(() => !worker.IsRunning && host.Calls.Count == 1);
+        Assert.Equal(linked.Id, Assert.Single(host.Calls).Id);
+        var finished = (await backlog.GetAsync(linked.Id))!;
+        Assert.Equal(merged ? SelfImprovementStage.Merged : SelfImprovementStage.Verified, finished.Stage);
+        var idleCheckpoints = 0;
+        worker.Checkpoint += () => { if (!worker.IsRunning) idleCheckpoints++; };
+
+        // A delayed host activator gets an idle boundary even when the next loop checks immediately and repeatedly.
+        await worker.TickAsync();
+        await worker.TickAsync();
+        Assert.False(worker.IsRunning);
+        Assert.Single(host.Calls);
+        Assert.Equal(2, idleCheckpoints);
+        Assert.Contains("waiting for installation", worker.Status);
+        Assert.Equal(finished, await backlog.GetAsync(linked.Id)); // No implicit install, retry or backlog mutation.
+        Assert.Equal(SelfImprovementStage.Queued, (await backlog.GetAsync(unrelated.Id))!.Stage);
+
+        applicable = false; // Host saw activation/resume, a newer goal edit, or a pause. Old repair cannot hold other work.
+        await worker.TickAsync();
+        await Until(() => !worker.IsRunning && host.Calls.Count == 2);
+        Assert.Equal(unrelated.Id, host.Calls[1].Id);
+    }
+
+    [Theory]
+    [InlineData(false, true)]
+    [InlineData(true, false)]
+    public async Task Verified_repairs_without_current_automatic_goal_authority_do_not_hold_ordinary_work(bool linked, bool autoApply)
+    {
+        var time = new ManualTime(DateTimeOffset.UtcNow);
+        SelfImprovementOptions Opts() => Options(o => { o.AutoApplyGoalRepairs = autoApply; o.UserIdleAfter = TimeSpan.Zero; });
+        var backlog = new InMemorySelfImprovementBacklog();
+        var reporter = new SelfImprovementReporter(backlog, Opts, time);
+        var ready = (await reporter.ReportAsync(new(SelfImprovementKind.Defect, "Verified defect", "Completed work")))!;
+        await backlog.UpdateAsync(ready.Id, current => current with { Stage = SelfImprovementStage.Verified,
+            GoalRepair = linked ? new(Guid.NewGuid(), 2, "intent", "failure",
+                SwarmCore.Agent.Continual.ContinualObjectiveStatus.Uncertain, time.GetUtcNow()) : null });
+        var ordinary = (await reporter.ReportAsync(new(SelfImprovementKind.Defect, "Ordinary defect", "Waiting work")))!;
+        var host = new FakeCycleHost();
+        await using var worker = new SelfImprovementWorker(backlog, host, new SelfImprovementIdleGate(Opts, time), Opts, time: time);
+
+        await worker.TickAsync();
+        await Until(() => !worker.IsRunning && host.Calls.Count == 1);
+        Assert.Equal(ordinary.Id, Assert.Single(host.Calls).Id);
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task Active_cycle_status_remains_truthful_when_future_cycles_are_disabled_or_paused(bool disable)
+    {
+        var time = new ManualTime(DateTimeOffset.UtcNow);
+        var enabled = true;
+        var paused = false;
+        SelfImprovementOptions Opts() => Options(o => { o.Enabled = enabled; o.UserIdleAfter = TimeSpan.Zero; });
+        var backlog = new InMemorySelfImprovementBacklog();
+        var reporter = new SelfImprovementReporter(backlog, Opts, time);
+        var current = (await reporter.ReportAsync(new(SelfImprovementKind.Defect, "Current cycle", "Already started")))!;
+        var entered = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var finish = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var cancelled = false;
+        var host = new FakeCycleHost { Run = async (_, _, ct) =>
+        {
+            using var registration = ct.Register(() => cancelled = true);
+            entered.TrySetResult();
+            await finish.Task.WaitAsync(ct);
+            return new SelfImprovementCycleResult(SelfImprovementCycleOutcome.Verified, "Finished naturally");
+        } };
+        await using var worker = new SelfImprovementWorker(backlog, host, new SelfImprovementIdleGate(Opts, time), Opts,
+            paused: () => paused, time: time);
+        await worker.TickAsync();
+        await entered.Task.WaitAsync(TimeSpan.FromSeconds(10));
+        var waiting = (await reporter.ReportAsync(new(SelfImprovementKind.Defect, "Next cycle", "Not yet started")))!;
+        if (disable) enabled = false; else paused = true;
+        try
+        {
+            await worker.TickAsync();
+            Assert.True(worker.IsRunning);
+            Assert.Equal(current.Id, worker.ActiveItemId);
+            Assert.Equal("Working on \"Current cycle\".", worker.Status);
+            Assert.False(cancelled);
+            Assert.Single(host.Calls);
+        }
+        finally { finish.TrySetResult(); }
+
+        await Until(() => !worker.IsRunning);
+        await worker.TickAsync();
+        Assert.Equal(disable ? "Off. Turn self-improvement on in Settings." : "Paused.", worker.Status);
+        Assert.Single(host.Calls);
+        Assert.False(cancelled);
+        Assert.Equal(SelfImprovementStage.Verified, (await backlog.GetAsync(current.Id))!.Stage);
+        Assert.Equal(SelfImprovementStage.Queued, (await backlog.GetAsync(waiting.Id))!.Stage);
+    }
+
+    [Fact]
+    public async Task Goal_linked_repairs_continue_after_the_normal_attempt_allowance_with_backoff_and_host_authority_checks()
+    {
+        var time = new ManualTime(DateTimeOffset.UtcNow);
+        SelfImprovementOptions Opts() => Options(o => { o.AutoApplyGoalRepairs = true; o.MaxAttemptsPerItem = 1; o.UserIdleAfter = TimeSpan.Zero; });
+        var backlog = new InMemorySelfImprovementBacklog();
+        var item = (await new SelfImprovementReporter(backlog, Opts, time).ReportAsync(new(SelfImprovementKind.Defect, "Harness failure", "Synthetic only")))!;
+        await backlog.UpdateAsync(item.Id, current => current with { GoalRepair = new(Guid.NewGuid(), 2, "intent", "failure",
+            SwarmCore.Agent.Continual.ContinualObjectiveStatus.Uncertain, time.GetUtcNow()) });
+        var host = new FakeCycleHost { Run = (_, _, _) => Task.FromResult(new SelfImprovementCycleResult(SelfImprovementCycleOutcome.Failed, "Regression still fails.")) };
+        await using var worker = new SelfImprovementWorker(backlog, host, new SelfImprovementIdleGate(Opts, time), Opts, time: time);
+        var checkpoints = 0; worker.Checkpoint += () => checkpoints++;
+        await worker.TickAsync();
+        await Until(() => !worker.IsRunning && host.Calls.Count == 1);
+        Assert.Equal(SelfImprovementStage.Queued, (await backlog.GetAsync(item.Id))!.Stage);
+        await worker.TickAsync(); Assert.Single(host.Calls); // No tight retry loop.
+        time.Advance(TimeSpan.FromMinutes(3));
+        await worker.TickAsync();
+        await Until(() => !worker.IsRunning && host.Calls.Count == 2);
+        Assert.Equal(2, (await backlog.GetAsync(item.Id))!.Attempts);
+        Assert.Equal(SelfImprovementStage.Queued, (await backlog.GetAsync(item.Id))!.Stage);
+        host.Allowed = false; // The owning host observed a new pause/cancel or a changed original goal.
+        time.Advance(TimeSpan.FromHours(2));
+        await worker.TickAsync(); Assert.Equal(2, host.Calls.Count);
+        Assert.False((await worker.RunNowAsync(item.Id)).Started);
+        Assert.Equal(4, checkpoints); // Unchanged idle checks still offer a safe installation boundary.
+    }
+
+    [Fact]
     public async Task Worker_stays_quiet_when_paused_or_without_a_repository_and_requeues_dead_owners()
     {
         var time = new ManualTime(new DateTimeOffset(2026, 10, 15, 8, 0, 0, TimeSpan.Zero));
@@ -355,6 +520,85 @@ public sealed class SelfImprovementTests : IDisposable
         Assert.Equal(SelfImprovementStage.Queued, stored.Stage);
         Assert.Equal(0, stored.Attempts);
         Assert.Contains("came back", stored.Note);
+    }
+
+    [Fact]
+    public async Task Cancelled_cycle_persists_checkpoint_metadata_without_counting_or_claiming_a_verified_repair()
+    {
+        var time = new ManualTime(DateTimeOffset.UtcNow);
+        SelfImprovementOptions Opts() => Options(o => o.UserIdleAfter = TimeSpan.Zero);
+        var backlog = new InMemorySelfImprovementBacklog();
+        var item = (await new SelfImprovementReporter(backlog, Opts, time).ReportAsync(new(SelfImprovementKind.Defect,
+            "Interrupted repair", "Synthetic work")))!;
+        // Failed activation can requeue an earlier verified item while retaining its old commit.
+        await backlog.UpdateAsync(item.Id, current => current with { Branch = "swarmcode/old-repair",
+            Commit = new string('a', 40), WorktreePath = "old/source" });
+        var host = new FakeCycleHost { Run = (_, _, _) => Task.FromResult(new SelfImprovementCycleResult(
+            SelfImprovementCycleOutcome.Cancelled, "Unverified checkpoint retained", "Checkpoint evidence",
+            Branch: "swarmcode/checkpoint", WorktreePath: "retained/source", SessionId: "stopped-session")) };
+        await using var worker = new SelfImprovementWorker(backlog, host, new SelfImprovementIdleGate(Opts, time), Opts, time: time);
+        await worker.TickAsync();
+        await Until(() => !worker.IsRunning && host.Calls.Count == 1);
+        var saved = (await backlog.GetAsync(item.Id))!;
+        Assert.Equal(SelfImprovementStage.Queued, saved.Stage);
+        Assert.Equal(0, saved.Attempts);
+        Assert.Null(saved.LastAttemptUtc);
+        Assert.Null(saved.Commit);
+        Assert.Null(saved.Owner);
+        Assert.Equal("swarmcode/checkpoint", saved.Branch);
+        Assert.Equal("retained/source", saved.WorktreePath);
+        Assert.Equal("stopped-session", saved.SessionId);
+        Assert.Equal("Checkpoint evidence", saved.Evidence);
+        var prompt = SelfImprovementPrompts.Cycle(saved, []);
+        Assert.Contains(saved.WorktreePath, prompt);
+        Assert.Contains(saved.Branch, prompt);
+        Assert.Contains(saved.Evidence, prompt);
+        Assert.Contains("Inspect that checkpoint read-only before reimplementing", prompt);
+        Assert.Contains("Do not automatically copy or apply its code, replay its commands, or commit it", prompt);
+    }
+
+    [Theory]
+    [InlineData("edit")]
+    [InlineData("dismiss")]
+    [InlineData("delete")]
+    public async Task Cancelled_checkpoint_writer_preserves_competing_file_backlog_edits_and_does_not_resurrect_items(string competingAction)
+    {
+        var time = new ManualTime(DateTimeOffset.UtcNow);
+        SelfImprovementOptions Opts() => Options(o => o.UserIdleAfter = TimeSpan.Zero);
+        var directory = Path.Combine(_tmp, "cancel-backlog");
+        var backlog = new JsonFileSelfImprovementBacklog(directory);
+        var competing = new JsonFileSelfImprovementBacklog(directory);
+        var item = (await new SelfImprovementReporter(backlog, Opts, time).ReportAsync(new(SelfImprovementKind.Defect,
+            "Interrupted repair", "Original details", Source: "original")))!;
+        var finish = new TaskCompletionSource<SelfImprovementCycleResult>(TaskCreationOptions.RunContinuationsAsynchronously);
+        var host = new FakeCycleHost { Run = (_, _, ct) => finish.Task.WaitAsync(ct) };
+        await using var worker = new SelfImprovementWorker(backlog, host, new SelfImprovementIdleGate(Opts, time), Opts, time: time);
+        await worker.TickAsync();
+        await Until(() => host.Calls.Count == 1);
+        SelfImprovementItem? changed = null;
+        if (competingAction == "delete") Assert.True(await competing.DeleteAsync(item.Id));
+        else changed = await competing.UpdateAsync(item.Id, current => current with
+        {
+            Details = "Newer details", Source = null,
+            Stage = competingAction == "dismiss" ? SelfImprovementStage.Dismissed : current.Stage,
+            Owner = competingAction == "dismiss" ? null : current.Owner,
+        });
+        finish.TrySetResult(new(SelfImprovementCycleOutcome.Cancelled, "Checkpoint retained", "Unverified",
+            Branch: "swarmcode/checkpoint", WorktreePath: "retained/source"));
+        await Until(() => !worker.IsRunning);
+        var saved = await competing.GetAsync(item.Id);
+        if (competingAction == "delete") Assert.Null(saved);
+        else if (competingAction == "dismiss") Assert.Equal(changed, saved);
+        else
+        {
+            Assert.NotNull(saved);
+            Assert.Equal("Newer details", saved.Details);
+            Assert.Null(saved.Source);
+            Assert.Equal("retained/source", saved.WorktreePath);
+            Assert.Equal("swarmcode/checkpoint", saved.Branch);
+            Assert.Equal(SelfImprovementStage.Queued, saved.Stage);
+            Assert.Equal(0, saved.Attempts);
+        }
     }
 
     // ---- tool and registration ---------------------------------------------------------------------

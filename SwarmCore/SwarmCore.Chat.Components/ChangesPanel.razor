@@ -61,7 +61,7 @@
                         <button type="button" class="chat-changes__file @(e.Path == _selected?.Path ? "is-selected" : "")"
                                 aria-pressed="@(e.Path == _selected?.Path ? "true" : "false")" @onclick="() => SelectAsync(e)">
                             <span class="chat-changes__code chat-changes__code--@e.Kind">@e.Status.Trim()</span>
-                            <span class="chat-changes__path" title="@e.Path">@e.Path</span>
+                            <span class="chat-changes__path" title="@e.Path"><bdi>@e.Path</bdi></span>
                         </button>
                     </li>
                 }

@@ -351,7 +351,7 @@ public sealed class GeminiCliNativeLaneRunner(
         NativeLaneSupport.ScrubApiKeys(psi.EnvironmentVariables);
         // The person's own system settings path wins; nothing is written that this launch would not use.
         if (!SystemSettingsPathInherited
-            && NativeLaneSupport.WriteGeminiSettings(native.McpServer, turn.RepositoryRoot, native.ExternalMcpServers, turn.ConversationId) is { } settings)
+            && NativeLaneSupport.WriteGeminiSettings(native.McpServer, turn.RepositoryRoot, native.ExternalMcpServers, turn.ConversationId, turn.HostToolBridgeCapability) is { } settings)
             psi.EnvironmentVariables[SystemSettingsVariable] = settings;
         return psi;
     }

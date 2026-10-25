@@ -79,6 +79,25 @@ public static class SiteLoginCatalog
     public static SiteLoginProfile? Get(string siteId) =>
         All.FirstOrDefault(profile => string.Equals(profile.SiteId, siteId, StringComparison.OrdinalIgnoreCase));
 
+    /// <summary>
+    /// The catalog site whose signed-in session hosts <paramref name="url"/>: an https URL on the
+    /// site's origin whose path (and required query values) match one of its observation routes.
+    /// </summary>
+    public static SiteLoginProfile? ForObservationUrl(string url)
+    {
+        if (!Uri.TryCreate(url, UriKind.Absolute, out var uri) || uri.Scheme != Uri.UriSchemeHttps
+            || !string.IsNullOrEmpty(uri.UserInfo) || ForOrigin(url) is not { } site) return null;
+        var query = uri.Query.TrimStart('?').Split('&', StringSplitOptions.RemoveEmptyEntries)
+            .Select(pair => pair.Split('=', 2))
+            .GroupBy(pair => Uri.UnescapeDataString(pair[0]), StringComparer.OrdinalIgnoreCase)
+            .ToDictionary(group => group.Key, group => group.Select(pair => pair.Length > 1 ? Uri.UnescapeDataString(pair[1]) : "").ToArray(),
+                StringComparer.OrdinalIgnoreCase);
+        return site.ObservationRoutes.Any(route => string.Equals(route.Path, uri.AbsolutePath, StringComparison.Ordinal)
+            && route.RequiredQuery.All(pair => query.TryGetValue(pair.Key, out var values) && values.Length == 1 && values[0] == pair.Value))
+            ? site
+            : null;
+    }
+
     public static SiteLoginProfile? ForOrigin(string origin)
     {
         if (!Uri.TryCreate(origin, UriKind.Absolute, out var requested)

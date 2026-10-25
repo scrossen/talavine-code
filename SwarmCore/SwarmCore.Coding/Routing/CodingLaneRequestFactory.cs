@@ -18,6 +18,8 @@ public static class CodingLaneRequestFactory
                             (int)Math.Clamp(limits.MaxCumulativeTokens > 0 ? limits.MaxCumulativeTokens - (reportedTokens ?? 0) : 0, 0, int.MaxValue)),
                         IsContinuation = continuation,
                         ConversationId = request.ConversationId,
+                        GoalId = request.GoalId, GoalMailbox = request.GoalMailbox, GoalMessageLeaseToken = request.GoalMessageLeaseToken,
+                        HostToolsWithheld = request.HostToolsWithheld,
                         UserMessage = request.Attachments.Count == 0 ? message : message + "\n\n" + Files.CodingAttachments.EvidenceBoundary,
                         AuthenticatedOriginalUserMessage = request.AuthenticatedOriginalUserMessage
                             ?? (scopeAuthority.UserInitiated ? request.UserMessage : null),
@@ -27,10 +29,12 @@ public static class CodingLaneRequestFactory
                         ProfileIdOverride = profileId,
                         ProviderOverride = lane.Provider,
                         ModelOverride = SwarmCore.Abstractions.LlmRouting.ModelReasoningSelection.Split(lane.Model).Model,
+                        RouteOverrideProvenance = request.RouteOverrideProvenance,
+                        RoutingInteractivity = request.RoutingInteractivity,
                         ReasoningEffort = SwarmCore.Abstractions.LlmRouting.ModelReasoningSelection.Split(lane.Model).Effort,
                         // SwarmCode owns visible retries and terminal refusals. An inner router
                         // must not switch models behind those host-level rules.
-                        DisableRouteFallback = request.SelectionPinned || request.StopOnRefusal || request.DisableRouteFallback,
+                        DisableRouteFallback = request.SelectionPinned || request.RequireSelectedRoute || request.StopOnRefusal || request.DisableRouteFallback,
                         CompactWorkingContextFirst = request.CompactWorkingContextFirst,
                         // Tools resolve and fence paths to this conversation's repository for this turn only.
                         WorkspaceRoot = root,

@@ -9,6 +9,9 @@ of upstream components. Preserve the following files and their notices:
 | PDF.js character maps | `SwarmCode.App/wwwroot/vendor/pdfjs/cmaps` | See its `LICENSE` |
 | Bundled PDF standard fonts | `SwarmCode.App/wwwroot/vendor/pdfjs/standard_fonts` | See `LICENSE_FOXIT` and `LICENSE_LIBERATION` |
 | Public Suffix List | `SwarmCore/SwarmCore.Abstractions/Networking/public_suffix_list.txt` | MPL-2.0; its source header and `LICENSES/MPL-2.0.txt` |
+| AngleSharp 1.7.1 | NuGet dependency used by shared chat components | MIT; `LICENSES/AngleSharp-MIT.txt` |
+| SkiaSharp 3.119.1 | NuGet dependency used to scale desktop screenshots | MIT; `LICENSES/SkiaSharp-MIT.txt`; bundled native-component notices in `LICENSES/SkiaSharp-ThirdPartyNotices.txt` |
+| Interop.UIAutomationClient 10.19041.0 | Windows UI Automation interop dependency | MIT; `LICENSES/UIAutomationInterop-MIT.txt` |
 
 NuGet dependencies retain their own licenses. Generate and review the transitive
 dependency inventory for the exact release; restoring a package is not a license

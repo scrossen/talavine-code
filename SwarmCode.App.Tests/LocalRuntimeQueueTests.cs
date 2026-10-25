@@ -37,7 +37,7 @@ public sealed class LocalRuntimeQueueTests : BunitContext
         var view = Render<LocalRuntimeQueue>(p => p
             .Add(x => x.Snapshot, new([Item("mine", "chat", LocalLlmRuntimeQueuePhase.WaitingForDevice)], true))
             .Add(x => x.OwnerId, "chat").Add(x => x.IsRunning, true));
-        Assert.Contains("has not shared its current task", view.Markup);
+        Assert.Contains("No current holder is reporting activity", view.Markup);
         Assert.Contains("not a guaranteed turn order", view.Markup);
         Assert.Contains("Some activity could not be read", view.Markup);
         Assert.DoesNotContain("Restart Ollama", view.Markup);
@@ -51,7 +51,7 @@ public sealed class LocalRuntimeQueueTests : BunitContext
             .Add(x => x.OwnerId, "chat").Add(x => x.IsRunning, true));
         Assert.Contains("Using local model", view.Markup);
         Assert.DoesNotContain("Stop waiting</button>", view.Markup);
-        Assert.DoesNotContain("Code will stop waiting in", view.Markup);
+        Assert.DoesNotContain("Queue wait limit:", view.Markup);
     }
 
     [Fact]
@@ -62,6 +62,24 @@ public sealed class LocalRuntimeQueueTests : BunitContext
         Assert.DoesNotContain("<script>", view.Markup);
         Assert.DoesNotContain("This chat", view.Markup);
         Assert.Contains("&lt;script&gt;", view.Markup);
+    }
+
+    [Fact]
+    public void Decision_wait_is_separate_from_answer_time_and_child_identity_is_preserved()
+    {
+        var child = Item("child", "child-chat", LocalLlmRuntimeQueuePhase.WaitingForDevice) with
+        { SchedulingClass = LocalLlmSchedulingClass.RoutingDecision, SchedulingOwnerId = "parent-goal" };
+        var view = Render<LocalRuntimeQueue>(p => p.Add(x => x.Snapshot, new([child], false))
+            .Add(x => x.OwnerId, "child-chat").Add(x => x.IsRunning, true).Add(x => x.UtcNow, Now));
+        Assert.Contains("Choosing a model", view.Markup);
+        Assert.Contains("This chat", view.Markup);
+        Assert.Contains("Queue wait limit: 1m 20s remaining", view.Markup);
+        Assert.Contains("Answer time starts after admission", view.Markup);
+        Assert.Contains("child agents share their goal", view.Markup);
+        Assert.Contains("Running answers finish naturally", view.Markup);
+        view.Render(p => p.Add(x => x.OwnerId, "parent-goal"));
+        Assert.DoesNotContain("This chat", view.Markup);
+        Assert.DoesNotContain("Stop waiting</button>", view.Markup);
     }
 
     [Fact]

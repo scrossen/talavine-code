@@ -21,6 +21,16 @@ public static class SwarmCodeSelfImprovement
         services.TryAddSingleton<SessionWorkspaceOverrides>();
         services.TryAddSingleton<ISelfImprovementBacklog>(_ => new JsonFileSelfImprovementBacklog(paths.SelfImprovementDirectory));
         services.AddSwarmCoreSelfImprovement(o => configuration.GetSection(SelfImprovementOptions.SectionName).Bind(o));
+        services.TryAddSingleton<ISelfImprovementInstalledFixVerifier>(_ => new RelaunchInstalledFixVerifier(paths));
+        services.TryAddSingleton(provider => new GoalRepairActivationFeedback(paths, provider.GetRequiredService<ISelfImprovementBacklog>(),
+            provider.GetRequiredService<SwarmCore.Coding.Goals.ICodingGoalStore>(),
+            () => provider.GetRequiredService<SelfImprovementReporter>().Options,
+            () => provider.GetRequiredService<AppPreferencesStore>().Current.SelfImprovementPaused));
+        services.TryAddSingleton(provider => new GoalSelfImprovementCoordinator(provider.GetRequiredService<SelfImprovementReporter>(),
+            provider.GetRequiredService<SwarmCore.Coding.Goals.ICodingGoalStore>(), provider.GetRequiredService<ISelfImprovementInstalledFixVerifier>(),
+            provider.GetService<ILogger<GoalSelfImprovementCoordinator>>(),
+            () => provider.GetRequiredService<AppPreferencesStore>().Current.SelfImprovementPaused,
+            provider.GetRequiredService<GoalRepairActivationFeedback>()));
         return services;
     }
 
@@ -102,11 +112,20 @@ public static class SelfImprovementCapture
 
     public static void AfterTurn(IServiceProvider services, string conversationId, IReadOnlyList<TurnDiagnostic> diagnostics, TurnOrigin? origin, string? userMessage)
     {
-        if (diagnostics.Count == 0 || origin?.IsSelfImprovement == true) return;
+        if (origin?.IsSelfImprovement == true) return;
         if (services.GetService<SelfImprovementReporter>() is not { } reporter) return;
         var logger = services.GetService<ILoggerFactory>()?.CreateLogger("SwarmCode.SelfImprovement");
         _ = Task.Run(async () =>
         {
+            try
+            {
+                if (services.GetService<GoalSelfImprovementCoordinator>() is { } goals
+                    && services.GetService<SwarmCore.Coding.Goals.ICodingGoalStore>() is { } store
+                    && await store.GetLatestForConversationAsync(SwarmCore.Coding.Goals.CodingGoalOrchestrator.Partition,
+                        conversationId).ConfigureAwait(false) is { } goal)
+                    await goals.ObserveAsync(goal).ConfigureAwait(false);
+            }
+            catch (Exception ex) { logger?.LogDebug(ex, "Could not link goal recovery for {Conversation}.", conversationId); }
             foreach (var diagnostic in diagnostics)
             {
                 try

@@ -12,11 +12,11 @@
                 <p>Your prompt has waited @Duration(Now - waiting.QueuedUtc). It has not been sent to the model for this attempt.</p>
                 @if (!Current.Items.Any(x => x.Phase == LocalLlmRuntimeQueuePhase.UsingModel))
                 {
-                    <p>Another request holds the local AI slot but has not shared its current task. Its app, model and queue details are unavailable.</p>
+                    <p>Code is waiting for admission. No current holder is reporting activity; holder details may be unavailable.</p>
                 }
                 @if (waiting.AdmissionDeadlineUtc is { } deadline)
                 {
-                    <p class="sess-muted">Code will stop waiting in @Duration(deadline - Now) and keep your conversation.</p>
+                    <p class="sess-muted">Queue wait limit: @Duration(deadline - Now) remaining. Answer time starts after admission; your conversation is saved.</p>
                 }
                 <div class="sess-runtime-queue__actions">
                     <button type="button" class="sess-btn" @onclick="OnStop">Stop waiting</button>
@@ -42,7 +42,7 @@
             {
                 <p class="sess-muted">Some activity could not be read. Older apps may not share their queue. This list is not a complete device inventory.</p>
             }
-            <p class="sess-muted">Local AI is shared by apps on this device. Code asks background work to yield the next slot; older apps may not support this. Requests are listed by priority and arrival, not a guaranteed turn order. A finish time is not available.</p>
+            <p class="sess-muted">Local AI is shared by apps on this device. Running answers finish naturally. Chats and goals take fair turns; child agents share their goal’s turn. Short model choices get priority, and older requests get a turn even when new work arrives. Older apps may not support this. The list is not a guaranteed turn order or finish estimate.</p>
             <details><summary>What to do if work stays blocked</summary><p>Check the app using the model and pause or stop its work there. If the model server is stuck, restart it in its own app; this interrupts other local AI requests. Code does not stop another app’s work from this panel.</p></details>
         </div>
     </details>
@@ -106,7 +106,7 @@
     private static string Duration(TimeSpan value) => value.TotalMinutes >= 1 ? $"{Math.Max(0, (int)value.TotalMinutes)}m {Math.Max(0, value.Seconds)}s" : $"{Math.Max(0, (int)value.TotalSeconds)}s";
     private static string State(LocalLlmRuntimeQueuePhase phase) => phase switch
     { LocalLlmRuntimeQueuePhase.UsingModel => "Using model", LocalLlmRuntimeQueuePhase.WaitingInApp => "Waiting in app", _ => "Waiting for device" };
-    private static string Work(LocalLlmRuntimeQueueItem row) => row.Kind == LocalLlmWorkloadKind.Embedding ? "Search indexing"
+    private static string Work(LocalLlmRuntimeQueueItem row) => row.SchedulingClass == LocalLlmSchedulingClass.RoutingDecision ? "Choosing a model" : row.Kind == LocalLlmWorkloadKind.Embedding ? "Search indexing"
         : row.Kind == LocalLlmWorkloadKind.Vision ? "Image processing" : row.Workload switch
         { LlmWorkloadKind.Maintenance => "Maintenance", LlmWorkloadKind.DeferredEnrichment => "Data processing", _ => "Model request" };
     public void Dispose() { if (Interlocked.Exchange(ref _disposed, 1) == 0) _lifetime.Cancel(); }

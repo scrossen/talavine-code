@@ -32,6 +32,7 @@ public partial class LlmRouter
         public bool Dispatched;
         public decimal? InputPrice;
         public decimal? OutputPrice;
+        public bool PricesBoundCost;
     }
 
     private async Task ReservePhysicalAttemptAsync(LlmModelSelection model, Dictionary<string, object>? settings, int inputCount, bool embedding)
@@ -55,9 +56,12 @@ public partial class LlmRouter
         long? output = embedding ? 0 : settings is not null && TryGetMaxTokens(settings) is > 0 and var cap ? cap : null;
         attempt.InputPrice = facts?.InputCostPer1K;
         attempt.OutputPrice = embedding ? 0 : facts?.OutputCostPer1K;
-        // Cache creation can cost more than ordinary input; unknown tariff
-        // envelopes must remain unknown instead of borrowing a fallback price.
-        decimal? cost = model.Provider.Equals("OpenAI", StringComparison.OrdinalIgnoreCase)
+        // Cache creation can cost more than ordinary input; only a provider pack
+        // that declares its listed prices bound every billed token may price the
+        // reservation. Unknown tariff envelopes stay unknown instead of
+        // borrowing a fallback price.
+        attempt.PricesBoundCost = ProviderPackCatalog.ListedPricesBoundCost(model.Provider);
+        decimal? cost = attempt.PricesBoundCost
             && input.HasValue && output.HasValue && attempt.InputPrice.HasValue && attempt.OutputPrice.HasValue
             ? (input.Value * attempt.InputPrice.Value + output.Value * attempt.OutputPrice.Value) / 1000m : null;
         await budget.Ledger.ReserveAsync(budget.ProfileId, budget.Reference, budget.MissionId,
@@ -76,8 +80,7 @@ public partial class LlmRouter
         if (invocation?.Budget is not { } budget || invocation.Attempt is not { Reserved: true, Dispatched: true } attempt
             || attempt.Id != record.PhysicalCallId) return;
         decimal? cost = record.ActualCost;
-        if (!cost.HasValue && attempt.InputPrice.HasValue && attempt.OutputPrice.HasValue
-            && record.Provider.Equals("OpenAI", StringComparison.OrdinalIgnoreCase))
+        if (!cost.HasValue && attempt.PricesBoundCost && attempt.InputPrice.HasValue && attempt.OutputPrice.HasValue)
             cost = (record.InputTokens * attempt.InputPrice.Value + record.OutputTokens * attempt.OutputPrice.Value) / 1000m;
         await budget.Ledger.SettleAsync(budget.ProfileId, budget.Reference, attempt.Id.ToString("N"),
             new(cost, complete ? record.InputTokens : null, complete ? record.OutputTokens : null, 0, record.ResponseTimeMs),

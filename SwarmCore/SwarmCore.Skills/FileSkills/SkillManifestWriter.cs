@@ -83,8 +83,10 @@ public static class SkillManifestWriter
 
     /// <summary>
     /// One front-matter scalar: control characters (including CR/LF) become spaces, and a
-    /// value that is itself wrapped in quotes is wrapped in the other quote so the parser's
-    /// unquoting returns it unchanged.
+    /// value a strict YAML reader would not take as the same plain string (a leading
+    /// indicator such as <c>#</c>, <c>-</c> or a quote, an embedded <c>: </c> or <c> #</c>,
+    /// or a word YAML reads as a boolean, null or number) is written double-quoted with
+    /// <c>\</c> and <c>"</c> escaped. <see cref="SkillManifestParser"/> reads it back exactly.
     /// </summary>
     public static string Scalar(string? value)
     {
@@ -93,13 +95,30 @@ public static class SkillManifestWriter
             sb.Append(char.IsControl(ch) ? ' ' : ch);
         var folded = string.Join(' ', sb.ToString().Split(' ', StringSplitOptions.RemoveEmptyEntries));
 
-        if (folded.Length >= 2
-            && (folded[0] == '"' && folded[^1] == '"' || folded[0] == '\'' && folded[^1] == '\''))
-        {
-            return folded[0] == '"' ? $"'{folded}'" : $"\"{folded}\"";
-        }
+        return NeedsQuotes(folded)
+            ? "\"" + folded.Replace("\\", "\\\\", StringComparison.Ordinal).Replace("\"", "\\\"", StringComparison.Ordinal) + "\""
+            : folded;
+    }
 
-        return folded;
+    private const string LeadingIndicators = "#-?:,[]{}&*!|>'\"%@`";
+
+    private static readonly HashSet<string> ReservedWords = new(StringComparer.OrdinalIgnoreCase)
+    {
+        "true", "false", "yes", "no", "on", "off", "y", "n", "null", "~",
+    };
+
+    private static bool NeedsQuotes(string value)
+    {
+        if (value.Length == 0)
+            return false;
+        if (LeadingIndicators.Contains(value[0]))
+            return true;
+        if (value.Contains(": ", StringComparison.Ordinal) || value.EndsWith(':')
+            || value.Contains(" #", StringComparison.Ordinal))
+            return true;
+        if (ReservedWords.Contains(value))
+            return true;
+        return double.TryParse(value, System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out _);
     }
 
     private static void AppendList(StringBuilder sb, string key, IReadOnlyList<string> items)

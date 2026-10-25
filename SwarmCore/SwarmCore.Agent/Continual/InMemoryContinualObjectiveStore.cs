@@ -20,6 +20,30 @@ public sealed class InMemoryContinualObjectiveStore : IContinualObjectiveStore
         _time = timeProvider ?? TimeProvider.System;
     }
 
+    /// <summary>
+    /// Rehydrates checked immutable snapshots for a host which serializes all reads and writes
+    /// under its own durable transaction. This does not make the reference store durable itself.
+    /// </summary>
+    public static InMemoryContinualObjectiveStore Restore(IEnumerable<ContinualObjectiveSnapshot> snapshots, TimeProvider? timeProvider = null)
+    {
+        var store = new InMemoryContinualObjectiveStore(timeProvider);
+        foreach (var row in snapshots)
+        {
+            var key = new ObjectiveIdentity(row.PartitionKey.Trim(), row.Surface.Trim(), row.IdempotencyKey.Trim());
+            if (row.Id == Guid.Empty || string.IsNullOrWhiteSpace(row.ConversationId)
+                || string.IsNullOrWhiteSpace(row.ExecutorKey) || row.Version < 0
+                || !store._rows.TryAdd(row.Id, row) || !store._identity.TryAdd(key, row.Id))
+                throw new InvalidDataException("The saved objective inventory contains invalid or duplicate identities.");
+        }
+        return store;
+    }
+
+    /// <summary>Immutable values for a host's atomic persistence boundary.</summary>
+    public IReadOnlyList<ContinualObjectiveSnapshot> SnapshotAll()
+    {
+        lock (_gate) return _rows.Values.OrderBy(row => row.CreatedAtUtc).ThenBy(row => row.Id).ToArray();
+    }
+
     public Task<ContinualObjectiveSnapshot> CreateOrJoinAsync(
         ContinualObjectiveStart start,
         DateTimeOffset nowUtc,
@@ -225,7 +249,7 @@ public sealed class InMemoryContinualObjectiveStore : IContinualObjectiveStore
                 Receipts = receipts.ToArray(),
                 // A receipt the engine marks as not physically dispatched (a guard or binding refusal) had no effect.
                 HasPossibleSideEffects = row.HasPossibleSideEffects
-                    || receipt.WasDispatched && receipt.SideEffect != ContinualSideEffectClass.ReadOnly,
+                    || receipt.WasDispatched && ContinualSideEffects.MayAffectTaskResources(receipt.SideEffect),
                 CurrentToolName = receipt.State == ContinualToolReceiptState.Started
                     ? receipt.ToolName
                     : null,

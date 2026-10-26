@@ -11,7 +11,8 @@ models you run yourself.
 Bring your API keys or coding CLIs, make models challenge each other's answers,
 and build an app you can actually open, use and improve.
 
-**[Download for Windows or Apple Silicon Mac](https://talavine.com/talavine-code#download)** ·
+**[Download for Windows](https://talavine.com/talavine-code#download)** ·
+[Apple Silicon Mac guide](https://github.com/scrossen/talavine-code/discussions/8) ·
 [See what it does](https://talavine.com/talavine-code) ·
 [Build from source](#start-with-the-terminal) · [Report an issue](https://github.com/scrossen/talavine-code/issues)
 
@@ -222,8 +223,28 @@ The [Windows x64 desktop preview](https://talavine.com/talavine-code#download)
 includes its .NET runtime, so you don't need the SDK to try the app. Bring a
 supported coding CLI sign-in or your own model API key, choose a project, and
 give it a concrete job. Project build tools still depend on what you're building.
-Choose the Apple Silicon Mac disk image on the same [download page](https://talavine.com/talavine-code#download),
+For Apple Silicon Mac on macOS 14 or later, follow the [Mac setup steps](https://github.com/scrossen/talavine-code/discussions/8),
 or [build from source](docs/building.md).
+
+### Try a reading task first
+
+Open a repository you trust and select a configured model. A supported coding CLI
+must be installed and signed in, or an API route must have its provider key
+configured.
+
+Review the workspace's permission mode and configured acceptance commands before
+starting; the request below does not change either setting.
+
+```text
+Read the README and tell me how this project says to run its tests. Point to the files behind your answer. If the README does not explain the test setup, say so. Do not change files, run tests or install anything.
+```
+
+Check the answer against the files it names. A test command in an answer is not a
+test result. If the project has no documented test setup, a useful answer says so.
+
+[More first-use checks](https://github.com/scrossen/talavine-code/discussions/8).
+If Code helps with your work, an optional
+[GitHub star](https://github.com/scrossen/talavine-code) helps other developers find it.
 
 Created by **[Scott Crossen](https://github.com/scrossen)**. Part of
 [Talavine](https://talavine.com). I build agent harnesses and integrations, and
